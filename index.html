@@ -564,9 +564,15 @@ async function fetchYahooData(ticker){
     }
 
     if(qt){
-      result.price     = qt.regularMarketPrice || null;
-      result.prevClose = qt.regularMarketPreviousClose || qt.chartPreviousClose || null;
+      result.prevClose      = qt.regularMarketPreviousClose || qt.chartPreviousClose || null;
       result.preMarketPrice = qt.preMarketPrice || null;
+      // 프리마켓 시간이면 preMarketPrice를 메인 가격으로
+      var etNow = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+      var etHM  = etNow.getHours()*100 + etNow.getMinutes();
+      var isPreMkt = etHM >= 400 && etHM < 930;
+      result.price = (isPreMkt && qt.preMarketPrice)
+        ? qt.preMarketPrice
+        : qt.regularMarketPrice || null;
       result.volume    = qt.regularMarketVolume || null;
       result.avgVolume = qt.averageVolume || qt.averageDailyVolume10Day || null;
       result.float_m   = qt.floatShares ? qt.floatShares / 1_000_000 : null;
