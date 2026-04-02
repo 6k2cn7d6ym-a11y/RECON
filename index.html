@@ -1235,7 +1235,7 @@ function fireAlert(r, type){
   updateBadge();
 
   // 브라우저 알림
-  if(Notification.permission==='granted'){
+  if(typeof Notification !== 'undefined' && Notification.permission==='granted'){
     new Notification(`RECON ${r.ticker}`, {
       body: alert.msg + (alert.detail?'\n'+alert.detail:'')
     });
@@ -1355,7 +1355,7 @@ function showToast(msg){
 }
 
 // 브라우저 알림 권한
-if('Notification' in window && Notification.permission==='default'){
+if(typeof Notification !== 'undefined' && Notification.permission==='default'){
   Notification.requestPermission();
 }
 
