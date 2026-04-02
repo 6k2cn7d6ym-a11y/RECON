@@ -206,6 +206,26 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     </div>
   </div>
 
+  <div style="padding:0 16px 8px;display:flex;gap:6px;overflow-x:auto">
+    <a href="https://finviz.com/screener.ashx?v=111&f=exch_nasd|nyse|amex,sh_float_u20,ta_gap_u20,sh_price_u20,sh_price_o1&o=-gap" target="_blank"
+       style="display:flex;align-items:center;gap:5px;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--t2);text-decoration:none;white-space:nowrap;flex-shrink:0;transition:border-color .15s"
+       onmouseover="this.style.borderColor='var(--b2)'" onmouseout="this.style.borderColor='var(--b)'">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Finviz 갭업주
+    </a>
+    <a href="https://finviz.com/screener.ashx?v=111&f=exch_nasd|nyse|amex,sh_float_u10,ta_gap_u30,sh_price_u15,sh_price_o1&o=-gap" target="_blank"
+       style="display:flex;align-items:center;gap:5px;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--t2);text-decoration:none;white-space:nowrap;flex-shrink:0;transition:border-color .15s"
+       onmouseover="this.style.borderColor='var(--b2)'" onmouseout="this.style.borderColor='var(--b)'">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      갭업 30%+ Float 10M↓
+    </a>
+    <a href="https://finance.yahoo.com/markets/stocks/gainers/" target="_blank"
+       style="display:flex;align-items:center;gap:5px;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--t2);text-decoration:none;white-space:nowrap;flex-shrink:0;transition:border-color .15s"
+       onmouseover="this.style.borderColor='var(--b2)'" onmouseout="this.style.borderColor='var(--b)'">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+      Yahoo 상승주
+    </a>
+  </div>
   <div id="statsBar" style="display:flex;justify-content:space-between;align-items:center;padding:0 16px 6px;font-family:var(--mono);font-size:10px;color:var(--t2)">
     <span id="statsText">오늘 분석 0개</span>
     <div style="display:flex;gap:8px">
@@ -293,6 +313,7 @@ var G = {
   mockPnl: parseFloat(localStorage.getItem('apexPnl')||'0'),
   unread:  0,
   sortMode: 'score',
+  history: {},  // ticker별 시간 흐름 데이터
 };
 
 // 초기값 로드
@@ -381,6 +402,8 @@ async function runScan(){
     if(data.error) throw new Error(data.error.message);
     var text  = data.content[0].text.trim().replace(/```json|```/g,'').trim();
     var result = JSON.parse(text);
+    applyHistory(result);
+    result.action = hardFilter(result);
     handleResult(result);
   } catch(e){
     document.getElementById('analyzeArea').innerHTML = `
@@ -465,11 +488,121 @@ async function runScanSingle(ticker){
     var data=await res.json();
     if(data.error) throw new Error(data.error.message);
     var result=JSON.parse(data.content[0].text.trim().replace(/```json|```/g,'').trim());
+    applyHistory(result);
+    result.action = hardFilter(result);
     handleResult(result);
   }catch(e){
     document.getElementById('analyzeArea').innerHTML=`<div class="alert-card" style="margin:4px 16px 10px"><div class="alert-msg" style="color:var(--r)">${ticker} 오류: ${e.message}</div></div>`;
   }
   document.getElementById('scanBtn').disabled=false;
+}
+
+
+// ═══ 하드 필터 레이어 (AI 결과를 강제로 걸러냄) ═══
+
+function getDumpScore(r){
+  var score = 0;
+  var w = r.warnings || [];
+  var b = r.blockers  || [];
+  var all = w.concat(b).join(' ').toLowerCase();
+
+  if(r.news_quality !== 'factual')                        score += 25;
+  if(r.rvol   && r.rvol   <  5)                          score += 20;
+  if(r.float_m && r.float_m > 15)                        score += 15;
+  if(all.includes('lower high'))                          score += 20;
+  if(all.includes('거래량 감소') || all.includes('거래량 소멸')) score += 20;
+  if(all.includes('vwap') && all.includes('이탈'))        score += 25;
+  if(all.includes('open') && all.includes('high'))        score += 30;
+  if(r.gap_pct && r.gap_pct < 20)                        score += 15;
+  if(r.spread_pct && r.spread_pct > 1.0)                 score += 25;
+  if(r.news_quality === 'none')                           score += 30;
+
+  return score;
+}
+
+function hardFilter(r){
+  var w   = r.warnings || [];
+  var b   = r.blockers  || [];
+  var all = w.concat(b).join(' ').toLowerCase();
+  var reasons = [];
+
+  // 1. 뉴스 품질 — AI 결과 무시하고 강제 차단
+  if(r.news_quality !== 'factual'){
+    reasons.push('뉴스 미검증 (' + (r.news_quality||'none') + ')');
+  }
+
+  // 2. 스프레드 2% 초과
+  if(r.spread_pct && r.spread_pct > 2.0){
+    reasons.push('스프레드 ' + r.spread_pct + '% 과다');
+  }
+
+  // 3. VWAP 이탈
+  if(all.includes('vwap') && all.includes('이탈')){
+    reasons.push('VWAP 이탈');
+  }
+
+  // 4. 구조 파괴 패턴
+  if(all.includes('lower high')){
+    reasons.push('Lower High 연속');
+  }
+  if(all.includes('open = high') || all.includes('open=high')){
+    reasons.push('Open = High (개장 직후 고점)');
+  }
+  if(all.includes('거래량 소멸') || all.includes('거래량 감소')){
+    reasons.push('거래량 소멸');
+  }
+
+  // 5. 덤프 점수 40+ 이면 강제 차단
+  var dumpScore = getDumpScore(r);
+  if(dumpScore >= 40){
+    reasons.push('덤프위험 ' + dumpScore + '점');
+  }
+
+  if(reasons.length > 0){
+    // 기존 blockers에 추가
+    r.blockers = (r.blockers || []).concat(reasons.map(function(rs){ return '[하드필터] ' + rs; }));
+    r._hardBlocked = true;
+    r._dumpScore   = dumpScore;
+    return 'BLOCK';
+  }
+
+  r._dumpScore = dumpScore;
+  return r.action;
+}
+
+// 시간 흐름 분석 (Higher Low / Lower High 추적)
+function applyHistory(r){
+  var t   = r.ticker;
+  var now = Date.now();
+  if(!G.history[t]) G.history[t] = [];
+
+  // 현재 데이터 포인트 추가
+  if(r.price){
+    G.history[t].push({ price: r.price, time: now, score: r.score });
+    G.history[t] = G.history[t].slice(-10); // 최근 10개만
+  }
+
+  // 최소 3개 이상일 때 패턴 분석
+  if(G.history[t].length >= 3){
+    var pts    = G.history[t];
+    var lows   = pts.map(function(p){ return p.price; });
+    var last3  = lows.slice(-3);
+
+    // Higher Low: 저점이 계속 올라가면 긍정
+    var higherLow = last3[2] > last3[1] && last3[1] > last3[0];
+    // Lower High: 고점이 계속 낮아지면 덤프
+    var lowerHigh = last3[2] < last3[1] && last3[1] < last3[0];
+
+    if(higherLow && !r.signals)  r.signals = [];
+    if(higherLow)  r.signals.push('Higher Low 확인 (' + pts.length + '회 관찰)');
+
+    if(lowerHigh){
+      if(!r.warnings) r.warnings = [];
+      r.warnings.push('Lower High 진행 중 (' + pts.length + '회 관찰)');
+    }
+  }
+
+  return r;
 }
 
 function handleResult(r){
@@ -600,6 +733,7 @@ function cardHTML(r){
       <div class="lv lv-rr"><div class="lv-label">손익비</div><div class="lv-val">${r.rr?r.rr+'R':'--'}</div></div>
     </div>`:''}
     <div style="font-size:11px;color:var(--t2);margin-top:10px">${r.summary||''}</div>
+  ${r._dumpScore>0?'<div style="font-family:var(--mono);font-size:10px;margin-top:4px;color:'+(r._dumpScore>=40?'var(--r)':r._dumpScore>=20?'var(--a)':'var(--t3)')+'">덤프위험 '+r._dumpScore+'pt'+(r._hardBlocked?' · 하드필터 차단':'')+' </div>':''}
     ${sigs}
   </div>`;
 }
