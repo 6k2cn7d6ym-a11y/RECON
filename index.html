@@ -650,6 +650,43 @@ async function fetchYahooData(ticker){
     result.news = newsArr.slice(0,5).map(function(n){ return n.title||''; });
     result.newsText = result.news.join(' | ');
 
+    // ── 4. 5일 평균거래량 → RVol 계산 ──
+    if(!result.avgVolume){
+      try{
+        var d5 = await fetchWithProxy(
+          'https://query1.finance.yahoo.com/v8/finance/chart/' + ticker + '?interval=1d&range=5d'
+        );
+        var vols5 = d5?.chart?.result?.[0]?.indicators?.quote?.[0]?.volume || [];
+        vols5 = vols5.filter(function(v){ return v && v > 0; });
+        if(vols5.length > 0){
+          result.avgVolume = vols5.reduce(function(a,b){return a+b;},0) / vols5.length;
+          if(result.volume && result.avgVolume > 0){
+            result.rvol = parseFloat((result.volume / result.avgVolume).toFixed(1));
+          }
+        }
+      }catch(e){}
+    }
+
+    // ── 5. Finviz → Float 파싱 ──
+    if(!result.float_m){
+      try{
+        var fvR = await fetch(
+          'https://recon.miinonnnn.workers.dev?url=' + encodeURIComponent('https://finviz.com/quote.ashx?t=' + ticker),
+          {signal: AbortSignal.timeout(8000)}
+        );
+        var fvHtml = await fvR.text();
+        var floatMatch = fvHtml.match(/Shs Float<\/td><td[^>]*>([^<]+)</);
+        if(!floatMatch) floatMatch = fvHtml.match(/Float[^<]*<\/td>[^<]*<td[^>]*>([0-9.]+[MBK]?)/i);
+        if(floatMatch){
+          var fStr = floatMatch[1].trim().replace(/,/g,'');
+          var fNum = parseFloat(fStr);
+          if(fStr.toUpperCase().includes('B')) fNum = fNum * 1000;
+          else if(fStr.toUpperCase().includes('K')) fNum = fNum / 1000;
+          if(fNum > 0) result.float_m = parseFloat(fNum.toFixed(2));
+        }
+      }catch(e){}
+    }
+
   }catch(e){
     console.warn('[Yahoo] ' + ticker + ':', e.message);
   }
@@ -1240,12 +1277,19 @@ document.getElementById('tickerInput').addEventListener('keydown',e=>{ if(e.key=
 document.getElementById('tickerInput').addEventListener('input',function(){ this.value=this.value.toUpperCase(); });
 
 // 초기화
+// 어제 카드 자동 삭제
+var today = new Date().toLocaleDateString('ko-KR');
+G.cards = G.cards.filter(function(c){ return !c._date || c._date === today; });
+localStorage.setItem('apexCards', JSON.stringify(G.cards));
+
 renderCards();
 renderAlerts();
 renderPnl();
 updateBadge();
 updateClock();
 setInterval(updateClock,1000);
+
+
 </script>
 </body>
 </html>
