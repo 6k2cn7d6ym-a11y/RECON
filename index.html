@@ -675,8 +675,9 @@ async function fetchYahooData(ticker){
           {signal: AbortSignal.timeout(8000)}
         );
         var fvHtml = await fvR.text();
-        var floatMatch = fvHtml.match(/Shs Float<\/td><td[^>]*>([^<]+)</);
-        if(!floatMatch) floatMatch = fvHtml.match(/Float[^<]*<\/td>[^<]*<td[^>]*>([0-9.]+[MBK]?)/i);
+        // Finviz HTML: Float</td><td ...><b>15.55M</b></td>
+        var floatMatch = fvHtml.match(/Float<\/td><td[^>]*><b>([^<]+)<\/b>/);
+        if(!floatMatch) floatMatch = fvHtml.match(/Float<\/td><td[^>]*>([0-9.]+[MBK])/i);
         if(floatMatch){
           var fStr = floatMatch[1].trim().replace(/,/g,'');
           var fNum = parseFloat(fStr);
