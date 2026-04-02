@@ -1360,6 +1360,13 @@ function showToast(msg){
   setTimeout(()=>t.remove(),2500);
 }
 
+// ── Service Worker 등록 (자동 업데이트) ──
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/RECON/sw.js').catch(function(){
+    // sw.js 없을 경우 무시
+  });
+}
+
 // 브라우저 알림 권한
 if(typeof Notification !== 'undefined' && Notification.permission==='default'){
   Notification.requestPermission();
