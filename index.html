@@ -505,216 +505,153 @@ async function runScan(){
 // ═══ Yahoo Finance 데이터 수집 ═══
 
 async function fetchYahooData(ticker){
-  // 프록시 여러 개 순서대로 시도
-  // Cloudflare Worker 프록시 (안정적)
   var WORKER_URL = 'https://recon.miinonnnn.workers.dev';
+
+  // 프리마켓 여부 — 함수 시작 시 한번만 판단
+  var etNow    = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+  var etHM     = etNow.getHours()*100 + etNow.getMinutes();
+  var IS_PRE   = etHM >= 400 && etHM < 930;
+  var IS_OPEN  = etHM >= 930 && etHM < 1600;
 
   async function fetchWithProxy(url){
     try{
       var r = await fetch(WORKER_URL + '?url=' + encodeURIComponent(url), {
         signal: AbortSignal.timeout(8000)
       });
-      if(r.ok){
-        var text = await r.text();
-        return JSON.parse(text);
-      }
-      throw new Error('Worker 응답 오류: ' + r.status);
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      return JSON.parse(await r.text());
     }catch(e){
       throw new Error('Worker 실패: ' + e.message);
     }
   }
+
   var result = {
-    price: null, prevClose: null, preMarketPrice: null,
-    gap_pct: null, volume: null, avgVolume: null,
-    float_m: null, short_pct: null, rvol: null,
-    bid: null, ask: null, spread_pct: null,
-    exchange: null, fiftyTwoWeekHigh: null,
-    news: [], newsText: '',
-    // 차트 기반 진입각
-    entry_calc: null, stop_calc: null, target_calc: null, rr_calc: null,
-    pm_high: null, pm_low: null, orb_high: null, orb_low: null,
+    price:null, prevClose:null, preMarketPrice:null,
+    gap_pct:null, volume:null, avgVolume:null,
+    float_m:null, short_pct:null, rvol:null,
+    bid:null, ask:null, spread_pct:null,
+    exchange:null, fiftyTwoWeekHigh:null,
+    news:[], newsText:'',
+    entry_calc:null, stop_calc:null, target_calc:null, rr_calc:null,
+    pm_high:null, pm_low:null, orb_high:null, orb_low:null,
   };
 
-  try {
-    // ── 1. 종목 기본 데이터 (v6 quote — 더 안정적) ──
-    var quoteUrl = 'https://query1.finance.yahoo.com/v6/finance/quote?symbols=' + ticker +
+  try{
+    // ── 1. v6 Quote (Float, Short Interest 등) ──
+    var d1 = await fetchWithProxy(
+      'https://query1.finance.yahoo.com/v6/finance/quote?symbols=' + ticker +
       '&fields=regularMarketPrice,regularMarketPreviousClose,preMarketPrice,' +
       'preMarketChangePercent,regularMarketVolume,averageVolume,averageDailyVolume10Day,' +
-      'floatShares,sharesShort,shortPercentOfFloat,bid,ask,exchange,exchangeName,' +
-      'fiftyTwoWeekHigh,marketCap';
-    var d1 = await fetchWithProxy(quoteUrl);
-    var qt = d1?.quoteResponse?.result?.[0] || d1?.optionChain?.result?.[0] || null;
-
-    // v6 실패 시 v8/chart 시도
-    if(!qt || !qt.regularMarketPrice){
-      var chartUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + ticker +
-        '?interval=1m&range=1d&includePrePost=true';
-      var dc = await fetchWithProxy(chartUrl);
-      var meta = dc?.chart?.result?.[0]?.meta || {};
-      if(meta.regularMarketPrice){
-        qt = {
-          regularMarketPrice:        meta.regularMarketPrice,
-          regularMarketPreviousClose:meta.chartPreviousClose || meta.previousClose,
-          preMarketPrice:            meta.currentTradingPeriod?.pre ? null : null,
-          regularMarketVolume:       meta.regularMarketVolume,
-          exchange:                  meta.exchangeName,
-          symbol:                    meta.symbol,
-        };
+      'floatShares,shortPercentOfFloat,bid,ask,exchangeName,fiftyTwoWeekHigh'
+    );
+    var qt = d1?.quoteResponse?.result?.[0] || null;
+    if(qt){
+      result.prevClose = qt.regularMarketPreviousClose || null;
+      result.float_m   = qt.floatShares ? qt.floatShares/1_000_000 : null;
+      result.short_pct = qt.shortPercentOfFloat ? qt.shortPercentOfFloat*100 : null;
+      result.avgVolume = qt.averageVolume || qt.averageDailyVolume10Day || null;
+      result.exchange  = qt.exchangeName || null;
+      result.bid       = qt.bid || null;
+      result.ask       = qt.ask || null;
+      result.fiftyTwoWeekHigh = qt.fiftyTwoWeekHigh || null;
+      // 스프레드
+      if(result.bid && result.ask && result.ask > 0){
+        result.spread_pct = (result.ask - result.bid) / ((result.bid+result.ask)/2) * 100;
       }
     }
 
-    if(qt){
-      result.prevClose      = qt.regularMarketPreviousClose || qt.chartPreviousClose || null;
-      result.preMarketPrice = qt.preMarketPrice || null;
-      // 프리마켓 시간이면 preMarketPrice를 메인 가격으로
-      var etNow = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
-      var etHM  = etNow.getHours()*100 + etNow.getMinutes();
-      var isPreMkt = etHM >= 400 && etHM < 930;
-      result.price = (isPreMkt && qt.preMarketPrice)
-        ? qt.preMarketPrice
-        : qt.regularMarketPrice || null;
-      result.volume    = qt.regularMarketVolume || null;
-      result.avgVolume = qt.averageVolume || qt.averageDailyVolume10Day || null;
-      result.float_m   = qt.floatShares ? qt.floatShares / 1_000_000 : null;
-      result.short_pct = qt.shortPercentOfFloat ? qt.shortPercentOfFloat * 100 : null;
-      result.exchange  = qt.exchangeName || qt.exchange || null;
-      result.bid       = qt.bid || null;
-      result.ask       = qt.ask || null;
+    // ── 2. v8 Chart (실제 가격 + 1분봉) ──
+    var dc = await fetchWithProxy(
+      'https://query1.finance.yahoo.com/v8/finance/chart/' + ticker +
+      '?interval=1m&range=1d&includePrePost=true'
+    );
+    var chartRes = dc?.chart?.result?.[0];
+    if(chartRes){
+      var meta   = chartRes.meta || {};
+      var ts     = chartRes.timestamp || [];
+      var q      = chartRes.indicators?.quote?.[0] || {};
+      var highs  = q.high   || [];
+      var lows   = q.low    || [];
+      var closes = q.close  || [];
+      var vols   = q.volume || [];
 
-      // 갭업 % 계산
-      if(result.preMarketPrice && result.prevClose && result.prevClose > 0){
-        result.gap_pct = ((result.preMarketPrice - result.prevClose) / result.prevClose * 100);
-      } else if(qt.preMarketChangePercent){
-        result.gap_pct = qt.preMarketChangePercent * 100;
-      } else if(result.price && result.prevClose && result.prevClose > 0){
-        result.gap_pct = ((result.price - result.prevClose) / result.prevClose * 100);
+      // 전일 종가
+      if(!result.prevClose) result.prevClose = meta.chartPreviousClose || meta.previousClose || null;
+
+      // 거래량
+      result.volume = meta.regularMarketVolume || null;
+      if(!result.avgVolume) result.avgVolume = null;
+
+      // 현재 프리마켓 가격 = 가장 최근 유효 캔들 종가
+      var latestClose = null;
+      for(var i = closes.length-1; i >= 0; i--){
+        if(closes[i] && closes[i] > 0){ latestClose = closes[i]; break; }
       }
 
-      // RVol 계산
+      if(IS_PRE){
+        // 프리마켓: 차트 최신 캔들이 실제 프리마켓 가격
+        result.price = latestClose || meta.regularMarketPrice || null;
+        result.preMarketPrice = result.price;
+      } else if(IS_OPEN){
+        result.price = meta.regularMarketPrice || latestClose || null;
+      } else {
+        result.price = meta.regularMarketPrice || latestClose || null;
+      }
+
+      // 갭업 계산
+      if(result.price && result.prevClose && result.prevClose > 0){
+        result.gap_pct = (result.price - result.prevClose) / result.prevClose * 100;
+      }
+
+      // RVol
       if(result.volume && result.avgVolume && result.avgVolume > 0){
         result.rvol = result.volume / result.avgVolume;
       }
 
-      // 스프레드 계산
-      if(result.bid && result.ask && result.ask > 0){
-        var mid = (result.bid + result.ask) / 2;
-        result.spread_pct = (result.ask - result.bid) / mid * 100;
-      }
-    }
-
-    // ── 2. 뉴스 ──
-    var newsUrl = 'https://query2.finance.yahoo.com/v1/finance/search?q=' + ticker +
-      '&newsCount=5&enableFuzzyQuery=false';
-    var d2 = await fetchWithProxy(newsUrl);
-    var newsArr = d2?.news || [];
-    result.news = newsArr.slice(0,5).map(n => n.title || '');
-    result.newsText = result.news.join(' | ');
-
-    // ── 3. 1분봉 데이터 + 진입각 계산 ──
-    var chartUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + ticker +
-      '?interval=1m&range=1d&includePrePost=true';
-    var dc = await fetchWithProxy(chartUrl);
-    var chartResult = dc?.chart?.result?.[0];
-
-    if(chartResult){
-      var timestamps = chartResult.timestamp || [];
-      var quotes     = chartResult.indicators?.quote?.[0] || {};
-      var highs      = quotes.high  || [];
-      var lows       = quotes.low   || [];
-      var closes     = quotes.close || [];
-      var volumes    = quotes.volume|| [];
-      var meta       = chartResult.meta || {};
-
-      // 차트에서 현재 프리마켓 가격 추출 (가장 최근 유효 캔들)
-      var lastValidClose = null;
-      for(var ci = closes.length-1; ci >= 0; ci--){
-        if(closes[ci] && closes[ci] > 0){ lastValidClose = closes[ci]; break; }
-      }
-      if(lastValidClose && isPreMarket){
-        result.preMarketPrice = lastValidClose;
-        result.price          = lastValidClose;
-      }
-      // 전일 종가도 차트 meta에서 보완
-      if(!result.prevClose && meta.chartPreviousClose){
-        result.prevClose = meta.chartPreviousClose;
-      }
-      // 갭업 재계산
-      if(result.price && result.prevClose && result.prevClose > 0){
-        result.gap_pct = ((result.price - result.prevClose) / result.prevClose * 100);
-      }
-
-      // 프리마켓 구간 (ET 기준 04:00~09:30 = UTC 08:00~13:30)
-      var pmHighs = [], pmLows = [], pmVols = [];
-      var mktHighs= [], mktLows = [], mktVols= [];
-
-      timestamps.forEach(function(ts, i){
-        var d   = new Date(ts * 1000);
-        var utcH = d.getUTCHours();
-        var utcM = d.getUTCMinutes();
-        var utcHM = utcH * 100 + utcM;
-        var h = highs[i], l = lows[i], v = volumes[i];
-        if(!h || !l) return;
-
-        // 프리마켓: UTC 08:00~13:30 (ET 04:00~09:30)
-        if(utcHM >= 800 && utcHM < 1330){
-          pmHighs.push(h); pmLows.push(l);
-          if(v) pmVols.push(v);
-        }
-        // 개장 후 첫 5분: UTC 13:30~13:35
-        if(utcHM >= 1330 && utcHM <= 1335){
-          mktHighs.push(h); mktLows.push(l);
-          if(v) mktVols.push(v);
-        }
+      // 캔들 분류 (ET 기준)
+      var pmH=[], pmL=[], orbH=[], orbL=[];
+      ts.forEach(function(stamp, idx){
+        var etD  = new Date(new Date(stamp*1000).toLocaleString('en-US',{timeZone:'America/New_York'}));
+        var hm   = etD.getHours()*100 + etD.getMinutes();
+        var h = highs[idx], l = lows[idx];
+        if(!h||!l) return;
+        if(hm >= 400  && hm < 930)  { pmH.push(h); pmL.push(l); }
+        if(hm >= 930  && hm <= 935) { orbH.push(h); orbL.push(l); }
       });
 
-      // PM 고점/저점
-      if(pmHighs.length > 0){
-        result.pm_high = Math.max.apply(null, pmHighs);
-        result.pm_low  = Math.min.apply(null, pmLows);
-      }
-
-      // ORB (개장 첫 5분봉)
-      if(mktHighs.length > 0){
-        result.orb_high = Math.max.apply(null, mktHighs);
-        result.orb_low  = Math.min.apply(null, mktLows);
-      }
+      if(pmH.length){ result.pm_high = Math.max.apply(null,pmH); result.pm_low = Math.min.apply(null,pmL); }
+      if(orbH.length){ result.orb_high = Math.max.apply(null,orbH); result.orb_low = Math.min.apply(null,orbL); }
 
       // 진입각 계산
-      var currentPrice = result.price || (closes[closes.length-1]);
-      var isPreMarket  = (function(){
-        var now = new Date();
-        var etH = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'})).getHours();
-        var etM = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'})).getMinutes();
-        return (etH * 100 + etM) < 930;
-      })();
-
-      if(isPreMarket && result.pm_high && result.pm_low){
-        // 프리마켓: PM 고점 돌파 시 진입
+      var ep = result.price;
+      if(IS_PRE && result.pm_high && result.pm_low){
         result.entry_calc  = parseFloat((result.pm_high + 0.02).toFixed(2));
         result.stop_calc   = parseFloat((result.pm_low  * 0.98).toFixed(2));
-        var risk           = result.entry_calc - result.stop_calc;
-        // 1차목표: 52주 고점 or 진입가 + risk*2
-        result.target_calc = result.fiftyTwoWeekHigh && result.fiftyTwoWeekHigh > result.entry_calc
+        var r1 = result.entry_calc - result.stop_calc;
+        result.target_calc = (result.fiftyTwoWeekHigh && result.fiftyTwoWeekHigh > result.entry_calc)
           ? parseFloat(result.fiftyTwoWeekHigh.toFixed(2))
-          : parseFloat((result.entry_calc + risk * 2).toFixed(2));
-        result.rr_calc     = risk > 0
-          ? parseFloat(((result.target_calc - result.entry_calc) / risk).toFixed(1))
-          : null;
-
-      } else if(!isPreMarket && result.orb_high && result.orb_low){
-        // 개장 후: ORB 돌파 진입
+          : parseFloat((result.entry_calc + r1*2).toFixed(2));
+        result.rr_calc = r1 > 0 ? parseFloat(((result.target_calc-result.entry_calc)/r1).toFixed(1)) : null;
+      } else if(IS_OPEN && result.orb_high && result.orb_low){
         result.entry_calc  = parseFloat((result.orb_high + 0.02).toFixed(2));
         result.stop_calc   = parseFloat((result.orb_low  * 0.97).toFixed(2));
-        var risk2          = result.entry_calc - result.stop_calc;
-        result.target_calc = parseFloat((result.entry_calc + risk2 * 2).toFixed(2));
-        result.rr_calc     = risk2 > 0
-          ? parseFloat(((result.target_calc - result.entry_calc) / risk2).toFixed(1))
-          : null;
+        var r2 = result.entry_calc - result.stop_calc;
+        result.target_calc = parseFloat((result.entry_calc + r2*2).toFixed(2));
+        result.rr_calc = r2 > 0 ? parseFloat(((result.target_calc-result.entry_calc)/r2).toFixed(1)) : null;
       }
     }
 
-  } catch(e){
-    console.warn('Yahoo fetch 실패:', e.message);
+    // ── 3. 뉴스 ──
+    var d2 = await fetchWithProxy(
+      'https://query2.finance.yahoo.com/v1/finance/search?q=' + ticker +
+      '&newsCount=5&enableFuzzyQuery=false'
+    );
+    var newsArr = d2?.news || [];
+    result.news = newsArr.slice(0,5).map(function(n){ return n.title||''; });
+    result.newsText = result.news.join(' | ');
+
+  }catch(e){
+    console.warn('[Yahoo] ' + ticker + ':', e.message);
   }
   return result;
 }
