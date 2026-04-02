@@ -625,6 +625,24 @@ async function fetchYahooData(ticker){
       var volumes    = quotes.volume|| [];
       var meta       = chartResult.meta || {};
 
+      // 차트에서 현재 프리마켓 가격 추출 (가장 최근 유효 캔들)
+      var lastValidClose = null;
+      for(var ci = closes.length-1; ci >= 0; ci--){
+        if(closes[ci] && closes[ci] > 0){ lastValidClose = closes[ci]; break; }
+      }
+      if(lastValidClose && isPreMarket){
+        result.preMarketPrice = lastValidClose;
+        result.price          = lastValidClose;
+      }
+      // 전일 종가도 차트 meta에서 보완
+      if(!result.prevClose && meta.chartPreviousClose){
+        result.prevClose = meta.chartPreviousClose;
+      }
+      // 갭업 재계산
+      if(result.price && result.prevClose && result.prevClose > 0){
+        result.gap_pct = ((result.price - result.prevClose) / result.prevClose * 100);
+      }
+
       // 프리마켓 구간 (ET 기준 04:00~09:30 = UTC 08:00~13:30)
       var pmHighs = [], pmLows = [], pmVols = [];
       var mktHighs= [], mktLows = [], mktVols= [];
