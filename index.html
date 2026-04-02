@@ -313,7 +313,8 @@ var G = {
   mockPnl: parseFloat(localStorage.getItem('apexPnl')||'0'),
   unread:  0,
   sortMode: 'score',
-  history: {},  // ticker별 시간 흐름 데이터
+  history: {},
+  apiUsage: JSON.parse(localStorage.getItem('apexUsage')||'{"calls":0,"input":0,"output":0,"cost":0}'),
 };
 
 // 초기값 로드
@@ -469,6 +470,17 @@ async function runScan(){
     var text  = data.content[0].text.trim().replace(/```json|```/g,'').trim();
     var result = JSON.parse(text);
 
+    // API 사용량 누적
+    if(data.usage){
+      G.apiUsage.calls  += 1;
+      G.apiUsage.input  += data.usage.input_tokens  || 0;
+      G.apiUsage.output += data.usage.output_tokens || 0;
+      // 가격: Sonnet input $3/1M, output $15/1M
+      G.apiUsage.cost = parseFloat(((G.apiUsage.input/1_000_000)*3 + (G.apiUsage.output/1_000_000)*15).toFixed(4));
+      localStorage.setItem('apexUsage', JSON.stringify(G.apiUsage));
+      renderUsage();
+    }
+
     // 야후 실제 데이터로 덮어쓰기 (Claude 추정값 무시)
     result.ticker    = ticker;
     result.price     = ydata.price     || result.price;
@@ -487,6 +499,18 @@ async function runScan(){
     if(ydata.stop_calc)  result.stop    = ydata.stop_calc;
     if(ydata.target_calc)result.target1 = ydata.target_calc;
     if(ydata.rr_calc)    result.rr      = ydata.rr_calc;
+    result.pullback_entry  = ydata.pullback_entry  || null;
+    result.pullback_stop   = ydata.pullback_stop   || null;
+    result.pullback_target = ydata.pullback_target || null;
+    result.pullback_rr     = ydata.pullback_rr     || null;
+    result.pullback_entry  = ydata.pullback_entry  || null;
+    result.pullback_stop   = ydata.pullback_stop   || null;
+    result.pullback_target = ydata.pullback_target || null;
+    result.pullback_rr     = ydata.pullback_rr     || null;
+    result.pullback_entry  = ydata.pullback_entry  || null;
+    result.pullback_stop   = ydata.pullback_stop   || null;
+    result.pullback_target = ydata.pullback_target || null;
+    result.pullback_rr     = ydata.pullback_rr     || null;
 
     applyHistory(result);
     result.action = hardFilter(result);
@@ -533,6 +557,8 @@ async function fetchYahooData(ticker){
     exchange:null, fiftyTwoWeekHigh:null,
     news:[], newsText:'',
     entry_calc:null, stop_calc:null, target_calc:null, rr_calc:null,
+    pullback_entry:null, pullback_stop:null, pullback_target:null, pullback_rr:null,
+    pullback_entry:null, pullback_stop:null, pullback_target:null, pullback_rr:null,
     pm_high:null, pm_low:null, orb_high:null, orb_low:null,
   };
 
@@ -625,6 +651,7 @@ async function fetchYahooData(ticker){
       // 진입각 계산
       var ep = result.price;
       if(IS_PRE && result.pm_high && result.pm_low){
+        // ① 돌파 진입 (안전) - PM 고점 돌파 시
         result.entry_calc  = parseFloat((result.pm_high + 0.02).toFixed(2));
         result.stop_calc   = parseFloat((result.pm_low  * 0.98).toFixed(2));
         var r1 = result.entry_calc - result.stop_calc;
@@ -632,6 +659,16 @@ async function fetchYahooData(ticker){
           ? parseFloat(result.fiftyTwoWeekHigh.toFixed(2))
           : parseFloat((result.entry_calc + r1*2).toFixed(2));
         result.rr_calc = r1 > 0 ? parseFloat(((result.target_calc-result.entry_calc)/r1).toFixed(1)) : null;
+
+        // ② 눌림목 진입 (공격적) - 현재가 기준
+        if(ep && ep < result.pm_high * 0.92){
+          result.pullback_entry  = parseFloat((ep * 1.005).toFixed(2));
+          result.pullback_stop   = parseFloat((result.pm_low * 0.98).toFixed(2));
+          var rp = result.pullback_entry - result.pullback_stop;
+          result.pullback_target = parseFloat((result.pullback_entry + rp*2).toFixed(2));
+          result.pullback_rr     = rp > 0 ? parseFloat(((result.pullback_target-result.pullback_entry)/rp).toFixed(1)) : null;
+        }
+
       } else if(IS_OPEN && result.orb_high && result.orb_low){
         result.entry_calc  = parseFloat((result.orb_high + 0.02).toFixed(2));
         result.stop_calc   = parseFloat((result.orb_low  * 0.97).toFixed(2));
@@ -667,15 +704,14 @@ async function fetchYahooData(ticker){
       }catch(e){}
     }
 
-    // ── 5. Finviz → Float 파싱 ──
+    // ── 5. Finviz → Float 파싱 (HTML 직접 파싱) ──
     if(!result.float_m){
       try{
         var fvR = await fetch(
           'https://recon.miinonnnn.workers.dev?url=' + encodeURIComponent('https://finviz.com/quote.ashx?t=' + ticker),
           {signal: AbortSignal.timeout(8000)}
         );
-        var fvHtml = await fvR.text();
-        // Finviz HTML: Float</td><td ...><b>15.55M</b></td>
+        var fvHtml = await fvR.text();  // JSON 파싱 안 함, text 그대로
         var floatMatch = fvHtml.match(/Float<\/td><td[^>]*><b>([^<]+)<\/b>/);
         if(!floatMatch) floatMatch = fvHtml.match(/Float<\/td><td[^>]*>([0-9.]+[MBK])/i);
         if(floatMatch){
@@ -683,9 +719,17 @@ async function fetchYahooData(ticker){
           var fNum = parseFloat(fStr);
           if(fStr.toUpperCase().includes('B')) fNum = fNum * 1000;
           else if(fStr.toUpperCase().includes('K')) fNum = fNum / 1000;
-          if(fNum > 0) result.float_m = parseFloat(fNum.toFixed(2));
+          if(fNum > 0){
+            result.float_m = parseFloat(fNum.toFixed(2));
+          }
         }
-      }catch(e){}
+        // RVol도 Finviz에서 가져오기
+        var rvolMatch = fvHtml.match(/Rel Volume<\/td><td[^>]*><b>([^<]+)<\/b>/);
+        if(rvolMatch && !result.rvol){
+          var rvolNum = parseFloat(rvolMatch[1]);
+          if(rvolNum > 0) result.rvol = rvolNum;
+        }
+      }catch(e){ console.warn('Finviz 실패:', e.message); }
     }
 
   }catch(e){
@@ -844,6 +888,11 @@ async function runScanSingle(ticker){
     var data=await res.json();
     if(data.error) throw new Error(data.error.message);
     var result=JSON.parse(data.content[0].text.trim().replace(/```json|```/g,'').trim());
+    if(data.usage){
+      G.apiUsage.calls+=1; G.apiUsage.input+=data.usage.input_tokens||0; G.apiUsage.output+=data.usage.output_tokens||0;
+      G.apiUsage.cost=parseFloat(((G.apiUsage.input/1_000_000)*3+(G.apiUsage.output/1_000_000)*15).toFixed(4));
+      localStorage.setItem('apexUsage',JSON.stringify(G.apiUsage)); renderUsage();
+    }
     result.ticker=ticker;
     result.price=ydata.price||result.price;
     result.gap_pct=ydata.gap_pct!==null?ydata.gap_pct:result.gap_pct;
@@ -856,6 +905,18 @@ async function runScanSingle(ticker){
     if(ydata.stop_calc)  result.stop    = ydata.stop_calc;
     if(ydata.target_calc)result.target1 = ydata.target_calc;
     if(ydata.rr_calc)    result.rr      = ydata.rr_calc;
+    result.pullback_entry  = ydata.pullback_entry  || null;
+    result.pullback_stop   = ydata.pullback_stop   || null;
+    result.pullback_target = ydata.pullback_target || null;
+    result.pullback_rr     = ydata.pullback_rr     || null;
+    result.pullback_entry  = ydata.pullback_entry  || null;
+    result.pullback_stop   = ydata.pullback_stop   || null;
+    result.pullback_target = ydata.pullback_target || null;
+    result.pullback_rr     = ydata.pullback_rr     || null;
+    result.pullback_entry  = ydata.pullback_entry  || null;
+    result.pullback_stop   = ydata.pullback_stop   || null;
+    result.pullback_target = ydata.pullback_target || null;
+    result.pullback_rr     = ydata.pullback_rr     || null;
     applyHistory(result);
     result.action=hardFilter(result);
     handleResult(result);
@@ -865,6 +926,15 @@ async function runScanSingle(ticker){
   document.getElementById('scanBtn').disabled=false;
 }
 
+
+
+// ═══ API 사용량 표시 ═══
+function renderUsage(){
+  var el = document.getElementById('usageBar');
+  if(!el) return;
+  var u = G.apiUsage;
+  el.innerHTML = '오늘 ' + u.calls + '회 · ' + (u.input+u.output).toLocaleString() + ' 토큰 · $' + u.cost;
+}
 
 // ═══ 하드 필터 레이어 (AI 결과를 강제로 걸러냄) ═══
 
@@ -1104,11 +1174,20 @@ function cardHTML(r){
     ${tags?`<div class="card-tags">${tags}</div>`:''}
     ${r.news?`<div class="news-line">${r.news}</div>`:''}
     ${(r.entry||r.stop||r.target1||r.rr)?`
+    <div style="font-size:9px;color:var(--t2);letter-spacing:.08em;margin-bottom:4px;margin-top:10px">▲ 돌파 진입 (안전)</div>
     <div class="levels">
       <div class="lv lv-entry"><div class="lv-label">진입</div><div class="lv-val">${r.entry?'$'+r.entry:'--'}</div></div>
       <div class="lv lv-stop"><div class="lv-label">손절</div><div class="lv-val">${r.stop?'$'+r.stop:'--'}</div></div>
       <div class="lv lv-t1"><div class="lv-label">1차목표</div><div class="lv-val">${r.target1?'$'+r.target1:'--'}</div></div>
       <div class="lv lv-rr"><div class="lv-label">손익비</div><div class="lv-val">${r.rr?r.rr+'R':'--'}</div></div>
+    </div>`:''}
+  ${r.pullback_entry?`
+    <div style="font-size:9px;color:var(--a);letter-spacing:.08em;margin-bottom:4px;margin-top:8px">↘ 눌림목 진입 (공격적)</div>
+    <div class="levels">
+      <div class="lv lv-entry"><div class="lv-label">진입</div><div class="lv-val" style="color:var(--a)">$${r.pullback_entry}</div></div>
+      <div class="lv lv-stop"><div class="lv-label">손절</div><div class="lv-val">${r.pullback_stop?'$'+r.pullback_stop:'--'}</div></div>
+      <div class="lv lv-t1"><div class="lv-label">1차목표</div><div class="lv-val">${r.pullback_target?'$'+r.pullback_target:'--'}</div></div>
+      <div class="lv lv-rr"><div class="lv-label">손익비</div><div class="lv-val">${r.pullback_rr?r.pullback_rr+'R':'--'}</div></div>
     </div>`:''}
     <div style="font-size:11px;color:var(--t2);margin-top:10px">${r.summary||''}</div>
   ${(r.pm_high||r.orb_high)?'<div style="display:flex;gap:8px;margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--t3)">'+
@@ -1253,6 +1332,12 @@ function cycle(id,vals){
   var i=vals.indexOf(el.textContent);
   el.textContent=vals[(i+1)%vals.length];
 }
+function resetUsage(){
+  G.apiUsage = {calls:0,input:0,output:0,cost:0};
+  localStorage.setItem('apexUsage', JSON.stringify(G.apiUsage));
+  renderUsage();
+}
+
 function clearAll(){
   if(confirm('모든 데이터를 삭제할까요?')){
     ['apexCards','apexAlerts','apexPnl'].forEach(k=>localStorage.removeItem(k));
@@ -1286,6 +1371,7 @@ localStorage.setItem('apexCards', JSON.stringify(G.cards));
 renderCards();
 renderAlerts();
 renderPnl();
+renderUsage();
 updateBadge();
 updateClock();
 setInterval(updateClock,1000);
