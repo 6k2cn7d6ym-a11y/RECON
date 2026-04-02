@@ -235,7 +235,6 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     </div>
   </div>
   <div id="analyzeArea"></div>
-  <div id="pnlBar"></div>
 
   <div class="cards-area">
     <div class="phase-label" id="phaseSection">오늘의 스캔 결과</div>
@@ -297,6 +296,11 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 
   <div class="sg-title">앱</div>
   <div class="sg-row"><div class="sg-label">RECON Scanner</div><div style="font-family:var(--mono);font-size:11px;color:var(--t2)">v1.0 · 테스트 모드</div></div>
+  <div class="sg-row" style="flex-direction:column;align-items:flex-start;gap:6px">
+    <div class="sg-label">Claude API 사용량</div>
+    <div id="usageBar" style="font-family:var(--mono);font-size:12px;color:var(--bl)">-</div>
+    <button onclick="resetUsage()" style="font-size:11px;color:var(--t3);background:none;border:none;cursor:pointer;font-family:var(--mono);padding:0">↺ 초기화</button>
+  </div>
   <div class="sg-row" style="cursor:pointer" onclick="clearAll()"><div class="sg-label" style="color:var(--r)">모든 데이터 삭제</div></div>
 </div>
 </div>
@@ -310,11 +314,12 @@ var G = {
   ntfy:    localStorage.getItem('ntfyCh') || '',
   alerts:  JSON.parse(localStorage.getItem('apexAlerts')||'[]'),
   cards:   JSON.parse(localStorage.getItem('apexCards')||'[]'),
-  mockPnl: parseFloat(localStorage.getItem('apexPnl')||'0'),
   unread:  0,
   sortMode: 'score',
   history: {},
-  apiUsage: JSON.parse(localStorage.getItem('apexUsage')||'{"calls":0,"input":0,"output":0,"cost":0}'),
+  apiUsage:  JSON.parse(localStorage.getItem('apexUsage') ||'{"calls":0,"input":0,"output":0,"cost":0}'),
+  apiTotal:  JSON.parse(localStorage.getItem('apexTotal') ||'{"calls":0,"input":0,"output":0,"cost":0}'),
+  usageDate: localStorage.getItem('apexUsageDate') || '',
 };
 
 // 초기값 로드
@@ -470,14 +475,15 @@ async function runScan(){
     var text  = data.content[0].text.trim().replace(/```json|```/g,'').trim();
     var result = JSON.parse(text);
 
-    // API 사용량 누적
+    // API 사용량 수집
     if(data.usage){
-      G.apiUsage.calls  += 1;
-      G.apiUsage.input  += data.usage.input_tokens  || 0;
-      G.apiUsage.output += data.usage.output_tokens || 0;
-      // 가격: Sonnet input $3/1M, output $15/1M
-      G.apiUsage.cost = parseFloat(((G.apiUsage.input/1_000_000)*3 + (G.apiUsage.output/1_000_000)*15).toFixed(4));
+      var inp = data.usage.input_tokens||0, out = data.usage.output_tokens||0;
+      G.apiUsage.calls+=1; G.apiUsage.input+=inp; G.apiUsage.output+=out;
+      G.apiUsage.cost=parseFloat(((G.apiUsage.input/1_000_000)*3+(G.apiUsage.output/1_000_000)*15).toFixed(4));
+      G.apiTotal.calls+=1; G.apiTotal.input+=inp; G.apiTotal.output+=out;
+      G.apiTotal.cost=parseFloat(((G.apiTotal.input/1_000_000)*3+(G.apiTotal.output/1_000_000)*15).toFixed(4));
       localStorage.setItem('apexUsage', JSON.stringify(G.apiUsage));
+      localStorage.setItem('apexTotal', JSON.stringify(G.apiTotal));
       renderUsage();
     }
 
@@ -503,14 +509,8 @@ async function runScan(){
     result.pullback_stop   = ydata.pullback_stop   || null;
     result.pullback_target = ydata.pullback_target || null;
     result.pullback_rr     = ydata.pullback_rr     || null;
-    result.pullback_entry  = ydata.pullback_entry  || null;
-    result.pullback_stop   = ydata.pullback_stop   || null;
-    result.pullback_target = ydata.pullback_target || null;
-    result.pullback_rr     = ydata.pullback_rr     || null;
-    result.pullback_entry  = ydata.pullback_entry  || null;
-    result.pullback_stop   = ydata.pullback_stop   || null;
-    result.pullback_target = ydata.pullback_target || null;
-    result.pullback_rr     = ydata.pullback_rr     || null;
+
+
 
     applyHistory(result);
     result.action = hardFilter(result);
@@ -661,7 +661,7 @@ async function fetchYahooData(ticker){
         result.rr_calc = r1 > 0 ? parseFloat(((result.target_calc-result.entry_calc)/r1).toFixed(1)) : null;
 
         // ② 눌림목 진입 (공격적) - 현재가 기준
-        if(ep && ep < result.pm_high * 0.92){
+        if(ep && result.pm_high && result.pm_low){
           result.pullback_entry  = parseFloat((ep * 1.005).toFixed(2));
           result.pullback_stop   = parseFloat((result.pm_low * 0.98).toFixed(2));
           var rp = result.pullback_entry - result.pullback_stop;
@@ -889,9 +889,14 @@ async function runScanSingle(ticker){
     if(data.error) throw new Error(data.error.message);
     var result=JSON.parse(data.content[0].text.trim().replace(/```json|```/g,'').trim());
     if(data.usage){
-      G.apiUsage.calls+=1; G.apiUsage.input+=data.usage.input_tokens||0; G.apiUsage.output+=data.usage.output_tokens||0;
+      var inp2=data.usage.input_tokens||0, out2=data.usage.output_tokens||0;
+      G.apiUsage.calls+=1; G.apiUsage.input+=inp2; G.apiUsage.output+=out2;
       G.apiUsage.cost=parseFloat(((G.apiUsage.input/1_000_000)*3+(G.apiUsage.output/1_000_000)*15).toFixed(4));
-      localStorage.setItem('apexUsage',JSON.stringify(G.apiUsage)); renderUsage();
+      G.apiTotal.calls+=1; G.apiTotal.input+=inp2; G.apiTotal.output+=out2;
+      G.apiTotal.cost=parseFloat(((G.apiTotal.input/1_000_000)*3+(G.apiTotal.output/1_000_000)*15).toFixed(4));
+      localStorage.setItem('apexUsage',JSON.stringify(G.apiUsage));
+      localStorage.setItem('apexTotal',JSON.stringify(G.apiTotal));
+      renderUsage();
     }
     result.ticker=ticker;
     result.price=ydata.price||result.price;
@@ -905,18 +910,9 @@ async function runScanSingle(ticker){
     if(ydata.stop_calc)  result.stop    = ydata.stop_calc;
     if(ydata.target_calc)result.target1 = ydata.target_calc;
     if(ydata.rr_calc)    result.rr      = ydata.rr_calc;
-    result.pullback_entry  = ydata.pullback_entry  || null;
-    result.pullback_stop   = ydata.pullback_stop   || null;
-    result.pullback_target = ydata.pullback_target || null;
-    result.pullback_rr     = ydata.pullback_rr     || null;
-    result.pullback_entry  = ydata.pullback_entry  || null;
-    result.pullback_stop   = ydata.pullback_stop   || null;
-    result.pullback_target = ydata.pullback_target || null;
-    result.pullback_rr     = ydata.pullback_rr     || null;
-    result.pullback_entry  = ydata.pullback_entry  || null;
-    result.pullback_stop   = ydata.pullback_stop   || null;
-    result.pullback_target = ydata.pullback_target || null;
-    result.pullback_rr     = ydata.pullback_rr     || null;
+
+
+
     applyHistory(result);
     result.action=hardFilter(result);
     handleResult(result);
@@ -930,10 +926,32 @@ async function runScanSingle(ticker){
 
 // ═══ API 사용량 표시 ═══
 function renderUsage(){
+  // 날짜 바뀌면 오늘 사용량 리셋
+  var today = new Date().toLocaleDateString('ko-KR');
+  if(G.usageDate !== today){
+    G.usageDate = today;
+    G.apiUsage  = {calls:0,input:0,output:0,cost:0};
+    localStorage.setItem('apexUsageDate', today);
+    localStorage.setItem('apexUsage', JSON.stringify(G.apiUsage));
+  }
+
+  // 헤더 오늘 사용량
+  var hdr = document.getElementById('usageHdr');
+  if(hdr){
+    var u = G.apiUsage;
+    hdr.textContent = u.calls > 0
+      ? '오늘 ' + u.calls + '회 · $' + u.cost
+      : '';
+  }
+
+  // 설정탭 — 오늘 + 누적
   var el = document.getElementById('usageBar');
   if(!el) return;
   var u = G.apiUsage;
-  el.innerHTML = '오늘 ' + u.calls + '회 · ' + (u.input+u.output).toLocaleString() + ' 토큰 · $' + u.cost;
+  var t = G.apiTotal;
+  el.innerHTML =
+    '<div>오늘: ' + u.calls + '회 · ' + (u.input+u.output).toLocaleString() + ' 토큰 · $' + u.cost + '</div>' +
+    '<div style="color:var(--t2);margin-top:2px">누적: ' + t.calls + '회 · ' + (t.input+t.output).toLocaleString() + ' 토큰 · $' + t.cost + '</div>';
 }
 
 // ═══ 하드 필터 레이어 (AI 결과를 강제로 걸러냄) ═══
@@ -1069,8 +1087,6 @@ function handleResult(r){
     fireAlert(r,'WATCH');
   }
 
-  // 모의 PnL 업데이트
-  updatePnl(r);
 }
 
 
@@ -1264,27 +1280,6 @@ function clearAlerts(){
   updateBadge(); renderAlerts();
 }
 
-// ═══ 모의 PnL ═══
-function updatePnl(r){
-  if(r.action!=='ENTER'||!r.entry||!r.target1) return;
-  // 단순 시뮬: 목표1까지 도달했다고 가정 (33% 익절)
-  var sim = (r.target1 - r.entry) / r.entry * 0.33 * 100;
-  G.mockPnl += sim;
-  localStorage.setItem('apexPnl', G.mockPnl.toFixed(2));
-  renderPnl();
-}
-
-function renderPnl(){
-  var pnl = G.mockPnl;
-  if(Math.abs(pnl) < 0.01){ document.getElementById('pnlBar').innerHTML=''; return; }
-  var c = pnl>0?'pnl-pos':pnl<0?'pnl-neg':'pnl-zero';
-  var sign = pnl>0?'+':'';
-  document.getElementById('pnlBar').innerHTML = `
-    <div class="pnl-bar">
-      <div class="pnl-label">모의 누적 수익률</div>
-      <div class="pnl-val ${c}">${sign}${pnl.toFixed(1)}%</div>
-    </div>`;
-}
 
 // ═══ ntfy ═══
 async function testNtfy(){
@@ -1333,17 +1328,23 @@ function cycle(id,vals){
   el.textContent=vals[(i+1)%vals.length];
 }
 function resetUsage(){
-  G.apiUsage = {calls:0,input:0,output:0,cost:0};
-  localStorage.setItem('apexUsage', JSON.stringify(G.apiUsage));
+  if(confirm('오늘 사용량만 초기화할까요?\n(누적은 유지됩니다)')){
+    G.apiUsage = {calls:0,input:0,output:0,cost:0};
+    localStorage.setItem('apexUsage', JSON.stringify(G.apiUsage));
+  } else if(confirm('누적 사용량도 모두 초기화할까요?')){
+    G.apiUsage = {calls:0,input:0,output:0,cost:0};
+    G.apiTotal = {calls:0,input:0,output:0,cost:0};
+    localStorage.setItem('apexUsage', JSON.stringify(G.apiUsage));
+    localStorage.setItem('apexTotal', JSON.stringify(G.apiTotal));
+  }
   renderUsage();
 }
 
 function clearAll(){
   if(confirm('모든 데이터를 삭제할까요?')){
-    ['apexCards','apexAlerts','apexPnl'].forEach(k=>localStorage.removeItem(k));
-    G.cards=[]; G.alerts=[]; G.mockPnl=0; G.unread=0;
+    ['apexCards','apexAlerts'].forEach(k=>localStorage.removeItem(k));
+    G.cards=[]; G.alerts=[]; G.unread=0;
     renderCards(); renderAlerts(); updateBadge();
-    document.getElementById('pnlBar').innerHTML='';
   }
 }
 function showToast(msg){
@@ -1370,7 +1371,6 @@ localStorage.setItem('apexCards', JSON.stringify(G.cards));
 
 renderCards();
 renderAlerts();
-renderPnl();
 renderUsage();
 updateBadge();
 updateClock();
