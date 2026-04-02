@@ -441,7 +441,9 @@ async function runScan(){
       <div class="analyzing-spinner"></div>
       <div>
         <div class="analyzing-ticker">${ticker}</div>
-        <div class="analyzing-text">실제 데이터 확보 완료<br>뉴스 분석 + 신호 판단 중...</div>
+        <div class="analyzing-text">" +
+    (ydata.price ? '✓ 가격 데이터 확보' : '⚠ 가격 데이터 없음 (Claude 추정)') +
+    "<br>뉴스 분석 + 신호 판단 중...</div>
       </div>
     </div>`;
 
@@ -476,6 +478,15 @@ async function runScan(){
     result.rvol      = ydata.rvol      !== null ? ydata.rvol      : result.rvol;
     result.spread_pct= ydata.spread_pct;
     result.news      = ydata.newsText  || result.news || '';
+    result.pm_high   = ydata.pm_high;
+    result.pm_low    = ydata.pm_low;
+    result.orb_high  = ydata.orb_high;
+    result.orb_low   = ydata.orb_low;
+    // 차트 기반 진입각으로 덮어쓰기 (Claude 추정값 대체)
+    if(ydata.entry_calc) result.entry   = ydata.entry_calc;
+    if(ydata.stop_calc)  result.stop    = ydata.stop_calc;
+    if(ydata.target_calc)result.target1 = ydata.target_calc;
+    if(ydata.rr_calc)    result.rr      = ydata.rr_calc;
 
     applyHistory(result);
     result.action = hardFilter(result);
@@ -494,47 +505,81 @@ async function runScan(){
 // ═══ Yahoo Finance 데이터 수집 ═══
 
 async function fetchYahooData(ticker){
-  var PROXY = 'https://corsproxy.io/?url=';
+  // 프록시 여러 개 순서대로 시도
+  // Cloudflare Worker 프록시 (안정적)
+  var WORKER_URL = 'https://recon.miinonnnn.workers.dev';
+
+  async function fetchWithProxy(url){
+    try{
+      var r = await fetch(WORKER_URL + '?url=' + encodeURIComponent(url), {
+        signal: AbortSignal.timeout(8000)
+      });
+      if(r.ok){
+        var text = await r.text();
+        return JSON.parse(text);
+      }
+      throw new Error('Worker 응답 오류: ' + r.status);
+    }catch(e){
+      throw new Error('Worker 실패: ' + e.message);
+    }
+  }
   var result = {
     price: null, prevClose: null, preMarketPrice: null,
     gap_pct: null, volume: null, avgVolume: null,
     float_m: null, short_pct: null, rvol: null,
     bid: null, ask: null, spread_pct: null,
     exchange: null, fiftyTwoWeekHigh: null,
-    news: [], newsText: ''
+    news: [], newsText: '',
+    // 차트 기반 진입각
+    entry_calc: null, stop_calc: null, target_calc: null, rr_calc: null,
+    pm_high: null, pm_low: null, orb_high: null, orb_low: null,
   };
 
   try {
-    // ── 1. 종목 기본 데이터 ──
-    var summaryUrl = encodeURIComponent(
-      'https://query2.finance.yahoo.com/v10/finance/quoteSummary/' + ticker +
-      '?modules=price,defaultKeyStatistics,summaryDetail'
-    );
-    var r1 = await fetch(PROXY + summaryUrl, {headers:{'x-requested-with':'XMLHttpRequest'}});
-    var d1 = await r1.json();
-    var res = d1?.quoteSummary?.result?.[0];
+    // ── 1. 종목 기본 데이터 (v6 quote — 더 안정적) ──
+    var quoteUrl = 'https://query1.finance.yahoo.com/v6/finance/quote?symbols=' + ticker +
+      '&fields=regularMarketPrice,regularMarketPreviousClose,preMarketPrice,' +
+      'preMarketChangePercent,regularMarketVolume,averageVolume,averageDailyVolume10Day,' +
+      'floatShares,sharesShort,shortPercentOfFloat,bid,ask,exchange,exchangeName,' +
+      'fiftyTwoWeekHigh,marketCap';
+    var d1 = await fetchWithProxy(quoteUrl);
+    var qt = d1?.quoteResponse?.result?.[0] || d1?.optionChain?.result?.[0] || null;
 
-    if(res){
-      var pr  = res.price             || {};
-      var ks  = res.defaultKeyStatistics || {};
-      var sd  = res.summaryDetail     || {};
+    // v6 실패 시 v8/chart 시도
+    if(!qt || !qt.regularMarketPrice){
+      var chartUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + ticker +
+        '?interval=1m&range=1d&includePrePost=true';
+      var dc = await fetchWithProxy(chartUrl);
+      var meta = dc?.chart?.result?.[0]?.meta || {};
+      if(meta.regularMarketPrice){
+        qt = {
+          regularMarketPrice:        meta.regularMarketPrice,
+          regularMarketPreviousClose:meta.chartPreviousClose || meta.previousClose,
+          preMarketPrice:            meta.currentTradingPeriod?.pre ? null : null,
+          regularMarketVolume:       meta.regularMarketVolume,
+          exchange:                  meta.exchangeName,
+          symbol:                    meta.symbol,
+        };
+      }
+    }
 
-      result.price          = pr.regularMarketPrice?.raw || null;
-      result.prevClose      = pr.regularMarketPreviousClose?.raw || null;
-      result.preMarketPrice = pr.preMarketPrice?.raw || null;
-      result.volume         = pr.regularMarketVolume?.raw || null;
-      result.avgVolume      = sd.averageVolume?.raw || pr.averageVolume?.raw || null;
-      result.float_m        = ks.floatShares?.raw ? ks.floatShares.raw / 1_000_000 : null;
-      result.short_pct      = ks.sharesShortPercentOfFloat?.raw
-                              ? ks.sharesShortPercentOfFloat.raw * 100 : null;
-      result.fiftyTwoWeekHigh = sd.fiftyTwoWeekHigh?.raw || null;
-      result.exchange       = pr.exchangeName || pr.exchange || null;
-      result.bid            = pr.bid?.raw || null;
-      result.ask            = pr.ask?.raw || null;
+    if(qt){
+      result.price     = qt.regularMarketPrice || null;
+      result.prevClose = qt.regularMarketPreviousClose || qt.chartPreviousClose || null;
+      result.preMarketPrice = qt.preMarketPrice || null;
+      result.volume    = qt.regularMarketVolume || null;
+      result.avgVolume = qt.averageVolume || qt.averageDailyVolume10Day || null;
+      result.float_m   = qt.floatShares ? qt.floatShares / 1_000_000 : null;
+      result.short_pct = qt.shortPercentOfFloat ? qt.shortPercentOfFloat * 100 : null;
+      result.exchange  = qt.exchangeName || qt.exchange || null;
+      result.bid       = qt.bid || null;
+      result.ask       = qt.ask || null;
 
       // 갭업 % 계산
       if(result.preMarketPrice && result.prevClose && result.prevClose > 0){
         result.gap_pct = ((result.preMarketPrice - result.prevClose) / result.prevClose * 100);
+      } else if(qt.preMarketChangePercent){
+        result.gap_pct = qt.preMarketChangePercent * 100;
       } else if(result.price && result.prevClose && result.prevClose > 0){
         result.gap_pct = ((result.price - result.prevClose) / result.prevClose * 100);
       }
@@ -552,15 +597,97 @@ async function fetchYahooData(ticker){
     }
 
     // ── 2. 뉴스 ──
-    var newsUrl = encodeURIComponent(
-      'https://query2.finance.yahoo.com/v1/finance/search?q=' + ticker +
-      '&newsCount=5&enableFuzzyQuery=false'
-    );
-    var r2 = await fetch(PROXY + newsUrl, {headers:{'x-requested-with':'XMLHttpRequest'}});
-    var d2 = await r2.json();
+    var newsUrl = 'https://query2.finance.yahoo.com/v1/finance/search?q=' + ticker +
+      '&newsCount=5&enableFuzzyQuery=false';
+    var d2 = await fetchWithProxy(newsUrl);
     var newsArr = d2?.news || [];
     result.news = newsArr.slice(0,5).map(n => n.title || '');
     result.newsText = result.news.join(' | ');
+
+    // ── 3. 1분봉 데이터 + 진입각 계산 ──
+    var chartUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + ticker +
+      '?interval=1m&range=1d&includePrePost=true';
+    var dc = await fetchWithProxy(chartUrl);
+    var chartResult = dc?.chart?.result?.[0];
+
+    if(chartResult){
+      var timestamps = chartResult.timestamp || [];
+      var quotes     = chartResult.indicators?.quote?.[0] || {};
+      var highs      = quotes.high  || [];
+      var lows       = quotes.low   || [];
+      var closes     = quotes.close || [];
+      var volumes    = quotes.volume|| [];
+      var meta       = chartResult.meta || {};
+
+      // 프리마켓 구간 (ET 기준 04:00~09:30 = UTC 08:00~13:30)
+      var pmHighs = [], pmLows = [], pmVols = [];
+      var mktHighs= [], mktLows = [], mktVols= [];
+
+      timestamps.forEach(function(ts, i){
+        var d   = new Date(ts * 1000);
+        var utcH = d.getUTCHours();
+        var utcM = d.getUTCMinutes();
+        var utcHM = utcH * 100 + utcM;
+        var h = highs[i], l = lows[i], v = volumes[i];
+        if(!h || !l) return;
+
+        // 프리마켓: UTC 08:00~13:30 (ET 04:00~09:30)
+        if(utcHM >= 800 && utcHM < 1330){
+          pmHighs.push(h); pmLows.push(l);
+          if(v) pmVols.push(v);
+        }
+        // 개장 후 첫 5분: UTC 13:30~13:35
+        if(utcHM >= 1330 && utcHM <= 1335){
+          mktHighs.push(h); mktLows.push(l);
+          if(v) mktVols.push(v);
+        }
+      });
+
+      // PM 고점/저점
+      if(pmHighs.length > 0){
+        result.pm_high = Math.max.apply(null, pmHighs);
+        result.pm_low  = Math.min.apply(null, pmLows);
+      }
+
+      // ORB (개장 첫 5분봉)
+      if(mktHighs.length > 0){
+        result.orb_high = Math.max.apply(null, mktHighs);
+        result.orb_low  = Math.min.apply(null, mktLows);
+      }
+
+      // 진입각 계산
+      var currentPrice = result.price || (closes[closes.length-1]);
+      var isPreMarket  = (function(){
+        var now = new Date();
+        var etH = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'})).getHours();
+        var etM = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'})).getMinutes();
+        return (etH * 100 + etM) < 930;
+      })();
+
+      if(isPreMarket && result.pm_high && result.pm_low){
+        // 프리마켓: PM 고점 돌파 시 진입
+        result.entry_calc  = parseFloat((result.pm_high + 0.02).toFixed(2));
+        result.stop_calc   = parseFloat((result.pm_low  * 0.98).toFixed(2));
+        var risk           = result.entry_calc - result.stop_calc;
+        // 1차목표: 52주 고점 or 진입가 + risk*2
+        result.target_calc = result.fiftyTwoWeekHigh && result.fiftyTwoWeekHigh > result.entry_calc
+          ? parseFloat(result.fiftyTwoWeekHigh.toFixed(2))
+          : parseFloat((result.entry_calc + risk * 2).toFixed(2));
+        result.rr_calc     = risk > 0
+          ? parseFloat(((result.target_calc - result.entry_calc) / risk).toFixed(1))
+          : null;
+
+      } else if(!isPreMarket && result.orb_high && result.orb_low){
+        // 개장 후: ORB 돌파 진입
+        result.entry_calc  = parseFloat((result.orb_high + 0.02).toFixed(2));
+        result.stop_calc   = parseFloat((result.orb_low  * 0.97).toFixed(2));
+        var risk2          = result.entry_calc - result.stop_calc;
+        result.target_calc = parseFloat((result.entry_calc + risk2 * 2).toFixed(2));
+        result.rr_calc     = risk2 > 0
+          ? parseFloat(((result.target_calc - result.entry_calc) / risk2).toFixed(1))
+          : null;
+      }
+    }
 
   } catch(e){
     console.warn('Yahoo fetch 실패:', e.message);
@@ -657,7 +784,8 @@ function makePromptWithData(ticker, ydata, minGap, maxFloat){
     '}\n\n' +
     '뉴스 품질 기준 — factual: FDA/실적/M&A/계약/승인 등 팩트. vague: AI관련/협업기대/루머 등 모호. none: 뉴스없음\n' +
     '점수: Float 5M이하+25, 팩트뉴스+25, RVol 15x++20, 갭업50%++15, SI 25%++10\n' +
-    'BLOCK: OTC거래소 / 갭업 ' + minGap + '% 미만 / Float ' + maxFloat + 'M 초과 / 스프레드 2%+ / 뉴스없음';
+    'BLOCK: OTC거래소 / 갭업 ' + minGap + '% 미만 / Float ' + maxFloat + 'M 초과 / 스프레드 2%+ / 뉴스없음\n' +
+    '참고: 알수없음으로 표시된 항목은 네트워크 오류로 미수신. 알고 있는 정보로 최대한 분석하되 null로 반환가능';
 }
 
 async function runScanSingle(ticker){
@@ -725,6 +853,10 @@ async function runScanSingle(ticker){
     result.rvol=ydata.rvol!==null?ydata.rvol:result.rvol;
     result.spread_pct=ydata.spread_pct;
     result.news=ydata.newsText||result.news||'';
+    if(ydata.entry_calc) result.entry   = ydata.entry_calc;
+    if(ydata.stop_calc)  result.stop    = ydata.stop_calc;
+    if(ydata.target_calc)result.target1 = ydata.target_calc;
+    if(ydata.rr_calc)    result.rr      = ydata.rr_calc;
     applyHistory(result);
     result.action=hardFilter(result);
     handleResult(result);
@@ -872,6 +1004,13 @@ function handleResult(r){
   updatePnl(r);
 }
 
+
+// ═══ 카드 재분석 ═══
+async function rerunScan(ticker){
+  document.getElementById('tickerInput').value = ticker;
+  await runScan();
+}
+
 // ═══ 카드 렌더 ═══
 function setSortMode(mode){
   G.sortMode = mode;
@@ -946,9 +1085,12 @@ function cardHTML(r){
 
   return `<div class="stock-card ${cardC}">
     <div class="card-row1">
-      <div>
-        <div class="card-ticker">${r.ticker}</div>
-        <div class="card-sub">${r.float_m ? r.float_m+'M float · ' : ''}${r.news_quality||'--'}</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="card-ticker">${r.ticker}</div>
+          <button onclick="rerunScan('${r.ticker}')" style="background:none;border:1px solid var(--b2);border-radius:6px;padding:3px 7px;cursor:pointer;color:var(--t2);font-size:10px;font-family:var(--mono);transition:all .15s" onmouseover="this.style.borderColor='var(--g)';this.style.color='var(--g)'" onmouseout="this.style.borderColor='var(--b2)';this.style.color='var(--t2)'">↻</button>
+        </div>
+        <div class="card-sub">${r.float_m ? r.float_m.toFixed(1)+'M float · ' : ''}${r.news_quality||'--'}</div>
       </div>
       <div class="action-badge ${abC}">
         <div class="ab-score">${r.score}</div>
@@ -970,6 +1112,11 @@ function cardHTML(r){
       <div class="lv lv-rr"><div class="lv-label">손익비</div><div class="lv-val">${r.rr?r.rr+'R':'--'}</div></div>
     </div>`:''}
     <div style="font-size:11px;color:var(--t2);margin-top:10px">${r.summary||''}</div>
+  ${(r.pm_high||r.orb_high)?'<div style="display:flex;gap:8px;margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--t3)">'+
+    (r.pm_high?'<span>PM고점 $'+r.pm_high.toFixed(2)+'</span>':'')+
+    (r.pm_low?'<span>PM저점 $'+r.pm_low.toFixed(2)+'</span>':'')+
+    (r.orb_high?'<span style="color:var(--bl)">ORB $'+r.orb_high.toFixed(2)+'</span>':'')+
+  '</div>':''}
   ${r._dumpScore>0?'<div style="font-family:var(--mono);font-size:10px;margin-top:4px;color:'+(r._dumpScore>=40?'var(--r)':r._dumpScore>=20?'var(--a)':'var(--t3)')+'">덤프위험 '+r._dumpScore+'pt'+(r._hardBlocked?' · 하드필터 차단':'')+' </div>':''}
     ${sigs}
   </div>`;
