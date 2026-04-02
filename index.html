@@ -381,7 +381,71 @@ async function runScan(){
   var maxFloat = parseInt(document.getElementById('maxFloat').textContent) || 20;
   var minScore = parseInt(document.getElementById('minScore').textContent) || 70;
 
-  var prompt = makePrompt(ticker, minGap, maxFloat);
+  // ── Step 1: Yahoo Finance 실제 데이터 수집 ──
+  document.getElementById('analyzeArea').innerHTML = `
+    <div class="analyzing-card">
+      <div class="analyzing-spinner"></div>
+      <div>
+        <div class="analyzing-ticker">${ticker}</div>
+        <div class="analyzing-text">Yahoo Finance 데이터 수집 중...</div>
+      </div>
+    </div>`;
+
+  var ydata = await fetchYahooData(ticker);
+
+  // 실제 데이터로 카드 필드 채우기
+  var result0 = {
+    ticker: ticker,
+    price:     ydata.price,
+    gap_pct:   ydata.gap_pct,
+    float_m:   ydata.float_m,
+    short_pct: ydata.short_pct,
+    rvol:      ydata.rvol,
+    spread_pct:ydata.spread_pct,
+    exchange:  ydata.exchange,
+    news:      ydata.newsText,
+  };
+
+  // ── Step 2: 1차 하드필터 (실제 데이터로) ──
+  var earlyBlock = [];
+  if(ydata.exchange && !['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS'].includes((ydata.exchange||'').toUpperCase()))
+    earlyBlock.push('OTC/비상장 (' + ydata.exchange + ')');
+  if(ydata.price && (ydata.price < 1 || ydata.price > 20))
+    earlyBlock.push('주가 범위 외 ($' + (ydata.price||0).toFixed(2) + ')');
+  if(ydata.gap_pct !== null && ydata.gap_pct < minGap)
+    earlyBlock.push('갭업 부족 (+' + (ydata.gap_pct||0).toFixed(1) + '%)');
+  if(ydata.float_m !== null && ydata.float_m > maxFloat)
+    earlyBlock.push('Float 과다 (' + (ydata.float_m||0).toFixed(1) + 'M)');
+  if(ydata.spread_pct !== null && ydata.spread_pct > 2.0)
+    earlyBlock.push('스프레드 과다 (' + (ydata.spread_pct||0).toFixed(1) + '%)');
+
+  if(earlyBlock.length > 0){
+    var r = Object.assign({}, result0, {
+      action:'BLOCK', score:0,
+      blockers: earlyBlock.map(b=>'[하드필터] '+b),
+      signals:[], warnings:[], summary:'필터 차단',
+      news_quality:'none', entry:null, stop:null, target1:null, rr:null,
+      _hardBlocked:true, _dumpScore:99,
+      _date: new Date().toLocaleDateString('ko-KR'), _ts: Date.now()
+    });
+    document.getElementById('analyzeArea').innerHTML = '';
+    applyHistory(r);
+    handleResult(r);
+    document.getElementById('scanBtn').disabled = false;
+    return;
+  }
+
+  // ── Step 3: Claude로 뉴스 분석 + 최종 신호 ──
+  document.getElementById('analyzeArea').innerHTML = `
+    <div class="analyzing-card">
+      <div class="analyzing-spinner"></div>
+      <div>
+        <div class="analyzing-ticker">${ticker}</div>
+        <div class="analyzing-text">실제 데이터 확보 완료<br>뉴스 분석 + 신호 판단 중...</div>
+      </div>
+    </div>`;
+
+  var prompt = makePromptWithData(ticker, ydata, minGap, maxFloat);
 
   try {
     var res = await fetch('https://api.anthropic.com/v1/messages',{
@@ -394,7 +458,7 @@ async function runScan(){
       },
       body: JSON.stringify({
         model:'claude-sonnet-4-20250514',
-        max_tokens:1000,
+        max_tokens:600,
         messages:[{role:'user',content:prompt}]
       })
     });
@@ -402,6 +466,17 @@ async function runScan(){
     if(data.error) throw new Error(data.error.message);
     var text  = data.content[0].text.trim().replace(/```json|```/g,'').trim();
     var result = JSON.parse(text);
+
+    // 야후 실제 데이터로 덮어쓰기 (Claude 추정값 무시)
+    result.ticker    = ticker;
+    result.price     = ydata.price     || result.price;
+    result.gap_pct   = ydata.gap_pct   !== null ? ydata.gap_pct   : result.gap_pct;
+    result.float_m   = ydata.float_m   !== null ? ydata.float_m   : result.float_m;
+    result.short_pct = ydata.short_pct !== null ? ydata.short_pct : result.short_pct;
+    result.rvol      = ydata.rvol      !== null ? ydata.rvol      : result.rvol;
+    result.spread_pct= ydata.spread_pct;
+    result.news      = ydata.newsText  || result.news || '';
+
     applyHistory(result);
     result.action = hardFilter(result);
     handleResult(result);
@@ -414,6 +489,84 @@ async function runScan(){
   document.getElementById('scanBtn').disabled = false;
 }
 
+
+
+// ═══ Yahoo Finance 데이터 수집 ═══
+
+async function fetchYahooData(ticker){
+  var PROXY = 'https://corsproxy.io/?url=';
+  var result = {
+    price: null, prevClose: null, preMarketPrice: null,
+    gap_pct: null, volume: null, avgVolume: null,
+    float_m: null, short_pct: null, rvol: null,
+    bid: null, ask: null, spread_pct: null,
+    exchange: null, fiftyTwoWeekHigh: null,
+    news: [], newsText: ''
+  };
+
+  try {
+    // ── 1. 종목 기본 데이터 ──
+    var summaryUrl = encodeURIComponent(
+      'https://query2.finance.yahoo.com/v10/finance/quoteSummary/' + ticker +
+      '?modules=price,defaultKeyStatistics,summaryDetail'
+    );
+    var r1 = await fetch(PROXY + summaryUrl, {headers:{'x-requested-with':'XMLHttpRequest'}});
+    var d1 = await r1.json();
+    var res = d1?.quoteSummary?.result?.[0];
+
+    if(res){
+      var pr  = res.price             || {};
+      var ks  = res.defaultKeyStatistics || {};
+      var sd  = res.summaryDetail     || {};
+
+      result.price          = pr.regularMarketPrice?.raw || null;
+      result.prevClose      = pr.regularMarketPreviousClose?.raw || null;
+      result.preMarketPrice = pr.preMarketPrice?.raw || null;
+      result.volume         = pr.regularMarketVolume?.raw || null;
+      result.avgVolume      = sd.averageVolume?.raw || pr.averageVolume?.raw || null;
+      result.float_m        = ks.floatShares?.raw ? ks.floatShares.raw / 1_000_000 : null;
+      result.short_pct      = ks.sharesShortPercentOfFloat?.raw
+                              ? ks.sharesShortPercentOfFloat.raw * 100 : null;
+      result.fiftyTwoWeekHigh = sd.fiftyTwoWeekHigh?.raw || null;
+      result.exchange       = pr.exchangeName || pr.exchange || null;
+      result.bid            = pr.bid?.raw || null;
+      result.ask            = pr.ask?.raw || null;
+
+      // 갭업 % 계산
+      if(result.preMarketPrice && result.prevClose && result.prevClose > 0){
+        result.gap_pct = ((result.preMarketPrice - result.prevClose) / result.prevClose * 100);
+      } else if(result.price && result.prevClose && result.prevClose > 0){
+        result.gap_pct = ((result.price - result.prevClose) / result.prevClose * 100);
+      }
+
+      // RVol 계산
+      if(result.volume && result.avgVolume && result.avgVolume > 0){
+        result.rvol = result.volume / result.avgVolume;
+      }
+
+      // 스프레드 계산
+      if(result.bid && result.ask && result.ask > 0){
+        var mid = (result.bid + result.ask) / 2;
+        result.spread_pct = (result.ask - result.bid) / mid * 100;
+      }
+    }
+
+    // ── 2. 뉴스 ──
+    var newsUrl = encodeURIComponent(
+      'https://query2.finance.yahoo.com/v1/finance/search?q=' + ticker +
+      '&newsCount=5&enableFuzzyQuery=false'
+    );
+    var r2 = await fetch(PROXY + newsUrl, {headers:{'x-requested-with':'XMLHttpRequest'}});
+    var d2 = await r2.json();
+    var newsArr = d2?.news || [];
+    result.news = newsArr.slice(0,5).map(n => n.title || '');
+    result.newsText = result.news.join(' | ');
+
+  } catch(e){
+    console.warn('Yahoo fetch 실패:', e.message);
+  }
+  return result;
+}
 
 function makePrompt(ticker, minGap, maxFloat){
   return `당신은 프리마켓 급등주 전문 트레이딩 AI입니다. 테스트 모드입니다 (실거래 없음, 알람 전용).
@@ -464,32 +617,116 @@ BLOCK 조건 (하나라도 해당):
 
 ENTER: 점수 75+  WATCH: 55-74  BLOCK: 조건 해당`;
 }
+
+function makePromptWithData(ticker, ydata, minGap, maxFloat){
+  var price     = ydata.price      ? '$'+ydata.price.toFixed(2)    : '알수없음';
+  var pmPrice   = ydata.preMarketPrice ? '$'+ydata.preMarketPrice.toFixed(2) : '알수없음';
+  var gapStr    = ydata.gap_pct    ? ydata.gap_pct.toFixed(1)+'%'  : '알수없음';
+  var floatStr  = ydata.float_m    ? ydata.float_m.toFixed(1)+'M'  : '알수없음';
+  var shortStr  = ydata.short_pct  ? ydata.short_pct.toFixed(1)+'%': '알수없음';
+  var rvolStr   = ydata.rvol       ? ydata.rvol.toFixed(1)+'x'     : '알수없음';
+  var spreadStr = ydata.spread_pct ? ydata.spread_pct.toFixed(2)+'%': '알수없음';
+  var newsStr   = ydata.newsText   || '뉴스 없음';
+  var exch      = ydata.exchange   || '알수없음';
+
+  return '당신은 프리마켓 급등주 전문 트레이딩 AI입니다. 아래는 실제 Yahoo Finance 데이터입니다.\n\n' +
+    '종목: ' + ticker + '\n' +
+    '거래소: ' + exch + '\n' +
+    '현재가: ' + price + '\n' +
+    '프리마켓가: ' + pmPrice + '\n' +
+    '갭업: ' + gapStr + '\n' +
+    'Float: ' + floatStr + '\n' +
+    'Short Interest: ' + shortStr + '\n' +
+    'RVol: ' + rvolStr + '\n' +
+    '스프레드: ' + spreadStr + '\n' +
+    '최근 뉴스: ' + newsStr + '\n\n' +
+    '위 실제 데이터를 바탕으로 분석하고 반드시 순수 JSON만 반환하세요:\n\n' +
+    '{\n' +
+    '  "ticker": "' + ticker + '",\n' +
+    '  "action": "ENTER" | "WATCH" | "BLOCK",\n' +
+    '  "score": 0-100,\n' +
+    '  "entry": 진입권장가,\n' +
+    '  "stop": 손절가,\n' +
+    '  "target1": 1차목표가,\n' +
+    '  "rr": 손익비,\n' +
+    '  "news_quality": "factual" | "vague" | "none",\n' +
+    '  "signals": ["긍정신호"],\n' +
+    '  "warnings": ["경고"],\n' +
+    '  "blockers": ["차단이유"],\n' +
+    '  "summary": "한줄판단"\n' +
+    '}\n\n' +
+    '뉴스 품질 기준 — factual: FDA/실적/M&A/계약/승인 등 팩트. vague: AI관련/협업기대/루머 등 모호. none: 뉴스없음\n' +
+    '점수: Float 5M이하+25, 팩트뉴스+25, RVol 15x++20, 갭업50%++15, SI 25%++10\n' +
+    'BLOCK: OTC거래소 / 갭업 ' + minGap + '% 미만 / Float ' + maxFloat + 'M 초과 / 스프레드 2%+ / 뉴스없음';
+}
+
 async function runScanSingle(ticker){
   var apiKey = localStorage.getItem('apexKey')||'';
   if(!apiKey) return;
   var minGap=parseInt(document.getElementById('minGap').textContent)||20;
   var maxFloat=parseInt(document.getElementById('maxFloat').textContent)||20;
-  var minScore=parseInt(document.getElementById('minScore').textContent)||70;
-  // 기존 runScan 로직 재사용
   document.getElementById('tickerInput').value = '';
   document.getElementById('scanBtn').disabled = true;
+
   document.getElementById('analyzeArea').innerHTML = `
     <div class="analyzing-card">
       <div class="analyzing-spinner"></div>
-      <div><div class="analyzing-ticker">${ticker}</div><div class="analyzing-text">분석 중...</div></div>
+      <div><div class="analyzing-ticker">${ticker}</div><div class="analyzing-text">데이터 수집 중...</div></div>
     </div>`;
-  var prompt = makePrompt(ticker, minGap, maxFloat);
+
+  var ydata = await fetchYahooData(ticker);
+
+  // 1차 하드필터
+  var earlyBlock = [];
+  if(ydata.exchange && !['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS'].includes((ydata.exchange||'').toUpperCase()))
+    earlyBlock.push('OTC/비상장');
+  if(ydata.price && (ydata.price < 1 || ydata.price > 20))
+    earlyBlock.push('주가 범위 외');
+  if(ydata.gap_pct !== null && ydata.gap_pct < minGap)
+    earlyBlock.push('갭업 부족 (+' + (ydata.gap_pct||0).toFixed(1)+'%)');
+  if(ydata.float_m !== null && ydata.float_m > maxFloat)
+    earlyBlock.push('Float 과다');
+  if(ydata.spread_pct !== null && ydata.spread_pct > 2.0)
+    earlyBlock.push('스프레드 과다');
+
+  if(earlyBlock.length > 0){
+    var rb = {
+      ticker,price:ydata.price,gap_pct:ydata.gap_pct,float_m:ydata.float_m,
+      short_pct:ydata.short_pct,rvol:ydata.rvol,
+      action:'BLOCK',score:0,
+      blockers:earlyBlock.map(b=>'[하드필터] '+b),
+      signals:[],warnings:[],summary:'필터 차단',
+      news:ydata.newsText||'',news_quality:'none',
+      entry:null,stop:null,target1:null,rr:null,
+      _hardBlocked:true,_dumpScore:99,
+      _date:new Date().toLocaleDateString('ko-KR'),_ts:Date.now()
+    };
+    document.getElementById('analyzeArea').innerHTML='';
+    handleResult(rb);
+    document.getElementById('scanBtn').disabled=false;
+    return;
+  }
+
+  var prompt = makePromptWithData(ticker, ydata, minGap, maxFloat);
   try{
     var res = await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,messages:[{role:'user',content:prompt}]})
     });
     var data=await res.json();
     if(data.error) throw new Error(data.error.message);
     var result=JSON.parse(data.content[0].text.trim().replace(/```json|```/g,'').trim());
+    result.ticker=ticker;
+    result.price=ydata.price||result.price;
+    result.gap_pct=ydata.gap_pct!==null?ydata.gap_pct:result.gap_pct;
+    result.float_m=ydata.float_m!==null?ydata.float_m:result.float_m;
+    result.short_pct=ydata.short_pct!==null?ydata.short_pct:result.short_pct;
+    result.rvol=ydata.rvol!==null?ydata.rvol:result.rvol;
+    result.spread_pct=ydata.spread_pct;
+    result.news=ydata.newsText||result.news||'';
     applyHistory(result);
-    result.action = hardFilter(result);
+    result.action=hardFilter(result);
     handleResult(result);
   }catch(e){
     document.getElementById('analyzeArea').innerHTML=`<div class="alert-card" style="margin:4px 16px 10px"><div class="alert-msg" style="color:var(--r)">${ticker} 오류: ${e.message}</div></div>`;
