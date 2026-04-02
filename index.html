@@ -174,8 +174,14 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 <div class="hdr">
   <div class="logo">RECON<span>.</span></div>
   <div class="hdr-right">
-    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:1px"><div class="clock" id="clockET">--:-- ET</div><div class="clock" id="clockKST" style="color:var(--t3);font-size:10px">--:-- KST</div></div>
-    <div class="status-pill"><div class="blink"></div><span id="phaseLabel">대기</span></div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="clock" id="clockET">--:-- ET</div>
+        <div class="clock" id="clockKST" style="color:var(--t3);font-size:10px">--:-- KST</div>
+        <div class="status-pill"><div class="blink"></div><span id="phaseLabel">대기</span></div>
+      </div>
+      <div id="usageHdr" style="font-family:var(--mono);font-size:9px;color:var(--t3);text-align:right"></div>
+    </div>
   </div>
 </div>
 
