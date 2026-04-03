@@ -959,7 +959,8 @@ async function runScanSingle(ticker){
 var G_journal = JSON.parse(localStorage.getItem('reconJournal')||'[]');
 var G_jFilter = 'today';
 
-function openTradeLog(ticker, price, news){
+function openTradeLog(ticker, price){
+  var news = "";
   var modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:flex-end;justify-content:center';
   modal.innerHTML = `
@@ -998,7 +999,8 @@ function openTradeLog(ticker, price, news){
   modal.addEventListener('click', function(e){ if(e.target===modal) modal.remove(); });
 }
 
-function saveTradeLog(ticker, news){
+function saveTradeLog(ticker){
+  var news = "";
   var entry  = parseFloat(document.getElementById('tl_entry').value);
   var exit   = parseFloat(document.getElementById('tl_exit').value);
   var shares = parseInt(document.getElementById('tl_shares').value)||0;
@@ -1452,7 +1454,7 @@ function cardHTML(r){
     </div>`:''}
     <div style="font-size:11px;color:var(--t2);margin-top:10px">${r.summary||''}</div>
     <div style="margin-top:10px;display:flex;gap:6px">
-      <button onclick="openTradeLog('${r.ticker}', ${r.price||0}, '${r.news||''}')"
+      <button onclick="openTradeLog('${r.ticker}', ${r.price||0})"
         style="flex:1;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">
         + 거래 기록
       </button>
