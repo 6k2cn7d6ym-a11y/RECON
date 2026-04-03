@@ -196,6 +196,10 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     알림
     <div class="notif-dot" id="notifDot" style="display:none"></div>
   </button>
+  <button class="tab" onclick="switchTab('journal',this)">
+    <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+    일지
+  </button>
   <button class="tab" onclick="switchTab('settings',this)">
     <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     설정
@@ -257,7 +261,25 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   <div id="alertsList"></div>
 </div>
 
-<!-- ③ 설정 탭 -->
+<!-- ③ 일지 탭 -->
+<div class="scroll" id="page-journal" style="display:none">
+  <div style="padding:14px 16px 8px;display:flex;justify-content:space-between;align-items:center">
+    <div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.1em;text-transform:uppercase">거래 일지</div>
+    <div style="display:flex;gap:8px">
+      <button onclick="setJournalFilter('today')" id="jfToday" style="font-family:var(--mono);font-size:10px;background:rgba(0,240,122,.12);color:var(--g);border:1px solid rgba(0,240,122,.2);border-radius:5px;padding:3px 8px;cursor:pointer">오늘</button>
+      <button onclick="setJournalFilter('week')" id="jfWeek" style="font-family:var(--mono);font-size:10px;background:none;color:var(--t3);border:1px solid var(--b);border-radius:5px;padding:3px 8px;cursor:pointer">이번주</button>
+      <button onclick="setJournalFilter('all')" id="jfAll" style="font-family:var(--mono);font-size:10px;background:none;color:var(--t3);border:1px solid var(--b);border-radius:5px;padding:3px 8px;cursor:pointer">전체</button>
+    </div>
+  </div>
+
+  <!-- 통계 -->
+  <div id="journalStats" style="margin:0 16px 12px;background:var(--bg1);border:1px solid var(--b);border-radius:14px;padding:14px"></div>
+
+  <!-- 거래 목록 -->
+  <div id="journalList" style="padding:0 16px"></div>
+</div>
+
+<!-- ④ 설정 탭 -->
 <div class="scroll" id="page-settings" style="display:none">
 <div class="settings">
   <div class="sg-title">Claude API</div>
@@ -334,12 +356,13 @@ if(G.ntfy)   document.getElementById('ntfyCh').value = G.ntfy;
 
 // ═══ 탭 전환 ═══
 function switchTab(id, btn){
-  ['scan','alerts','settings'].forEach(p=>{
+  ['scan','alerts','journal','settings'].forEach(p=>{
     document.getElementById('page-'+p).style.display = p===id?'':'none';
   });
   document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));
   btn.classList.add('on');
   if(id==='alerts'){ G.unread=0; updateBadge(); renderAlerts(); }
+  if(id==='journal'){ renderJournal(); }
 }
 
 // ═══ 시계 & 페이즈 ═══
@@ -930,6 +953,196 @@ async function runScanSingle(ticker){
 
 
 
+
+// ═══ 거래 일지 ═══
+
+var G_journal = JSON.parse(localStorage.getItem('reconJournal')||'[]');
+var G_jFilter = 'today';
+
+function openTradeLog(ticker, price, news){
+  var modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:flex-end;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--bg1);border:1px solid var(--b);border-radius:20px 20px 0 0;padding:20px;width:100%;max-width:480px;padding-bottom:max(20px,env(safe-area-inset-bottom))">
+      <div style="font-family:var(--mono);font-size:16px;color:var(--t);margin-bottom:16px">${ticker} 거래 기록</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div>
+          <div style="font-size:11px;color:var(--t2);margin-bottom:4px">진입가</div>
+          <input id="tl_entry" type="number" step="0.01" value="${price||''}" placeholder="0.00"
+            style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--t2);margin-bottom:4px">매도가</div>
+          <input id="tl_exit" type="number" step="0.01" placeholder="0.00"
+            style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--t2);margin-bottom:4px">주수</div>
+          <input id="tl_shares" type="number" placeholder="100"
+            style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--t2);margin-bottom:4px">메모 (선택)</div>
+          <input id="tl_memo" type="text" placeholder="예: 손절 늦게 함, 진입 타이밍 좋았음"
+            style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-size:13px;color:var(--t);outline:none">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button onclick="this.closest('div[style*=fixed]').remove()"
+          style="flex:1;padding:12px;background:var(--bg2);border:1px solid var(--b);border-radius:10px;color:var(--t2);font-size:14px;cursor:pointer">취소</button>
+        <button onclick="saveTradeLog('${ticker}', '${news}')"
+          style="flex:2;padding:12px;background:var(--g);border:none;border-radius:10px;color:#000;font-size:14px;font-weight:700;cursor:pointer">저장</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', function(e){ if(e.target===modal) modal.remove(); });
+}
+
+function saveTradeLog(ticker, news){
+  var entry  = parseFloat(document.getElementById('tl_entry').value);
+  var exit   = parseFloat(document.getElementById('tl_exit').value);
+  var shares = parseInt(document.getElementById('tl_shares').value)||0;
+  var memo   = document.getElementById('tl_memo').value.trim();
+
+  if(!entry){ showToast('진입가를 입력하세요'); return; }
+
+  var pnl     = exit ? (exit - entry) * shares : null;
+  var pnl_pct = exit ? (exit - entry) / entry * 100 : null;
+  var today   = new Date().toLocaleDateString('ko-KR');
+
+  var record = {
+    id:      Date.now(),
+    date:    today,
+    ticker:  ticker,
+    entry:   entry,
+    exit:    exit || null,
+    shares:  shares,
+    pnl:     pnl ? parseFloat(pnl.toFixed(2)) : null,
+    pnl_pct: pnl_pct ? parseFloat(pnl_pct.toFixed(2)) : null,
+    memo:    memo,
+    news:    news,
+    status:  exit ? (pnl >= 0 ? 'win' : 'loss') : 'open',
+  };
+
+  G_journal.unshift(record);
+  localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+
+  document.querySelector('div[style*=fixed]')?.remove();
+  showToast(ticker + ' 거래 기록 저장됨');
+}
+
+function setJournalFilter(f){
+  G_jFilter = f;
+  ['today','week','all'].forEach(function(id){
+    var el = document.getElementById('jf'+id.charAt(0).toUpperCase()+id.slice(1));
+    if(!el) return;
+    var on = id === f;
+    el.style.background   = on ? 'rgba(0,240,122,.12)' : 'none';
+    el.style.color        = on ? 'var(--g)' : 'var(--t3)';
+    el.style.borderColor  = on ? 'rgba(0,240,122,.2)' : 'var(--b)';
+  });
+  renderJournal();
+}
+
+function getFilteredJournal(){
+  var today = new Date().toLocaleDateString('ko-KR');
+  var weekAgo = new Date(Date.now() - 7*24*60*60*1000).toLocaleDateString('ko-KR');
+  return G_journal.filter(function(t){
+    if(G_jFilter === 'today') return t.date === today;
+    if(G_jFilter === 'week')  return t.date >= weekAgo;
+    return true;
+  });
+}
+
+function renderJournal(){
+  var trades = getFilteredJournal();
+  var closed = trades.filter(function(t){ return t.status !== 'open'; });
+  var wins   = closed.filter(function(t){ return t.status === 'win'; });
+  var totalPnl = closed.reduce(function(s,t){ return s + (t.pnl||0); }, 0);
+
+  // 통계
+  var statsEl = document.getElementById('journalStats');
+  if(statsEl){
+    if(!closed.length){
+      statsEl.innerHTML = '<div style="color:var(--t3);font-size:13px;text-align:center">거래 기록 없음</div>';
+    } else {
+      var wr = (wins.length / closed.length * 100).toFixed(0);
+      var avgWin  = wins.length ? wins.reduce(function(s,t){return s+(t.pnl||0);},0)/wins.length : 0;
+      var losses  = closed.filter(function(t){return t.status==='loss';});
+      var avgLoss = losses.length ? losses.reduce(function(s,t){return s+(t.pnl||0);},0)/losses.length : 0;
+      statsEl.innerHTML =
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">' +
+        '<div><div style="font-size:9px;color:var(--t2);margin-bottom:4px">거래수</div><div style="font-family:var(--mono);font-size:18px;color:var(--t)">'+ closed.length +'</div></div>' +
+        '<div><div style="font-size:9px;color:var(--t2);margin-bottom:4px">승률</div><div style="font-family:var(--mono);font-size:18px;color:'+(parseInt(wr)>=50?'var(--g)':'var(--r)')+'">'+wr+'%</div></div>' +
+        '<div><div style="font-size:9px;color:var(--t2);margin-bottom:4px">총손익</div><div style="font-family:var(--mono);font-size:18px;color:'+(totalPnl>=0?'var(--g)':'var(--r)')+'">$'+(totalPnl>=0?'+':'')+totalPnl.toFixed(2)+'</div></div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px;text-align:center">' +
+        '<div style="background:var(--bg2);border-radius:8px;padding:8px"><div style="font-size:9px;color:var(--t2);margin-bottom:2px">평균수익</div><div style="font-family:var(--mono);font-size:13px;color:var(--g)">$+'+(avgWin).toFixed(2)+'</div></div>' +
+        '<div style="background:var(--bg2);border-radius:8px;padding:8px"><div style="font-size:9px;color:var(--t2);margin-bottom:2px">평균손실</div><div style="font-family:var(--mono);font-size:13px;color:var(--r)">$'+(avgLoss).toFixed(2)+'</div></div>' +
+        '</div>';
+    }
+  }
+
+  // 거래 목록
+  var listEl = document.getElementById('journalList');
+  if(!listEl) return;
+
+  if(!trades.length){
+    listEl.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--t3);font-size:13px">거래 기록이 없어요<br>카드에서 "+ 거래 기록" 버튼을 누르세요</div>';
+    return;
+  }
+
+  // 날짜별 그룹
+  var byDate = {};
+  trades.forEach(function(t){
+    if(!byDate[t.date]) byDate[t.date] = [];
+    byDate[t.date].push(t);
+  });
+
+  var html = '';
+  Object.keys(byDate).sort().reverse().forEach(function(date){
+    var dayTrades = byDate[date];
+    var dayPnl = dayTrades.filter(function(t){return t.pnl!==null;}).reduce(function(s,t){return s+(t.pnl||0);},0);
+    html += '<div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.1em;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px">' +
+      '<span>'+date+'</span>' +
+      '<span style="color:'+(dayPnl>=0?'var(--g)':'var(--r)')+'">$'+(dayPnl>=0?'+':'')+dayPnl.toFixed(2)+'</span>' +
+      '</div>';
+
+    dayTrades.forEach(function(t){
+      var pnlColor = t.status==='win'?'var(--g)':t.status==='loss'?'var(--r)':'var(--t2)';
+      var pnlText  = t.pnl !== null ? (t.pnl>=0?'+':'')+t.pnl.toFixed(2) : '진행중';
+      html += '<div style="background:var(--bg1);border:1px solid var(--b);border-radius:12px;padding:12px;margin-bottom:6px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+          '<div style="display:flex;align-items:center;gap:8px">' +
+            '<span style="font-family:var(--mono);font-size:15px;color:var(--t)">'+t.ticker+'</span>' +
+            '<span style="font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;background:'+(t.status==='win'?'rgba(0,240,122,.1)':t.status==='loss'?'rgba(255,45,78,.1)':'rgba(59,158,255,.1)')+';color:'+(t.status==='win'?'var(--g)':t.status==='loss'?'var(--r)':'var(--bl)')+'">'+
+              (t.status==='win'?'익절':t.status==='loss'?'손절':'진행중')+'</span>' +
+          '</div>' +
+          '<span style="font-family:var(--mono);font-size:15px;color:'+pnlColor+'">$'+pnlText+'</span>' +
+        '</div>' +
+        '<div style="display:flex;gap:12px;font-family:var(--mono);font-size:11px;color:var(--t2)">' +
+          '<span>진입 $'+t.entry+'</span>' +
+          (t.exit?'<span>매도 $'+t.exit+'</span>':'') +
+          (t.shares?'<span>'+t.shares+'주</span>':'') +
+          (t.pnl_pct?'<span style="color:'+pnlColor+'">'+(t.pnl_pct>=0?'+':'')+t.pnl_pct.toFixed(1)+'%</span>':'') +
+        '</div>' +
+        (t.memo?'<div style="font-size:11px;color:var(--t3);margin-top:4px;padding-left:8px;border-left:2px solid var(--b2)">'+t.memo+'</div>':'') +
+        '<div style="display:flex;justify-content:flex-end;margin-top:6px">' +
+          '<button onclick="deleteTradeLog('+t.id+')" style="font-size:10px;color:var(--t3);background:none;border:none;cursor:pointer;font-family:var(--mono)">삭제</button>' +
+        '</div>' +
+      '</div>';
+    });
+  });
+  listEl.innerHTML = html;
+}
+
+function deleteTradeLog(id){
+  if(!confirm('이 거래 기록을 삭제할까요?')) return;
+  G_journal = G_journal.filter(function(t){ return t.id !== id; });
+  localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+  renderJournal();
+}
+
 // ═══ API 사용량 표시 ═══
 function renderUsage(){
   // 날짜 바뀌면 오늘 사용량 리셋
@@ -969,7 +1182,10 @@ function getDumpScore(r){
   var all = w.concat(b).join(' ').toLowerCase();
 
   if(r.news_quality !== 'factual')                        score += 25;
-  if(r.rvol   && r.rvol   <  5)                          score += 20;
+  if(r.rvol !== null && r.rvol !== undefined){
+    if(r.rvol < 3)  score += 35;
+    else if(r.rvol < 5) score += 20;
+  }
   if(r.float_m && r.float_m > 15)                        score += 15;
   if(all.includes('lower high'))                          score += 20;
   if(all.includes('거래량 감소') || all.includes('거래량 소멸')) score += 20;
@@ -1014,7 +1230,17 @@ function hardFilter(r){
     reasons.push('거래량 소멸');
   }
 
-  // 5. 덤프 점수 40+ 이면 강제 차단
+  // 5. RVol 3x 미만 차단 (오늘 실전 피드백)
+  if(r.rvol !== null && r.rvol !== undefined && r.rvol < 3){
+    reasons.push('RVol ' + (r.rvol||0).toFixed(1) + 'x 저조 (3x 미만)');
+  }
+
+  // 6. PM 고점 90% 이상 = 고점 추격 경고
+  if(r.pm_high && r.price && r.price >= r.pm_high * 0.90){
+    reasons.push('PM 고점 근접 ($' + r.pm_high.toFixed(2) + ') — 고점 추격 위험');
+  }
+
+  // 7. 덤프 점수 40+ 이면 강제 차단
   var dumpScore = getDumpScore(r);
   if(dumpScore >= 40){
     reasons.push('덤프위험 ' + dumpScore + '점');
@@ -1030,6 +1256,19 @@ function hardFilter(r){
 
   r._dumpScore = dumpScore;
   return r.action;
+}
+
+// PM 구간 위치 계산
+function getPMZone(r){
+  if(!r.pm_high || !r.pm_low || !r.price) return null;
+  var range = r.pm_high - r.pm_low;
+  if(range <= 0) return null;
+  var pct = (r.price - r.pm_low) / range * 100;
+
+  if(pct >= 90)      return { label:'고점 근처', color:'var(--r)',   pct: Math.round(pct) };
+  if(pct >= 60)      return { label:'중간 구간', color:'var(--a)',   pct: Math.round(pct) };
+  if(pct >= 30)      return { label:'눌림목',    color:'var(--g)',   pct: Math.round(pct) };
+  return               { label:'저점 근처', color:'var(--t2)',  pct: Math.round(pct) };
 }
 
 // 시간 흐름 분석 (Higher Low / Lower High 추적)
@@ -1181,7 +1420,7 @@ function cardHTML(r){
           <div class="card-ticker">${r.ticker}</div>
           <button onclick="rerunScan('${r.ticker}')" style="background:none;border:1px solid var(--b2);border-radius:6px;padding:3px 7px;cursor:pointer;color:var(--t2);font-size:10px;font-family:var(--mono);transition:all .15s" onmouseover="this.style.borderColor='var(--g)';this.style.color='var(--g)'" onmouseout="this.style.borderColor='var(--b2)';this.style.color='var(--t2)'">↻</button>
         </div>
-        <div class="card-sub">${r.float_m ? r.float_m.toFixed(1)+'M float · ' : ''}${r.news_quality||'--'}</div>
+        <div class="card-sub">${r.float_m ? r.float_m.toFixed(1)+'M float · ' : ''}${r.news_quality||'--'}${(function(){ var z=getPMZone(r); return z?' · <span style="color:'+z.color+'">'+z.label+' '+z.pct+'%</span>':''; })()}</div>
       </div>
       <div class="action-badge ${abC}">
         <div class="ab-score">${r.score}</div>
@@ -1212,6 +1451,12 @@ function cardHTML(r){
       <div class="lv lv-rr"><div class="lv-label">손익비</div><div class="lv-val">${r.pullback_rr?r.pullback_rr+'R':'--'}</div></div>
     </div>`:''}
     <div style="font-size:11px;color:var(--t2);margin-top:10px">${r.summary||''}</div>
+    <div style="margin-top:10px;display:flex;gap:6px">
+      <button onclick="openTradeLog('${r.ticker}', ${r.price||0}, '${r.news||''}')"
+        style="flex:1;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">
+        + 거래 기록
+      </button>
+    </div>
   ${(r.pm_high||r.orb_high)?'<div style="display:flex;gap:8px;margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--t3)">'+
     (r.pm_high?'<span>PM고점 $'+r.pm_high.toFixed(2)+'</span>':'')+
     (r.pm_low?'<span>PM저점 $'+r.pm_low.toFixed(2)+'</span>':'')+
