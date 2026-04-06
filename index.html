@@ -378,6 +378,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     </div>
   </div>
   <div id="momoAnalyzeArea"></div>
+  <div class="cards-area"><div id="momoOpenArea"></div></div>
   <div class="cards-area"><div id="momoResultArea"></div></div>
 </div>
 
@@ -490,6 +491,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     </div>
   </div>
   <div id="swingAnalyzeArea"></div>
+  <div class="cards-area"><div id="swingOpenArea"></div></div>
   <div class="cards-area"><div id="swingResultArea"></div></div>
 </div>
 
@@ -530,6 +532,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     </div>
   </div>
   <div id="coreAnalyzeArea"></div>
+  <div class="cards-area"><div id="coreOpenArea"></div></div>
   <div class="cards-area"><div id="coreResultArea"></div></div>
 </div>
 
@@ -655,6 +658,67 @@ function switchMode(mode){
   updateKeyStatus();
 }
 
+// ═══════════════════════════════════════
+// 보유 포지션 재분석 헬퍼
+// ═══════════════════════════════════════
+function rescanOpenTrade(mode, ticker){
+  switchMode(mode);
+  var inputEl = document.getElementById(mode+'Input');
+  if(inputEl) inputEl.value = ticker;
+  runModeScan(mode);
+}
+
+// ═══════════════════════════════════════
+// 보유 포지션 고정 렌더링
+// ═══════════════════════════════════════
+function renderOpenPositions(mode){
+  var el = document.getElementById(mode+'OpenArea');
+  if(!el) return;
+  var openTrades = G_journal.filter(function(t){
+    return (t.status==='open'||t.status==='partial') && (!t.mode||t.mode===mode);
+  });
+  if(!openTrades.length){ el.innerHTML=''; return; }
+  var html = '<div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.1em;margin:8px 0 4px;padding:0 2px">📌 보유 중 — 매도 완료 시 자동 제거</div>';
+  openTrades.forEach(function(t){
+    var curPrice = t.price||t.entry;
+    var pnlP = ((curPrice-t.entry)/t.entry*100).toFixed(1);
+    var pnlColor = parseFloat(pnlP)>=0?'var(--g)':'var(--r)';
+    var remaining = t.remaining!==undefined?t.remaining:(t.shares||0);
+    var isPartial = t.status==='partial';
+    html +=
+      '<div style="background:var(--bg1);border:1px solid '+(isPartial?'rgba(255,170,0,.3)':'rgba(43,159,255,.25)')+';border-radius:14px;padding:14px;margin-bottom:8px">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
+          '<div style="display:flex;align-items:center;gap:8px">'+
+            '<span style="font-family:var(--mono);font-size:18px;color:var(--t)">'+t.ticker+'</span>'+
+            '<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;background:'+(isPartial?'rgba(255,170,0,.12)':'rgba(43,159,255,.12)')+';color:'+(isPartial?'var(--a)':'var(--bl)')+';">'+(isPartial?'분할매도중':'보유중')+'</span>'+
+          '</div>'+
+          '<span style="font-family:var(--mono);font-size:16px;color:'+pnlColor+'">'+(parseFloat(pnlP)>=0?'+':'')+pnlP+'%</span>'+
+        '</div>'+
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">'+
+          '<div style="background:var(--bg2);border-radius:8px;padding:7px;text-align:center">'+
+            '<div style="font-size:9px;color:var(--t2);margin-bottom:2px">진입가</div>'+
+            '<div style="font-family:var(--mono);font-size:13px;color:var(--t)">$'+t.entry+'</div>'+
+          '</div>'+
+          '<div style="background:var(--bg2);border-radius:8px;padding:7px;text-align:center">'+
+            '<div style="font-size:9px;color:var(--t2);margin-bottom:2px">'+(remaining?'잔여수량':'수량')+'</div>'+
+            '<div style="font-family:var(--mono);font-size:13px;color:var(--t)">'+(remaining||t.shares||'-')+'주</div>'+
+          '</div>'+
+          '<div style="background:var(--bg2);border-radius:8px;padding:7px;text-align:center">'+
+            '<div style="font-size:9px;color:var(--t2);margin-bottom:2px">진입일</div>'+
+            '<div style="font-family:var(--mono);font-size:11px;color:var(--t)">'+t.date+'</div>'+
+          '</div>'+
+        '</div>'+
+        '<div style="display:flex;gap:6px">'+
+          '<button onclick="rescanOpenTrade(\''+mode+'\',\''+t.ticker+'\',\''+t.id+'\')" '+
+            'style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">↻ 재분석</button>'+
+          '<button onclick="openPartialSell('+t.id+')" '+
+            'style="flex:1;background:rgba(255,170,0,.08);border:1px solid rgba(255,170,0,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--a);cursor:pointer">매도</button>'+
+        '</div>'+
+      '</div>';
+  });
+  el.innerHTML = html;
+}
+
 function switchSubTab(sub){
   ALL_SUBS.forEach(function(s){
     var el = document.getElementById('page-'+G.currentMode+'-'+s);
@@ -673,6 +737,7 @@ function switchSubTab(sub){
 
   if(sub === 'history') renderHistory(G.currentMode);
   if(sub === 'journal') renderJournal(G.currentMode);
+  if(sub === 'search')  renderOpenPositions(G.currentMode);
 }
 
 function updateKeyStatus(){
@@ -3152,6 +3217,7 @@ function confirmPartialSell(tradeId){
   if(trade.remaining<=0) msg+=' · 포지션 종료'; else msg+=' · 잔여 '+trade.remaining+'주';
   showToast(msg);
   renderJournal(G.currentMode);
+  renderOpenPositions(G.currentMode);
 }
 
 function markTradeClosed(tradeId, curPrice){ openPartialSell(tradeId); }
@@ -3506,11 +3572,14 @@ function renderJournal(mode){
       var sellRows = '';
       if(t.sells&&t.sells.length){
         sellRows = '<div style="margin:6px 0;padding:6px 8px;background:var(--bg2);border-radius:7px">'+
-          t.sells.map(function(s){
+          '<div style="font-size:9px;color:var(--t2);letter-spacing:.06em;margin-bottom:4px">매도 내역</div>'+
+          t.sells.map(function(s,si){
             var sc=s.pnl>=0?'var(--g)':'var(--r)';
-            return '<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--t2);padding:2px 0">'+
-              '<span>'+s.date+' '+s.shares+'주 @ $'+s.price+(s.memo?' · '+s.memo:'')+'</span>'+
+            return '<div style="display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;color:var(--t2);padding:3px 0;border-bottom:1px solid var(--b)">'+
+              '<span style="flex:1">'+s.date+' '+s.shares+'주 @ $'+s.price+(s.memo?' · '+s.memo:'')+'</span>'+
               '<span style="color:'+sc+'">'+(s.pnl>=0?'+':'')+s.pnl.toFixed(2)+'$</span>'+
+              '<button onclick="editSellEntry('+t.id+','+si+')" style="font-size:11px;color:var(--bl);background:none;border:none;cursor:pointer;padding:0 4px">✏️</button>'+
+              '<button onclick="deleteSellEntry('+t.id+','+si+')" style="font-size:11px;color:var(--r);background:none;border:none;cursor:pointer;padding:0 4px">✕</button>'+
             '</div>';
           }).join('')+
         '</div>';
@@ -3521,10 +3590,12 @@ function renderJournal(mode){
       if(t.buys&&t.buys.length>1){
         buyRows = '<div style="margin:4px 0 6px;padding:6px 8px;background:rgba(43,159,255,.05);border:1px solid rgba(43,159,255,.1);border-radius:7px">'+
           '<div style="font-size:10px;color:var(--bl);margin-bottom:4px;letter-spacing:.06em">매수 내역 (평균 $'+t.entry.toFixed(2)+')</div>'+
-          t.buys.map(function(b){
-            return '<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--t2);padding:2px 0">'+
-              '<span>'+b.date+' '+b.shares+'주 @ $'+b.price+(b.memo?' · '+b.memo:'')+'</span>'+
+          t.buys.map(function(b,bi){
+            return '<div style="display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;color:var(--t2);padding:3px 0;border-bottom:1px solid var(--b)">'+
+              '<span style="flex:1">'+b.date+' '+b.shares+'주 @ $'+b.price+(b.memo?' · '+b.memo:'')+'</span>'+
               '<span style="color:var(--bl)">$'+b.price+'</span>'+
+              '<button onclick="editBuyEntry('+t.id+','+bi+')" style="font-size:11px;color:var(--bl);background:none;border:none;cursor:pointer;padding:0 4px">✏️</button>'+
+              '<button onclick="deleteBuyEntry('+t.id+','+bi+')" style="font-size:11px;color:var(--r);background:none;border:none;cursor:pointer;padding:0 4px">✕</button>'+
             '</div>';
           }).join('')+
         '</div>';
@@ -3561,6 +3632,148 @@ function renderJournal(mode){
     });
   });
   listEl.innerHTML = html;
+}
+
+// ═══════════════════════════════════════
+// 매도/매수 항목 수정·삭제
+// ═══════════════════════════════════════
+function recalcTrade(trade){
+  // 매수 평균단가 재계산
+  if(trade.buys&&trade.buys.length){
+    var tv=trade.buys.reduce(function(s,b){return s+b.price*b.shares;},0);
+    var ts=trade.buys.reduce(function(s,b){return s+b.shares;},0);
+    trade.entry=ts>0?parseFloat((tv/ts).toFixed(4)):trade.entry;
+    trade.shares=ts;
+  }
+  // 매도 재계산
+  if(trade.sells&&trade.sells.length){
+    trade.sells.forEach(function(s){
+      s.pnl=parseFloat(((s.price-trade.entry)*s.shares).toFixed(2));
+      s.pnl_pct=parseFloat(((s.price-trade.entry)/trade.entry*100).toFixed(2));
+    });
+    var soldSh=trade.sells.reduce(function(s,sv){return s+sv.shares;},0);
+    trade.remaining=(trade.shares||0)-soldSh;
+    trade.pnl=parseFloat(trade.sells.reduce(function(s,sv){return s+sv.pnl;},0).toFixed(2));
+    if(trade.remaining<=0){
+      trade.remaining=0;
+      var totV=trade.sells.reduce(function(s,sv){return s+sv.price*sv.shares;},0);
+      var totS=trade.sells.reduce(function(s,sv){return s+sv.shares;},0);
+      trade.exit=parseFloat((totV/totS).toFixed(2));
+      trade.pnl_pct=parseFloat(((trade.exit-trade.entry)/trade.entry*100).toFixed(2));
+      trade.status=trade.pnl>=0?'win':'loss';
+    } else {
+      trade.status='partial';
+      trade.exit=null;
+    }
+  } else {
+    trade.remaining=trade.shares||0;
+    trade.pnl=null; trade.pnl_pct=null; trade.exit=null; trade.status='open';
+  }
+}
+
+function deleteSellEntry(tradeId, idx){
+  var trade=G_journal.find(function(t){return t.id===tradeId;});
+  if(!trade||!trade.sells) return;
+  if(!confirm('이 매도 기록을 삭제할까요?')) return;
+  trade.sells.splice(idx,1);
+  recalcTrade(trade);
+  localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+  renderJournal(G.currentMode);
+  renderOpenPositions(G.currentMode);
+  showToast('매도 기록 삭제됨');
+}
+
+function deleteBuyEntry(tradeId, idx){
+  var trade=G_journal.find(function(t){return t.id===tradeId;});
+  if(!trade||!trade.buys) return;
+  if(trade.buys.length<=1){ showToast('최초 진입가는 삭제할 수 없어요'); return; }
+  if(!confirm('이 매수 기록을 삭제할까요?')) return;
+  trade.buys.splice(idx,1);
+  recalcTrade(trade);
+  localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+  renderJournal(G.currentMode);
+  renderOpenPositions(G.currentMode);
+  showToast('매수 기록 삭제됨');
+}
+
+function editSellEntry(tradeId, idx){
+  var trade=G_journal.find(function(t){return t.id===tradeId;});
+  if(!trade||!trade.sells||!trade.sells[idx]) return;
+  var s=trade.sells[idx];
+  var modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:flex-end;justify-content:center';
+  modal.className='modal-overlay';
+  modal.innerHTML=
+    '<div style="width:100%;max-width:480px;background:var(--bg1);border-radius:20px 20px 0 0;padding:24px 20px '+Math.max(20,0)+'px">'+
+      '<div style="font-family:var(--mono);font-size:14px;color:var(--t);margin-bottom:16px">매도 기록 수정</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">'+
+        '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">매도가</div>'+
+        '<input id="es_price" type="number" step="0.01" value="'+s.price+'" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
+        '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">수량</div>'+
+        '<input id="es_shares" type="number" step="1" value="'+s.shares+'" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
+      '</div>'+
+      '<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--t2);margin-bottom:4px">메모</div>'+
+      '<input id="es_memo" type="text" value="'+(s.memo||'')+'" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-size:13px;color:var(--t);outline:none"></div>'+
+      '<div style="display:flex;gap:8px">'+
+        '<button onclick="this.closest(\'.modal-overlay\').remove()" style="flex:1;padding:12px;background:var(--bg2);border:1px solid var(--b);border-radius:10px;color:var(--t2);font-size:14px;cursor:pointer">취소</button>'+
+        '<button id="es_confirm" style="flex:2;padding:12px;background:var(--g);border:none;border-radius:10px;color:#000;font-size:14px;font-weight:700;cursor:pointer">수정 완료</button>'+
+      '</div>'+
+    '</div>';
+  document.body.appendChild(modal);
+  modal.querySelector('#es_confirm').onclick=function(){
+    var price=parseFloat(document.getElementById('es_price').value);
+    var shares=parseInt(document.getElementById('es_shares').value);
+    var memo=document.getElementById('es_memo').value.trim();
+    if(!price||!shares||price<=0||shares<=0){ showToast('가격과 수량을 확인하세요'); return; }
+    s.price=price; s.shares=shares; s.memo=memo;
+    recalcTrade(trade);
+    localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+    modal.remove();
+    renderJournal(G.currentMode);
+    renderOpenPositions(G.currentMode);
+    showToast('매도 기록 수정됨');
+  };
+  modal.onclick=function(e){ if(e.target===modal) modal.remove(); };
+}
+
+function editBuyEntry(tradeId, idx){
+  var trade=G_journal.find(function(t){return t.id===tradeId;});
+  if(!trade||!trade.buys||!trade.buys[idx]) return;
+  var b=trade.buys[idx];
+  var modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:flex-end;justify-content:center';
+  modal.className='modal-overlay';
+  modal.innerHTML=
+    '<div style="width:100%;max-width:480px;background:var(--bg1);border-radius:20px 20px 0 0;padding:24px 20px '+Math.max(20,0)+'px">'+
+      '<div style="font-family:var(--mono);font-size:14px;color:var(--t);margin-bottom:16px">매수 기록 수정'+(idx===0?' (최초 진입)':' ('+idx+'차 추가)')+'</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">'+
+        '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">매수가</div>'+
+        '<input id="eb_price" type="number" step="0.01" value="'+b.price+'" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
+        '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">수량</div>'+
+        '<input id="eb_shares" type="number" step="1" value="'+b.shares+'" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
+      '</div>'+
+      '<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--t2);margin-bottom:4px">메모</div>'+
+      '<input id="eb_memo" type="text" value="'+(b.memo||'')+'" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-size:13px;color:var(--t);outline:none"></div>'+
+      '<div style="display:flex;gap:8px">'+
+        '<button onclick="this.closest(\'.modal-overlay\').remove()" style="flex:1;padding:12px;background:var(--bg2);border:1px solid var(--b);border-radius:10px;color:var(--t2);font-size:14px;cursor:pointer">취소</button>'+
+        '<button id="eb_confirm" style="flex:2;padding:12px;background:var(--bl);border:none;border-radius:10px;color:#000;font-size:14px;font-weight:700;cursor:pointer">수정 완료</button>'+
+      '</div>'+
+    '</div>';
+  document.body.appendChild(modal);
+  modal.querySelector('#eb_confirm').onclick=function(){
+    var price=parseFloat(document.getElementById('eb_price').value);
+    var shares=parseInt(document.getElementById('eb_shares').value);
+    var memo=document.getElementById('eb_memo').value.trim();
+    if(!price||!shares||price<=0||shares<=0){ showToast('가격과 수량을 확인하세요'); return; }
+    b.price=price; b.shares=shares; b.memo=memo;
+    recalcTrade(trade);
+    localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+    modal.remove();
+    renderJournal(G.currentMode);
+    renderOpenPositions(G.currentMode);
+    showToast('매수 기록 수정됨');
+  };
+  modal.onclick=function(e){ if(e.target===modal) modal.remove(); };
 }
 
 function deleteTradeLog(id){
