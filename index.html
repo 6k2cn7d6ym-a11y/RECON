@@ -1098,6 +1098,93 @@ async function fetchYahooData(ticker){
         result.intraday_range_low =parseFloat(c10L.toFixed(2));
         result.intraday_range_pct =c10Mid>0?parseFloat(((c10H-c10L)/c10Mid*100).toFixed(1)):null;
         result.intraday_consolidation=result.intraday_range_pct!==null&&result.intraday_range_pct<1.5;
+
+        // ── 응축(압축) 패턴 감지 ──
+        // PRE: 전체 구간 / 장중: 최근 60분
+        var consLookback=IS_PRE?mktCandles.length:Math.min(mktCandles.length,60);
+        var last15=mktCandles.slice(-consLookback);
+        var consScore=0;
+        if(last15.length>=8){
+          var c15H=Math.max.apply(null,last15.map(function(cd){return cd.h;}));
+          var c15L=Math.min.apply(null,last15.map(function(cd){return cd.l;}));
+          var c15Mid=(c15H+c15L)/2;
+          var c15Pct=c15Mid>0?(c15H-c15L)/c15Mid*100:999;
+
+          // 1. 레인지 좁음 (3% 이내)
+          if(c15Pct<3.0) consScore+=30;
+          else if(c15Pct<5.0) consScore+=15;
+
+          // 2. 거래량 감소 추세 (앞 5봉 vs 뒤 5봉)
+          var earlyVol=last15.slice(0,5).reduce(function(s,cd){return s+cd.v;},0)/5;
+          var lateVol =last15.slice(-5).reduce(function(s,cd){return s+cd.v;},0)/5;
+          if(earlyVol>0&&lateVol/earlyVol<0.7) consScore+=25; // 거래량 30%+ 감소
+          else if(earlyVol>0&&lateVol/earlyVol<0.85) consScore+=12;
+
+          // 3. 캔들 몸통 점점 작아짐 (에너지 압축)
+          var earlyBody=last15.slice(0,5).reduce(function(s,cd){return s+Math.abs(cd.c-cd.o);},0)/5;
+          var lateBody =last15.slice(-5).reduce(function(s,cd){return s+Math.abs(cd.c-cd.o);},0)/5;
+          if(earlyBody>0&&lateBody/earlyBody<0.6) consScore+=20;
+
+          // 4. 고점 위치: 최근 고점이 이전보다 낮아지거나 비슷 (수렴)
+          var firstHalf=last15.slice(0,7);
+          var secondHalf=last15.slice(-7);
+          var fhH=Math.max.apply(null,firstHalf.map(function(cd){return cd.h;}));
+          var shH=Math.max.apply(null,secondHalf.map(function(cd){return cd.h;}));
+          var fhL=Math.min.apply(null,firstHalf.map(function(cd){return cd.l;}));
+          var shL=Math.min.apply(null,secondHalf.map(function(cd){return cd.l;}));
+          // 고점은 낮아지고 저점은 높아지는 수렴 패턴
+          if(shH<fhH&&shL>fhL) consScore+=25; // 완벽한 수렴
+          else if(shH<=fhH*1.01&&shL>=fhL*0.99) consScore+=12; // 비슷한 레벨 유지
+
+          result.cons_score=consScore;
+          result.cons_range_high=parseFloat(c15H.toFixed(2));
+          result.cons_range_low =parseFloat(c15L.toFixed(2));
+          result.cons_range_pct =parseFloat(c15Pct.toFixed(1));
+          // 응축 상태: 60+ 강한 응축, 35+ 응축 중, 미만 비응축
+          result.cons_status=consScore>=60?'tight':(consScore>=35?'forming':'none');
+
+          // 브레이크아웃 감지: 현재가가 응축 범위 상단 돌파 + 거래량 증가
+          var breakoutVol=last15[last15.length-1]?last15[last15.length-1].v:0;
+          var avgConsVol=last15.slice(0,-1).reduce(function(s,cd){return s+cd.v;},0)/Math.max(1,last15.length-1);
+          result.cons_breakout=(cp&&cp>c15H*1.005&&breakoutVol>avgConsVol*1.5)||false;
+        } else {
+          result.cons_score=0; result.cons_status='none'; result.cons_breakout=false;
+        }
+
+        // ── 눌림목 vs 하락 판별 ──
+        var pbScore=0;
+        var last5=mktCandles.slice(-5);
+        var last3=mktCandles.slice(-3);
+        var peakVol=Math.max.apply(null,mktCandles.map(function(c){return c.v;}));
+        var recentAvgVol=last5.reduce(function(s,c){return s+c.v;},0)/last5.length;
+
+        // 거래량 줄면서 내려옴 (눌림목 신호)
+        if(peakVol>0&&recentAvgVol/peakVol<0.5) pbScore+=25;
+        // VWAP 위 유지
+        if(result.vwap&&cp&&cp>result.vwap) pbScore+=20;
+        // 조정폭 -5~20% (너무 많이 빠지면 하락)
+        if(result.pm_high&&cp){
+          var dropPct=(result.pm_high-cp)/result.pm_high*100;
+          if(dropPct>=5&&dropPct<=20) pbScore+=20;
+          else if(dropPct>20) pbScore-=25;
+        }
+        // 지지선 근처에서 캔들이 받쳐줌 (최근 3캔들 저점이 지지선 ±2% 안)
+        if(result.nearest_support&&last3.length>=3){
+          var sup=result.nearest_support;
+          var holdingSup=last3.every(function(cd){return cd.l>=sup*0.98;});
+          var bouncingUp=last3.filter(function(cd){return cd.c>cd.o;}).length>=2; // 최근 3캔들 중 양봉 2개+
+          if(holdingSup) pbScore+=20;
+          if(bouncingUp) pbScore+=15;
+        }
+        // 최근 캔들 연속 음봉 + 거래량 증가 → 하락
+        var recentBearish=last3.filter(function(cd){return cd.c<cd.o;}).length;
+        var volIncreasing=last3.length>=2&&last3[last3.length-1].v>last3[0].v*1.5;
+        if(recentBearish>=3&&volIncreasing) pbScore-=30;
+        // Lower Low 패턴 감지
+        if(last3.length>=3&&last3[2].l<last3[1].l&&last3[1].l<last3[0].l) pbScore-=20;
+
+        result.pullback_score=pbScore;
+        result.pullback_status=pbScore>=60?'pullback':(pbScore>=30?'uncertain':'dump');
       }
 
       // 진입각 계산
@@ -2015,7 +2102,7 @@ function getDumpScore(r){
   if(all.includes('vwap')&&all.includes('이탈'))            score+=20;
 
   // ── 강력 P&D 키워드 ──
-  if(news.includes('reverse split')||news.includes('reverse-split')) score+=60;
+  if(news.includes('reverse split')||news.includes('reverse-split')||news.includes('reverse stock split')) score+=60;
   var socialKw=['discord','telegram','reddit','wallstreetbets','stocktwits','pump'];
   if(socialKw.some(function(k){return news.includes(k);}))           score+=40;
   var promoKw=['press release only','no revenue','shell company','going concern','nasdaq deficiency'];
@@ -2097,7 +2184,7 @@ function hardFilter(r, mode){
   if(all.includes('lower high')) reasons.push('Lower High 연속 — 모멘텀 소멸');
 
   // 5. 즉시 BLOCK P&D
-  if(newsLow.includes('reverse split')||newsLow.includes('reverse-split'))
+  if(newsLow.includes('reverse split')||newsLow.includes('reverse-split')||newsLow.includes('reverse stock split'))
     reasons.push('리버스 스플릿 — P&D 전형');
   if(['discord','telegram','reddit','wallstreetbets','pump'].some(function(k){return newsLow.includes(k);}))
     reasons.push('소셜미디어 조작성 감지');
@@ -2505,6 +2592,12 @@ function calcEntryAction(r){
   var sup1=r.nearest_support,    sup2=r.second_support;
   var atr=r.atr_1min||0;
   var phase=G.marketPhase||'PRE'; // PRE|ORB|EARLY|PRIME|LATE|CLOSED
+  var pbScore=r.pullback_score||0;
+  var pbStatus=r.pullback_status||'uncertain'; // pullback|uncertain|dump
+  var consScore=r.cons_score||0;
+  var consStatus=r.cons_status||'none'; // tight|forming|none
+  var consBreakout=r.cons_breakout||false;
+  var consHigh=r.cons_range_high, consLow=r.cons_range_low;
 
   // ── ORB 시간대: 절대 진입 금지 ──
   if(phase==='ORB') return {
@@ -2514,10 +2607,10 @@ function calcEntryAction(r){
   };
 
   // ── 1. 하드 차단 ──
-  if(vwap&&price&&price<vwap*0.98) return {
+  if(vwap&&price&&price<vwap) return {
     signal:'AVOID',icon:'🔴',label:'진입 금지',
     reason:'VWAP $'+vwap.toFixed(2)+' 아래 '+Math.abs(vwapDist||0).toFixed(1)+'% — 매도 압력 구간',
-    trigger:'$'+(vwap*1.005).toFixed(2)+' 탈환 캔들 확인 후 재판단',css:'avoid'
+    trigger:'VWAP $'+vwap.toFixed(2)+' 탈환 확인 후 → '+(res1?'$'+(res1+0.02).toFixed(2)+' 돌파':pmHigh?'$'+(pmHigh+0.02).toFixed(2)+' 돌파':'재판단'),css:'avoid'
   };
   if(pmHigh&&price&&price>pmHigh*1.12) return {
     signal:'LATE',icon:'🔴',label:'기회 지남',
@@ -2541,7 +2634,21 @@ function calcEntryAction(r){
     reason:'['+phase+'] ORB $'+orbHigh.toFixed(2)+' 브레이크아웃 + VWAP 위 — 최적 진입',
     trigger:null,css:'go'
   };
-  // 2c. 장중 공고화 박스 돌파
+  // 2c-1. 응축 브레이크아웃 (15분봉 기준 강한 응축 후 돌파)
+  if(consBreakout&&(consStatus==='tight'||consStatus==='forming')&&aboveVwap) return {
+    signal:'GO',icon:'🟢',label:'브레이크아웃',
+    reason:'['+phase+'] 응축('+consScore+'점) $'+consLow+'~$'+consHigh+' 돌파 + 거래량 폭발',
+    trigger:'즉시 진입 / 손절 $'+consLow+' 이탈 시 / 목표 '+(res1?'$'+res1.toFixed(2):pmHigh?'$'+pmHigh.toFixed(2):'다음 저항'),
+    css:'go'
+  };
+  // 2c-2. 응축 감지 → 대기 신호 (눌림목/하락보다 높은 우선순위)
+  if((consStatus==='tight'||consStatus==='forming')&&!consBreakout&&aboveVwap) return {
+    signal:'WAIT',icon:'🟡',label:'응축 중',
+    reason:'['+phase+'] 응축 감지 ('+consScore+'점) — $'+consLow+'~$'+consHigh+' 에너지 압축 중',
+    trigger:'돌파: $'+(consHigh?parseFloat((consHigh*1.005).toFixed(2)):'--')+' + 거래량 1.5배+ | 이탈: $'+consLow+' 손절',
+    css:'wait'
+  };
+  // 2c-3. 장중 공고화 박스 돌파 (기존 10분봉)
   if(r.intraday_consolidation&&r.intraday_range_high&&price>r.intraday_range_high&&aboveVwap&&
      (!pmHigh||price<=pmHigh*1.08)) return {
     signal:'GO',icon:'🟢',label:'지금 진입',
@@ -2564,45 +2671,95 @@ function calcEntryAction(r){
     trigger:null,css:'go'
   };
 
-  // ── 3. WAIT — 구체적 레벨 + 시간대 ──
-  // 3a. 저항선 직전
+  // ── 3. WAIT — 눌림목 기반 트리거 ──
+  // 3a. 저항선 직전 — 눌리면 지지선에서 진입
   if(res1&&price<res1&&price>res1*0.985&&aboveVwap) return {
     signal:'WAIT',icon:'🟡',label:'기다려',
-    reason:'['+phase+'] $'+res1.toFixed(2)+' 저항 직전 — 돌파 캔들 + 거래량 확인 필요',
-    trigger:'진입: $'+(res1+0.02).toFixed(2)+' 돌파 + 거래량 1.5배+'+(sup1?' | 지지 $'+sup1.toFixed(2):''),
+    reason:'['+phase+'] $'+res1.toFixed(2)+' 저항 직전 — 눌림 대기',
+    trigger:sup1?'진입: $'+sup1.toFixed(2)+' 지지 확인 시 / 손절 $'+(sup1*0.97).toFixed(2):
+      vwap?'진입: VWAP $'+vwap.toFixed(2)+' 눌림 반등 확인 시':'눌림 후 지지 확인',
     css:'wait'
   };
-  // 3b. PM 고점 미돌파 (PRE/EARLY)
-  if(pmHigh&&price<pmHigh&&aboveVwap) return {
-    signal:'WAIT',icon:'🟡',label:'기다려',
-    reason:'['+phase+'] PM 고점 $'+pmHigh.toFixed(2)+' 미돌파'+
-      (phase==='PRE'?' — 오픈 후 돌파 확인':' — 돌파 + 거래량 확인'),
-    trigger:'진입: $'+(pmHigh+0.02).toFixed(2)+' 돌파'+(sup1?' | 눌림지지 $'+sup1.toFixed(2):'')+
-      (r.intraday_consolidation?' | 공고화 $'+r.intraday_range_low+'~'+r.intraday_range_high:''),css:'wait'
-  };
-  // 3c. 추격 위험
+  // 3b. PM 고점 미돌파 — 눌림목 vs 하락 판별 후 신호
+  if(pmHigh&&price<pmHigh&&aboveVwap){
+    if(pbStatus==='pullback'&&sup1){
+      // 눌림목 확인 → 지지선 반등 기다림
+      return {
+        signal:'GO',icon:'🟢',label:'눌림목 진입',
+        reason:'['+phase+'] 눌림목 확인 (score '+pbScore+') — '+sup1.toFixed(2)+' 지지 유지 중',
+        trigger:'진입: $'+sup1.toFixed(2)+' 반등 확인 / 손절 $'+(sup1*0.97).toFixed(2)+' / 목표 $'+pmHigh.toFixed(2),
+        css:'go'
+      };
+    } else if(pbStatus==='dump'){
+      return {
+        signal:'AVOID',icon:'🔴',label:'하락 중',
+        reason:'['+phase+'] 눌림목 아님 — 거래량 증가+하락 (score '+pbScore+')',
+        trigger:sup1?'$'+sup1.toFixed(2)+' 지지 확인 후 재판단':'지지선 형성 대기',
+        css:'avoid'
+      };
+    } else {
+      return {
+        signal:'WAIT',icon:'🟡',label:'기다려',
+        reason:'['+phase+'] PM 고점 $'+pmHigh.toFixed(2)+' 미돌파 — 눌림목 확인 중 (score '+pbScore+')',
+        trigger:sup1?'진입: $'+sup1.toFixed(2)+' 반등 확인 시 / 손절 $'+(sup1*0.97).toFixed(2):
+          vwap?'VWAP $'+vwap.toFixed(2)+' 눌림 반등 확인':'눌림 후 지지 확인',
+        css:'wait'
+      };
+    }
+  }
+  // 3c. 고점 대비 많이 오름 — 더 깊은 눌림 대기
   if(pmHigh&&price>pmHigh*1.05&&price<=pmHigh*1.12&&aboveVwap) return {
     signal:'WAIT',icon:'🟡',label:'기다려',
-    reason:'['+phase+'] PM 고점 대비 +'+((price/pmHigh-1)*100).toFixed(0)+'% — 눌림목 대기',
-    trigger:'눌림: '+(sup1?'$'+sup1.toFixed(2)+' 지지':'')+(vwap?' VWAP $'+vwap.toFixed(2):'')+
-      (res2?' | 2차저항 $'+res2.toFixed(2):''),css:'wait'
+    reason:'['+phase+'] PM 고점 대비 +'+((price/pmHigh-1)*100).toFixed(0)+'% 과확장 — 눌림 대기',
+    trigger:sup1?'진입: $'+sup1.toFixed(2)+' 지지 확인 시 / 손절 $'+(sup1*0.97).toFixed(2):
+      vwap?'진입: VWAP $'+vwap.toFixed(2)+' 눌림 반등':'눌림 후 지지 확인',
+    css:'wait'
   };
-  // 3d. VWAP 위 + 저항 막힘
-  if(aboveVwap&&res1&&price<res1) return {
-    signal:'WAIT',icon:'🟡',label:'기다려',
-    reason:'['+phase+'] VWAP 위 양호. 저항 $'+res1.toFixed(2)+' 돌파 전 대기',
-    trigger:'진입: $'+(res1+0.02).toFixed(2)+' 돌파'+(sup1?' | 지지 $'+sup1.toFixed(2):''),css:'wait'
-  };
-  // Default
+  // 3d. VWAP 위 — 눌림목 vs 하락 판별
+  if(aboveVwap&&res1&&price<res1){
+    if(pbStatus==='pullback'&&sup1){
+      return {
+        signal:'GO',icon:'🟢',label:'눌림목 진입',
+        reason:'['+phase+'] 눌림목 확인 (score '+pbScore+') — $'+sup1.toFixed(2)+' 지지 유지',
+        trigger:'진입: $'+sup1.toFixed(2)+' 반등 확인 / 손절 $'+(sup1*0.97).toFixed(2)+' / 목표 $'+res1.toFixed(2),
+        css:'go'
+      };
+    } else if(pbStatus==='dump'){
+      return {
+        signal:'AVOID',icon:'🔴',label:'하락 중',
+        reason:'['+phase+'] 눌림목 아님 — 하락 패턴 감지 (score '+pbScore+')',
+        trigger:sup1?'$'+sup1.toFixed(2)+' 지지 확인 후 재판단':'재판단',
+        css:'avoid'
+      };
+    }
+    return {
+      signal:'WAIT',icon:'🟡',label:'기다려',
+      reason:'['+phase+'] VWAP 위 — 눌림목 확인 중 (score '+pbScore+')',
+      trigger:sup1?'진입: $'+sup1.toFixed(2)+' 반등 확인 / 손절 $'+(sup1*0.97).toFixed(2):
+        vwap?'VWAP $'+vwap.toFixed(2)+' 눌림 반등 확인':'지지 확인',
+      css:'wait'
+    };
+  }
+  // Default — VWAP 위/아래에 따라 트리거 다르게
   var parts=['VWAP '+(aboveVwap?'위':'아래')+'['+phase+']'];
   if(pmHigh) parts.push('PM고점 $'+pmHigh.toFixed(2));
   if(res1) parts.push('저항 $'+res1.toFixed(2));
   if(sup1) parts.push('지지 $'+sup1.toFixed(2));
+  var defaultTrigger;
+  if(!aboveVwap&&vwap){
+    // VWAP 아래 → VWAP 탈환이 먼저
+    defaultTrigger = 'VWAP $'+vwap.toFixed(2)+' 탈환 후 → '+(res1?'$'+(res1+0.02).toFixed(2)+' 돌파':pmHigh?'$'+(pmHigh+0.02).toFixed(2)+' 돌파':'재판단');
+  } else if(res1){
+    defaultTrigger = '진입: $'+(res1+0.02).toFixed(2)+' 돌파 + 거래량 확인';
+  } else if(pmHigh){
+    defaultTrigger = '진입: $'+(pmHigh+0.02).toFixed(2)+' 돌파 + 거래량 확인';
+  } else {
+    defaultTrigger = null;
+  }
   return {
     signal:'WAIT',icon:'🟡',label:'기다려',
     reason:parts.join(' / '),
-    trigger:pmHigh?'진입: $'+(pmHigh+0.02).toFixed(2)+' 돌파 + 거래량 확인':
-      (res1?'진입: $'+(res1+0.02).toFixed(2)+' 돌파 확인':null),
+    trigger:defaultTrigger,
     css:'wait'
   };
 }
