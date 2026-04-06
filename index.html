@@ -662,7 +662,13 @@ function switchMode(mode){
 // 보유 포지션 재분석 헬퍼
 // ═══════════════════════════════════════
 function rescanOpenTrade(mode, ticker){
-  switchMode(mode);
+  // switchMode 토글 버그 우회 — 이미 해당 모드면 서브탭만 전환
+  if(G.currentMode !== mode){
+    G.currentMode = mode;
+    switchMode(mode);
+  } else {
+    switchSubTab('search');
+  }
   var inputEl = document.getElementById(mode+'Input');
   if(inputEl) inputEl.value = ticker;
   runModeScan(mode);
@@ -686,7 +692,7 @@ function renderOpenPositions(mode){
   var el = document.getElementById(mode+'OpenArea');
   if(!el) return;
   var openTrades = G_journal.filter(function(t){
-    return (t.status==='open'||t.status==='partial') && (!t.mode||t.mode===mode);
+    return (t.status==='open'||t.status==='partial') && (t.mode===mode||(t.mode==='momo'&&mode==='momo')||(!t.mode&&mode==='momo'));
   });
   if(!openTrades.length){ el.innerHTML=''; return; }
   var html = '<div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.1em;margin:8px 0 4px;padding:0 2px">📌 보유 중 — 매도 완료 시 자동 제거</div>';
@@ -809,7 +815,8 @@ function updateClock(){
 var WORKER_URL = 'https://recon.miinonnnn.workers.dev';
 
 async function fetchWithProxy(url){
-  var fetchP = fetch(WORKER_URL + '?url=' + encodeURIComponent(url))
+  var bust = '&_t='+Date.now(); // 캐시 버스팅
+  var fetchP = fetch(WORKER_URL + '?url=' + encodeURIComponent(url) + bust, {cache:'no-store'})
     .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
     .then(function(t){ return JSON.parse(t); });
   var timeoutP = new Promise(function(_,reject){
@@ -1046,17 +1053,18 @@ async function fetchYahooData(ticker){
         result.pm_consolidation = result.pm_range_pct!==null && result.pm_range_pct<3.0;
       }
 
-      // ── 장중 1분봉 스윙 고/저점 분석 (지지·저항선) ──
+      // ── 1분봉 스윙 고/저점 분석 (PRE 포함) ──
       var mktCandles=[];
       ts.forEach(function(stamp,idx){
         var etD=new Date(new Date(stamp*1000).toLocaleString('en-US',{timeZone:'America/New_York'}));
         var hm=etD.getHours()*100+etD.getMinutes();
         var h=highs[idx],l=lows[idx],c=closes[idx],v=vols[idx];
-        if(h&&l&&c&&v&&hm>=930&&hm<=1600) mktCandles.push({hm:hm,h:h,l:l,c:c,v:v});
+        // PRE(4:00~9:30) + 장중(9:30~16:00) 모두 포함
+        if(h&&l&&c&&v&&hm>=400&&hm<=1600) mktCandles.push({hm:hm,h:h,l:l,c:c,v:v});
       });
       if(mktCandles.length>=5){
         var cp=result.price;
-        var lookback=Math.min(mktCandles.length-1,45); // 최근 45분
+        var lookback=Math.min(mktCandles.length-1,IS_PRE?mktCandles.length:60); // PRE: 전체, 장중: 최근 60분
         var rc=mktCandles.slice(-lookback);
 
         // 스윙 고점: 좌우 2캔들보다 높은 봉 (1분봉 로컬 맥스)
@@ -1098,24 +1106,26 @@ async function fetchYahooData(ticker){
       var res1=result.nearest_resistance, sup1=result.nearest_support;
 
       if(IS_PRE && result.pm_high && result.pm_low){
-        // ▲ 진입각: 응축 구간 지지선 기반 (VWAP or 지지선 or 박스권 하단)
+        // ▲ 진입각: 현재가 기준 가장 가까운 지지선에서 눌림목 진입
         var mainEntry, mainStop;
-        if(result.intraday_consolidation&&result.intraday_range_low){
+        // 현재가(ep) 아래 가장 가까운 지지선 찾기
+        var nearSup = sup1&&sup1<ep&&sup1>ep*0.90 ? sup1 : null;
+        if(nearSup){
+          mainEntry=parseFloat((nearSup+0.01).toFixed(2)); // 현재가 아래 가장 가까운 지지
+        } else if(result.vwap&&parseFloat(result.vwap)<ep&&parseFloat(result.vwap)>ep*0.90){
+          mainEntry=parseFloat((parseFloat(result.vwap)+0.01).toFixed(2)); // VWAP 눌림
+        } else if(result.intraday_consolidation&&result.intraday_range_low&&parseFloat(result.intraday_range_low)<ep){
           mainEntry=parseFloat((parseFloat(result.intraday_range_low)+0.01).toFixed(2)); // 박스권 하단
-        } else if(result.vwap&&ep&&Math.abs(ep-result.vwap)/result.vwap<0.05){
-          mainEntry=parseFloat((parseFloat(result.vwap)+0.01).toFixed(2)); // VWAP 근처
-        } else if(sup1&&sup1>result.pm_low){
-          mainEntry=parseFloat((sup1+0.01).toFixed(2)); // 지지선
         } else {
-          mainEntry=parseFloat((result.pm_low*1.02).toFixed(2)); // PM 저점 위
+          mainEntry=parseFloat((ep*0.97).toFixed(2)); // 현재가 -3% 폴백
         }
-        // 손절: 지지선 or VWAP 아래
-        if(sup1&&sup1<mainEntry&&sup1>mainEntry*0.93){
-          mainStop=parseFloat((sup1-0.02).toFixed(2));
+        // 손절: 진입선 아래 지지 or -5%
+        if(nearSup&&nearSup<mainEntry){
+          mainStop=parseFloat((nearSup-0.02).toFixed(2));
         } else if(result.vwap&&parseFloat(result.vwap)<mainEntry){
-          mainStop=parseFloat((parseFloat(result.vwap)*0.985).toFixed(2));
+          mainStop=parseFloat((parseFloat(result.vwap)*0.98).toFixed(2));
         } else {
-          mainStop=parseFloat((result.pm_low*0.97).toFixed(2));
+          mainStop=parseFloat((mainEntry*0.95).toFixed(2));
         }
         result.entry_calc = mainEntry;
         result.stop_calc  = mainStop;
@@ -1130,19 +1140,20 @@ async function fetchYahooData(ticker){
           : parseFloat((mainEntry+r1*2).toFixed(2));
         result.rr_calc = r1>0 ? parseFloat(((result.target_calc-mainEntry)/r1).toFixed(1)) : null;
 
-        // ↘ 눌림목 진입각: 더 눌렸을 때 (PM 저점 근처 or 더 깊은 지지)
+        // ↘ 눌림목 진입각: mainEntry보다 한 단계 더 깊은 지지
         if(ep){
           var pbEntry, pbStop;
-          // 더 깊은 눌림: PM 저점 근처 or sup2 or PM 저점+버퍼
           var sup2=result.second_support;
-          if(sup2&&sup2>result.pm_low&&sup2<mainEntry){
+          // mainEntry 아래 다음 지지선: sup2 or VWAP(mainEntry보다 낮으면) or mainEntry-5%
+          if(sup2&&sup2<mainEntry&&sup2>mainEntry*0.85){
             pbEntry=parseFloat((sup2+0.01).toFixed(2));
-          } else if(result.pm_low){
-            pbEntry=parseFloat((result.pm_low*1.01).toFixed(2));
+          } else if(result.vwap&&parseFloat(result.vwap)<mainEntry&&parseFloat(result.vwap)>mainEntry*0.85){
+            pbEntry=parseFloat((parseFloat(result.vwap)+0.01).toFixed(2));
           } else {
-            pbEntry=parseFloat((mainEntry*0.97).toFixed(2));
+            pbEntry=parseFloat((mainEntry*0.94).toFixed(2)); // mainEntry 대비 -6%
           }
-          pbStop=parseFloat((pbEntry*0.93).toFixed(2));
+          // 손절: 눌림목 진입 아래 -5%
+          pbStop=parseFloat((pbEntry*0.95).toFixed(2));
           var _pb1lvls=[];
           if(result.vwap&&parseFloat(result.vwap)>pbEntry)        _pb1lvls.push(parseFloat(result.vwap));
           if(result.pm_high&&result.pm_high>pbEntry)               _pb1lvls.push(result.pm_high);
@@ -1156,16 +1167,17 @@ async function fetchYahooData(ticker){
           result.pullback_rr     = rp>0?parseFloat(((pbTarget-pbEntry)/rp).toFixed(1)):null;
         }
       } else if(IS_OPEN && result.orb_high && result.orb_low){
-        // ▲ 진입각: 장중 응축 구간 지지선 기반
+        // ▲ 진입각: 현재가 기준 가장 가까운 지지선 눌림목 진입
         var mainEntry2, mainStop2;
-        if(result.intraday_consolidation&&result.intraday_range_low){
-          mainEntry2=parseFloat((parseFloat(result.intraday_range_low)+0.01).toFixed(2));
-        } else if(result.vwap&&ep&&Math.abs(ep-parseFloat(result.vwap))/parseFloat(result.vwap)<0.05){
+        var nearSup2=sup1&&sup1<ep&&sup1>ep*0.90?sup1:null;
+        if(nearSup2){
+          mainEntry2=parseFloat((nearSup2+0.01).toFixed(2));
+        } else if(result.vwap&&parseFloat(result.vwap)<ep&&parseFloat(result.vwap)>ep*0.90){
           mainEntry2=parseFloat((parseFloat(result.vwap)+0.01).toFixed(2));
-        } else if(sup1){
-          mainEntry2=parseFloat((sup1+0.01).toFixed(2));
+        } else if(result.intraday_consolidation&&result.intraday_range_low&&parseFloat(result.intraday_range_low)<ep){
+          mainEntry2=parseFloat((parseFloat(result.intraday_range_low)+0.01).toFixed(2));
         } else {
-          mainEntry2=parseFloat((result.orb_low*1.02).toFixed(2));
+          mainEntry2=parseFloat((ep*0.97).toFixed(2));
         }
         if(sup1&&sup1<mainEntry2&&sup1>mainEntry2*0.94){
           mainStop2=parseFloat((sup1-0.02).toFixed(2));
@@ -1660,26 +1672,51 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
       '최근 뉴스: '+(ydata.newsText||'없음')+'\n\n';
 
     if(mode === 'momo'){
-      return '당신은 MOMO 당일 트레이딩 전문 AI입니다. 아래는 현재 보유 중인 포지션입니다.\n\n' +
-        posInfo + dataStr +
-        '이 포지션을 지금 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
-        'MOMO 매도 판단 기준:\n' +
-        '- T1(50% 익절): 진입가 기준 +1R 도달 시 / VWAP 대비 +10% 이상 과확장 시\n' +
-        '- T2(잔량 익절): +2R 또는 PM 고점 대비 +20% 이상\n' +
-        '- 즉시 손절: VWAP 이탈 + 거래량 소멸 / 진입가 -3% 이탈 / Open=High 패턴\n' +
-        '- 홀드: VWAP 위 + 거래량 유지 + 추가 고점 갱신 중\n\n' +
-        '{'+
-        '"hold_action": "SELL_ALL"|"SELL_HALF"|"HOLD"|"STOP_LOSS",'+
-        '"urgency": "immediate"|"today"|"monitor",'+
-        '"t1": 1차익절가(숫자),'+
-        '"t2": 2차익절가(숫자),'+
-        '"stop": 손절가(숫자),'+
-        '"current_pnl_pct": 현재수익률,'+
-        '"reason": "매도/홀드 핵심 판단 근거 두 줄 이내",'+
-        '"signals": ["긍정신호들"],'+
-        '"warnings": ["위험신호들"],'+
-        '"summary": "한줄 행동 지침"'+
-        '}\n\n' +
+      // 분할매도/추가매수 내역
+      var sellHistStr = '';
+      if(openTrade.sells&&openTrade.sells.length){
+        sellHistStr = '\n분할매도 내역:\n'+openTrade.sells.map(function(s){
+          return '  '+s.date+' '+s.shares+'주 @ $'+s.price+' (손익 $'+(s.pnl>=0?'+':'')+s.pnl+')';
+        }).join('\n')+
+        '\n잔여수량: '+(openTrade.remaining||0)+'주\n';
+      }
+      var buyHistStr = '';
+      if(openTrade.buys&&openTrade.buys.length>1){
+        buyHistStr = '\n추가매수 내역:\n'+openTrade.buys.map(function(b){
+          return '  '+b.date+' '+b.shares+'주 @ $'+b.price;
+        }).join('\n')+'\n평균단가: $'+entryP+'\n';
+      }
+      // 차트 레벨
+      var chartLevels =
+        '=== 현재 차트 레벨 ===\n' +
+        '1분봉 지지선: '+(ydata.nearest_support?'$'+ydata.nearest_support.toFixed(2):'없음')+(ydata.second_support?' / 2차 $'+ydata.second_support.toFixed(2):'')+' \n' +
+        '1분봉 저항선: '+(ydata.nearest_resistance?'$'+ydata.nearest_resistance.toFixed(2):'없음')+(ydata.second_resistance?' / 2차 $'+ydata.second_resistance.toFixed(2):'')+' \n' +
+        '장중 응축 박스: '+(ydata.intraday_consolidation?'$'+ydata.intraday_range_low+'~$'+ydata.intraday_range_high+' ('+ydata.intraday_range_pct+'%)':'없음')+' \n' +
+        'PM 고점 대비: '+(ydata.pm_high?((curP/ydata.pm_high-1)*100).toFixed(1)+'% (PM고점 $'+ydata.pm_high.toFixed(2)+')'  :'알수없음')+' \n' +
+        'VWAP 대비: '+(ydata.vwap_pct!==null?(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%':'알수없음')+' \n\n';
+      var phaseNow = {'PRE':'프리마켓','ORB':'ORB형성중(진입금지)','EARLY':'골든윈도우(최적매도구간)','PRIME':'2차모멘텀','LATE':'페이드구간(익절우선)','CLOSED':'장마감'}[G.marketPhase||'']||'시간미확인';
+      return '당신은 MOMO 당일 트레이딩 전문 AI입니다. 지금 이 순간 이 포지션을 어떻게 해야 하는지 구체적으로 알려주세요.\n\n' +
+        posInfo + sellHistStr + buyHistStr + dataStr + chartLevels +
+        '현재 시장 시간대: '+phaseNow+'\n\n' +
+        '판단 기준:\n' +
+        '- SELL_ALL: VWAP 이탈+거래량 소멸 / 고점 2회 이상 저항 / 페이드구간 과확장\n' +
+        '- SELL_HALF: T1 레벨 도달 / PM고점 근접 / 저항선 직전\n' +
+        '- HOLD: VWAP 위 + 거래량 유지 + 저항 돌파 중\n' +
+        '- STOP_LOSS: VWAP 아래 + 진입가 -5% 이탈\n' +
+        '- trailing_stop: 고점 대비 -8% 이하로 손절 올리기\n\n' +
+        'reason과 summary는 반드시 한국어로, 구체적 가격($X.XX)을 포함해서 작성.\n' +
+        '예: "$1.97 고점 2회 저항 + 거래량 감소 — 절반 익절 권장, 잔량 손절 $1.70으로 올리기"\n\n' +
+        '{"hold_action":"SELL_ALL"|"SELL_HALF"|"HOLD"|"STOP_LOSS",'+
+        '"urgency":"immediate"|"today"|"monitor",'+
+        '"t1":1차익절가(실제저항레벨),'+
+        '"t2":2차익절가(다음저항레벨),'+
+        '"stop":현재손절가(VWAP아래or지지선아래),'+
+        '"trailing_stop":트레일링손절가(고점대비-8%),'+
+        '"current_pnl_pct":현재수익률,'+
+        '"reason":"구체적가격포함 판단근거 두줄이내",'+
+        '"signals":["긍정신호"],'+
+        '"warnings":["위험신호"],'+
+        '"summary":"지금 당장 해야할 행동 한줄"}\n\n' +
         '알수없음 항목은 알고 있는 정보로 최대한 분석';
     }
 
@@ -2589,14 +2626,14 @@ function calcSellTargets(r){
     lvls.sort(function(a,b){return a-b;});
     if(lvls.length>0) t1=parseFloat(lvls[0].toFixed(2));
 
-    // T2: 2차 저항선 or PM 고점 넘어 다음 레벨
+    // T2: T1보다 반드시 높아야 함
     var lvls2=[];
     if(r.second_resistance&&r.second_resistance>t1) lvls2.push(r.second_resistance);
     if(r.pm_high&&r.pm_high>t1)             lvls2.push(r.pm_high);
     if(r.nearest_resistance&&r.nearest_resistance>t1) lvls2.push(r.nearest_resistance);
     lvls2.sort(function(a,b){return a-b;});
     if(lvls2.length>0) t2=parseFloat(lvls2[0].toFixed(2));
-    else t2=t2base; // 레벨 없으면 +2R 폴백
+    else t2=parseFloat((t1*1.15).toFixed(2)); // 레벨 없으면 T1+15%
   } else {
     // SWING/CORE — 52주 고가 사용 가능
     if(r.fiftyTwoWeekHigh&&r.fiftyTwoWeekHigh>entry&&r.fiftyTwoWeekHigh<t2base)
@@ -3045,6 +3082,12 @@ function holdCardHTML(r, mode, trade){
         (stopdist?'<div style="font-size:9px;color:var(--t3)">여유 -'+stopdist+'%</div>':'')+
       '</div>'+
     '</div>'+
+    (r.trailing_stop?
+      '<div style="margin:6px 0;padding:7px 10px;background:rgba(255,170,0,.07);border:1px solid rgba(255,170,0,.2);border-radius:8px;display:flex;justify-content:space-between;align-items:center">'+
+        '<span style="font-family:var(--mono);font-size:10px;color:var(--a)">📌 트레일링 손절 올리기</span>'+
+        '<span style="font-family:var(--mono);font-size:13px;color:var(--a)">$'+r.trailing_stop+'</span>'+
+      '</div>'
+    :'')+
 
     // 신호
     (signals||warnings?
