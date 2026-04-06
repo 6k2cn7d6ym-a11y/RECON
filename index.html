@@ -340,6 +340,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
       <button onclick="loadAllMarket()" id="moversRefreshBtn" style="font-family:var(--mono);font-size:9px;color:var(--g);background:none;border:none;cursor:pointer;letter-spacing:.06em">↺ 새로고침</button>
     </div>
   </div>
+  <div id="marketRegimeEl" style="margin:0 16px 8px;font-family:var(--mono);font-size:11px;color:var(--t2)">시장 국면 분석 중...</div>
   <div class="screener-btns">
     <a href="https://finviz.com/screener.ashx?v=111&f=exch_nasd|nyse|amex,sh_float_u20,ta_gap_u20,sh_price_u20,sh_price_o1&o=-gap" target="_blank" class="s-btn">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Finviz 갭업
@@ -387,6 +388,49 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <button class="clear-btn" onclick="clearHistory('momo')">전체 삭제</button>
   </div>
   <div class="cards-area"><div id="momoHistoryList"></div></div>
+</div>
+
+
+<!-- MOMO 일지 -->
+<div class="scroll" id="page-momo-journal" style="display:none">
+  <div style="padding:12px 16px 8px;display:flex;justify-content:space-between;align-items:center">
+    <div style="font-family:var(--mono);font-size:9px;color:var(--a);letter-spacing:.1em">MOMO 일지</div>
+    <div style="display:flex;gap:6px">
+      <button onclick="setJournalFilter('momo','today')" id="jf-momo-today" style="font-family:var(--mono);font-size:10px;background:rgba(255,170,0,.12);color:var(--a);border:1px solid rgba(255,170,0,.2);border-radius:5px;padding:3px 8px;cursor:pointer">오늘</button>
+      <button onclick="setJournalFilter('momo','week')" id="jf-momo-week" style="font-family:var(--mono);font-size:10px;background:none;color:var(--t3);border:1px solid var(--b);border-radius:5px;padding:3px 8px;cursor:pointer">이번주</button>
+      <button onclick="setJournalFilter('momo','all')" id="jf-momo-all" style="font-family:var(--mono);font-size:10px;background:none;color:var(--t3);border:1px solid var(--b);border-radius:5px;padding:3px 8px;cursor:pointer">전체</button>
+    </div>
+  </div>
+  <div id="journalStats-momo" class="journal-stats"></div>
+  <div id="journalList-momo" style="padding:0 16px"></div>
+</div>
+
+<!-- SWING 일지 -->
+<div class="scroll" id="page-swing-journal" style="display:none">
+  <div style="padding:12px 16px 8px;display:flex;justify-content:space-between;align-items:center">
+    <div style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.1em">SWING 일지</div>
+    <div style="display:flex;gap:6px">
+      <button onclick="setJournalFilter('swing','today')" id="jf-swing-today" style="font-family:var(--mono);font-size:10px;background:rgba(43,159,255,.12);color:var(--bl);border:1px solid rgba(43,159,255,.2);border-radius:5px;padding:3px 8px;cursor:pointer">오늘</button>
+      <button onclick="setJournalFilter('swing','week')" id="jf-swing-week" style="font-family:var(--mono);font-size:10px;background:none;color:var(--t3);border:1px solid var(--b);border-radius:5px;padding:3px 8px;cursor:pointer">이번주</button>
+      <button onclick="setJournalFilter('swing','all')" id="jf-swing-all" style="font-family:var(--mono);font-size:10px;background:none;color:var(--t3);border:1px solid var(--b);border-radius:5px;padding:3px 8px;cursor:pointer">전체</button>
+    </div>
+  </div>
+  <div id="journalStats-swing" class="journal-stats"></div>
+  <div id="journalList-swing" style="padding:0 16px"></div>
+</div>
+
+<!-- CORE 일지 -->
+<div class="scroll" id="page-core-journal" style="display:none">
+  <div style="padding:12px 16px 8px;display:flex;justify-content:space-between;align-items:center">
+    <div style="font-family:var(--mono);font-size:9px;color:var(--pu);letter-spacing:.1em">CORE 일지</div>
+    <div style="display:flex;gap:6px">
+      <button onclick="setJournalFilter('core','today')" id="jf-core-today" style="font-family:var(--mono);font-size:10px;background:rgba(159,122,255,.12);color:var(--pu);border:1px solid rgba(159,122,255,.2);border-radius:5px;padding:3px 8px;cursor:pointer">오늘</button>
+      <button onclick="setJournalFilter('core','week')" id="jf-core-week" style="font-family:var(--mono);font-size:10px;background:none;color:var(--t3);border:1px solid var(--b);border-radius:5px;padding:3px 8px;cursor:pointer">이번주</button>
+      <button onclick="setJournalFilter('core','all')" id="jf-core-all" style="font-family:var(--mono);font-size:10px;background:none;color:var(--t3);border:1px solid var(--b);border-radius:5px;padding:3px 8px;cursor:pointer">전체</button>
+    </div>
+  </div>
+  <div id="journalStats-core" class="journal-stats"></div>
+  <div id="journalList-core" style="padding:0 16px"></div>
 </div>
 
 <!-- MOMO 설정 -->
@@ -515,8 +559,12 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     검색
   </button>
   <button class="btab" id="btabHistory" onclick="switchSubTab('history')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
     히스토리
+  </button>
+  <button class="btab" id="btabJournal" onclick="switchSubTab('journal')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    일지
   </button>
   <button class="btab" id="btabSettings" onclick="switchSubTab('settings')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -539,6 +587,7 @@ var G = {
   apiUsage: JSON.parse(localStorage.getItem('apexUsage')||'{"calls":0,"input":0,"output":0,"cost":0}'),
   apiTotal: JSON.parse(localStorage.getItem('apexTotal')||'{"calls":0,"input":0,"output":0,"cost":0}'),
   usageDate: localStorage.getItem('apexUsageDate') || '',
+  spyAboveMA200: null, // SPY MA200 시장 국면
   // 히스토리 (모드별)
   momoHistory: JSON.parse(localStorage.getItem('momoHistory')||'[]'),
   swingHistory: JSON.parse(localStorage.getItem('swingHistory')||'[]'),
@@ -546,6 +595,7 @@ var G = {
 };
 
 var G_journal = JSON.parse(localStorage.getItem('reconJournal')||'[]');
+var G_jFilters = { momo:'today', swing:'today', core:'today' };
 
 // 초기값 로드
 if(G.apiKey){ document.getElementById('apiKeyInput').value = G.apiKey; }
@@ -555,7 +605,7 @@ if(G.ntfy)  { document.getElementById('ntfyChInput').value = G.ntfy; }
 // 모드/탭 전환
 // ═══════════════════════════════════════
 var ALL_MODES = ['recon','momo','swing','core'];
-var ALL_SUBS  = ['search','history','settings'];
+var ALL_SUBS  = ['search','history','journal','settings'];
 
 function switchMode(mode){
   if(mode !== 'recon' && G.currentMode === mode){
@@ -614,13 +664,14 @@ function switchSubTab(sub){
   if(target) target.style.display = '';
 
   document.querySelectorAll('.btab').forEach(function(b){ b.classList.remove('on'); });
-  var map = { search:'btabSearch', history:'btabHistory', settings:'btabSettings' };
+  var map = { search:'btabSearch', history:'btabHistory', journal:'btabJournal', settings:'btabSettings' };
   var btn = document.getElementById(map[sub]);
   if(btn) btn.classList.add('on');
 
   G.activeSubTab = sub;
 
   if(sub === 'history') renderHistory(G.currentMode);
+  if(sub === 'journal') renderJournal(G.currentMode);
 }
 
 function updateKeyStatus(){
@@ -1001,7 +1052,7 @@ async function fetchSwingData(ticker){
   };
   try{
     var dc = await fetchWithProxy(
-      'https://query1.finance.yahoo.com/v8/finance/chart/'+ticker+'?interval=1d&range=1y'
+      'https://query1.finance.yahoo.com/v8/finance/chart/'+ticker+'?interval=1d&range=2y'
     );
     var res = dc?.chart?.result?.[0];
     if(!res) return sw;
@@ -1093,7 +1144,7 @@ async function fetchSwingData(ticker){
     // 조건 4: 양봉
     var c4 = open && price > open;
     // 조건 5: RSI 40~60
-    var c5 = sw.rsi14 && sw.rsi14>=40 && sw.rsi14<=60;
+    var c5 = sw.rsi14 && sw.rsi14>=40 && sw.rsi14<=65;
     // 조건 6: MACD 히스토그램 상승
     var c6 = sw.macd_hist!==null && sw.macd_hist_prev!==null && sw.macd_hist > sw.macd_hist_prev;
     // 조건 7: 20일선 기울기 +0.2% 이상
@@ -1108,7 +1159,7 @@ async function fetchSwingData(ticker){
       (c2?'✓':'✗')+' 200일선 위'+(sw.ma200?' (MA200:'+sw.ma200.toFixed(2)+')':' (데이터부족)'),
       (c3?'✓':'✗')+' 눌림목 MA20 ±3%'+(sw.ma20?' (괴리:'+((price-sw.ma20)/sw.ma20*100).toFixed(1)+'%)':' (데이터부족)'),
       (c4?'✓':'✗')+' 양봉 캔들',
-      (c5?'✓':'✗')+' RSI 40~60'+(sw.rsi14?' ('+sw.rsi14+')':' (데이터부족)'),
+      (c5?'✓':'✗')+' RSI 40~65'+(sw.rsi14?' ('+sw.rsi14+')':' (데이터부족)'),
       (c6?'✓':'✗')+' MACD 히스토그램 상승'+(sw.macd_hist!==null?' ('+sw.macd_hist.toFixed(4)+')':' (데이터부족)'),
       (c7?'✓':'✗')+' 20일선 기울기 +0.2%+'+(sw.ma20_slope!==null?' ('+sw.ma20_slope+'%)':' (데이터부족)'),
       (c8?'✓':'✗')+' 거래량 1.5배+'+(sw.vol_ratio?' ('+sw.vol_ratio+'x)':' (데이터부족)'),
@@ -1186,7 +1237,7 @@ function makePrompt(mode, ticker, ydata, swingData){
       '2. 200일선 위: 종가 > MA200\n' +
       '3. 눌림목: 현재가가 MA20 ±3% 이내\n' +
       '4. 양봉 캔들: 종가 > 시가\n' +
-      '5. RSI: 40~60 사이\n' +
+      '5. RSI: 40~65 사이\n' +
       '6. MACD: 히스토그램 전일 대비 상승 중\n' +
       '7. 20일선 기울기: 5일 전 MA20 대비 +0.2% 이상 우상향\n' +
       '8. 거래량: 20일 평균 대비 1.5배 이상\n\n' +
@@ -1264,7 +1315,16 @@ function getDumpScore(r){
 }
 
 function hardFilter(r, mode){
-  if(mode !== 'momo') return r.action; // SWING/CORE는 하드필터 완화
+  // SWING: SPY MA200 아래면 ENTER → WATCH 다운그레이드
+  if(mode === 'swing'){
+    if(G.spyAboveMA200 === false && r.action === 'ENTER'){
+      r.warnings = r.warnings || [];
+      r.warnings.push('[시장필터] SPY MA200 아래 — 스윙 진입 신호 WATCH로 다운그레이드');
+      return 'WATCH';
+    }
+    return r.action;
+  }
+  if(mode === 'core') return r.action;
 
   var all=(r.warnings||[]).concat(r.blockers||[]).join(' ').toLowerCase();
   var reasons=[];
@@ -1441,9 +1501,23 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       if(result.price){
         var sEntry = parseFloat((result.price * 1.005).toFixed(2));
         var sStop  = parseFloat((sEntry * 0.97).toFixed(2));
-        var sTarget = swingData.high10 ? parseFloat((swingData.high10 * 0.985).toFixed(2)) : parseFloat((sEntry * 1.08).toFixed(2));
-        var sRisk = sEntry - sStop;
-        var sRR   = sRisk > 0 ? parseFloat(((sTarget-sEntry)/sRisk).toFixed(1)) : null;
+        var sRisk  = sEntry - sStop;
+        // 목표가: 52주 고가 > ATR×3 > 10일 고가 순서로 우선
+        var fw = result.fiftyTwoWeekHigh;
+        var atrTarget = sEntry + sRisk * 3; // 3R 기준
+        var sTarget;
+        if(fw && fw > sEntry * 1.05){
+          // 52주 고가가 진입가보다 5% 이상 위에 있으면 사용
+          sTarget = parseFloat(fw.toFixed(2));
+        } else if(atrTarget > sEntry * 1.06){
+          // 3R 기준 (최소 6% 이상 기대)
+          sTarget = parseFloat(atrTarget.toFixed(2));
+        } else if(swingData.high10 && swingData.high10 > sEntry * 1.03){
+          sTarget = parseFloat((swingData.high10 * 0.985).toFixed(2));
+        } else {
+          sTarget = parseFloat((sEntry * 1.08).toFixed(2)); // 최소 8% 목표
+        }
+        var sRR = sRisk > 0 ? parseFloat(((sTarget-sEntry)/sRisk).toFixed(1)) : null;
         result.entry   = sEntry;
         result.stop    = sStop;
         result.target1 = sTarget;
@@ -1467,6 +1541,23 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
 
     applyHistory(result);
     result.action = hardFilter(result, mode);
+
+    // MOMO: PM 타이밍 경고 (분석 완료 시각 기준 PM 위치)
+    if(mode === 'momo' && result.pm_high && result.price){
+      var etNowM = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+      var hmM = etNowM.getHours()*100 + etNowM.getMinutes();
+      var isPreM = hmM >= 400 && hmM < 930;
+      if(isPreM){
+        var distFromPmHigh = (result.price - result.pm_high) / result.pm_high * 100;
+        if(distFromPmHigh > 15){
+          result.warnings = result.warnings || [];
+          result.warnings.push('⏱ 분석 시점 기준 PM 고점 대비 +'+distFromPmHigh.toFixed(0)+'% — 오픈 시 추가 상승 추격 위험');
+        } else if(distFromPmHigh > 8){
+          result.warnings = result.warnings || [];
+          result.warnings.push('⏱ PM 고점 대비 +'+distFromPmHigh.toFixed(0)+'% 상승 중 — 오픈 눌림 대기 권장');
+        }
+      }
+    }
 
     // 알림 (MOMO만)
     if(mode==='momo'){
@@ -1717,10 +1808,7 @@ function cardHTML(r, mode){
     '<div style="margin-top:10px;display:flex;gap:6px">'+
       '<button onclick="openTradeLog(\''+r.ticker+'\','+(r.price||0)+')" '+
         'style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">+ 거래 기록</button>'+
-      (mode && mode!=='recon'?
-        '<button onclick="rerunCard(\''+r.ticker+'\',\''+mode+'\')" '+
-          'style="flex:1;background:none;border:1px solid var(--b);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--t2);cursor:pointer">↻ 재분석</button>'
-      :'')+
+      (function(){ var _m=mode||r._mode; return _m&&_m!=='recon' ? '<button onclick="rerunCard(\''+r.ticker+'\',\''+_m+'\')" style="flex:1;background:none;border:1px solid var(--b);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--t2);cursor:pointer">↻ 재분석</button>' : ''; })()+
     '</div>'+
 
     '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--t3)">'+
@@ -1778,6 +1866,7 @@ function saveTradeLog(ticker){
   var pnl_pct=exit?(exit-entry)/entry*100:null;
   var record={id:Date.now(),date:new Date().toLocaleDateString('ko-KR'),ticker,entry,exit:exit||null,shares,
     pnl:pnl?parseFloat(pnl.toFixed(2)):null,pnl_pct:pnl_pct?parseFloat(pnl_pct.toFixed(2)):null,memo,
+    mode: G.currentMode || 'momo',
     status:exit?(pnl>=0?'win':'loss'):'open'};
   G_journal.unshift(record);
   localStorage.setItem('reconJournal',JSON.stringify(G_journal));
@@ -1890,6 +1979,113 @@ function resetUsage(){
   renderUsage();
 }
 
+function setJournalFilter(mode, f){
+  G_jFilters[mode] = f;
+  var color = mode==='momo'?'var(--a)':mode==='swing'?'var(--bl)':'var(--pu)';
+  var borderOn = mode==='momo'?'rgba(255,170,0,.2)':mode==='swing'?'rgba(43,159,255,.2)':'rgba(159,122,255,.2)';
+  ['today','week','all'].forEach(function(id){
+    var el = document.getElementById('jf-'+mode+'-'+id);
+    if(!el) return;
+    var on = id === f;
+    el.style.background  = on ? (mode==='momo'?'rgba(255,170,0,.12)':mode==='swing'?'rgba(43,159,255,.12)':'rgba(159,122,255,.12)') : 'none';
+    el.style.color       = on ? color : 'var(--t3)';
+    el.style.borderColor = on ? borderOn : 'var(--b)';
+  });
+  renderJournal(mode);
+}
+
+function getFilteredJournal(mode){
+  var today = new Date().toLocaleDateString('ko-KR');
+  var weekAgoTs = Date.now() - 7*24*60*60*1000;
+  var f = G_jFilters[mode] || 'today';
+  return G_journal.filter(function(t){
+    var modeMatch = !t.mode || t.mode === mode;
+    if(!modeMatch) return false;
+    if(f==='today') return t.date === today;
+    if(f==='week')  return (t.id||0) >= weekAgoTs;
+    return true;
+  });
+}
+
+function renderJournal(mode){
+  var trades  = getFilteredJournal(mode);
+  var closed  = trades.filter(function(t){return t.status!=='open';});
+  var wins    = closed.filter(function(t){return t.status==='win';});
+  var totalPnl= closed.reduce(function(s,t){return s+(t.pnl||0);},0);
+  var color   = mode==='momo'?'var(--a)':mode==='swing'?'var(--bl)':'var(--pu)';
+
+  var statsEl = document.getElementById('journalStats-'+mode);
+  if(statsEl){
+    if(!closed.length){
+      statsEl.innerHTML = '<div style="color:var(--t3);font-size:13px;text-align:center;padding:8px">거래 기록 없음</div>';
+    } else {
+      var wr = (wins.length/closed.length*100).toFixed(0);
+      var avgWin  = wins.length ? wins.reduce(function(s,t){return s+(t.pnl||0);},0)/wins.length : 0;
+      var losses  = closed.filter(function(t){return t.status==='loss';});
+      var avgLoss = losses.length ? losses.reduce(function(s,t){return s+(t.pnl||0);},0)/losses.length : 0;
+      statsEl.innerHTML =
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">'+
+        '<div><div style="font-size:9px;color:var(--t2);margin-bottom:4px">거래수</div><div style="font-family:var(--mono);font-size:18px;color:var(--t)">'+closed.length+'</div></div>'+
+        '<div><div style="font-size:9px;color:var(--t2);margin-bottom:4px">승률</div><div style="font-family:var(--mono);font-size:18px;color:'+(parseInt(wr)>=50?'var(--g)':'var(--r)')+'">'+wr+'%</div></div>'+
+        '<div><div style="font-size:9px;color:var(--t2);margin-bottom:4px">총손익</div><div style="font-family:var(--mono);font-size:18px;color:'+(totalPnl>=0?'var(--g)':'var(--r)')+'">$'+(totalPnl>=0?'+':'')+totalPnl.toFixed(2)+'</div></div>'+
+        '</div>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;text-align:center">'+
+        '<div style="background:var(--bg2);border-radius:8px;padding:8px"><div style="font-size:9px;color:var(--t2);margin-bottom:2px">평균수익</div><div style="font-family:var(--mono);font-size:13px;color:var(--g)">$+'+(avgWin).toFixed(2)+'</div></div>'+
+        '<div style="background:var(--bg2);border-radius:8px;padding:8px"><div style="font-size:9px;color:var(--t2);margin-bottom:2px">평균손실</div><div style="font-family:var(--mono);font-size:13px;color:var(--r)">$'+(avgLoss).toFixed(2)+'</div></div>'+
+        '</div>';
+    }
+  }
+
+  var listEl = document.getElementById('journalList-'+mode);
+  if(!listEl) return;
+  if(!trades.length){
+    listEl.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--t3);font-size:13px">거래 기록 없음<br>카드에서 "+ 거래 기록" 버튼을 눌러 기록하세요</div>';
+    return;
+  }
+
+  var byDate = {};
+  trades.forEach(function(t){ if(!byDate[t.date]) byDate[t.date]=[]; byDate[t.date].push(t); });
+
+  var html = '';
+  Object.keys(byDate).sort().reverse().forEach(function(date){
+    var dayTrades = byDate[date];
+    var dayPnl = dayTrades.filter(function(t){return t.pnl!==null;}).reduce(function(s,t){return s+(t.pnl||0);},0);
+    html += '<div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.1em;display:flex;justify-content:space-between;margin:12px 0 6px">'+
+      '<span>'+date+'</span>'+
+      '<span style="color:'+(dayPnl>=0?'var(--g)':'var(--r)')+'">$'+(dayPnl>=0?'+':'')+dayPnl.toFixed(2)+'</span>'+
+      '</div>';
+    dayTrades.forEach(function(t){
+      var pnlColor = t.status==='win'?'var(--g)':t.status==='loss'?'var(--r)':'var(--t2)';
+      var pnlText  = t.pnl!==null?(t.pnl>=0?'+':'')+t.pnl.toFixed(2):'진행중';
+      html += '<div style="background:var(--bg1);border:1px solid var(--b);border-radius:12px;padding:12px;margin-bottom:6px">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+          '<div style="display:flex;align-items:center;gap:8px">'+
+            '<span style="font-family:var(--mono);font-size:15px;color:var(--t)">'+t.ticker+'</span>'+
+            '<span style="font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;background:'+(t.status==='win'?'rgba(0,240,122,.1)':t.status==='loss'?'rgba(255,45,78,.1)':'rgba(43,159,255,.1)')+';color:'+(t.status==='win'?'var(--g)':t.status==='loss'?'var(--r)':'var(--bl)')+'">'+
+              (t.status==='win'?'익절':t.status==='loss'?'손절':'진행중')+'</span>'+
+          '</div>'+
+          '<span style="font-family:var(--mono);font-size:15px;color:'+pnlColor+'">$'+pnlText+'</span>'+
+        '</div>'+
+        '<div style="display:flex;gap:12px;font-family:var(--mono);font-size:11px;color:var(--t2)">'+
+          '<span>진입 $'+t.entry+'</span>'+(t.exit?'<span>매도 $'+t.exit+'</span>':'')+(t.shares?'<span>'+t.shares+'주</span>':'')+(t.pnl_pct?'<span style="color:'+pnlColor+'">'+(t.pnl_pct>=0?'+':'')+t.pnl_pct.toFixed(1)+'%</span>':'')+
+        '</div>'+
+        (t.memo?'<div style="font-size:11px;color:var(--t3);margin-top:4px;padding-left:8px;border-left:2px solid var(--b2)">'+t.memo+'</div>':'')+
+        '<div style="display:flex;justify-content:flex-end;margin-top:6px">'+
+          '<button onclick="deleteTradeLog('+t.id+')" style="font-size:10px;color:var(--t3);background:none;border:none;cursor:pointer;font-family:var(--mono)">삭제</button>'+
+        '</div>'+
+      '</div>';
+    });
+  });
+  listEl.innerHTML = html;
+}
+
+function deleteTradeLog(id){
+  if(!confirm('이 거래 기록을 삭제할까요?')) return;
+  G_journal = G_journal.filter(function(t){return t.id!==id;});
+  localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+  renderJournal(G.currentMode);
+}
+
 function clearAllData(){
   if(!confirm('모든 데이터를 삭제할까요?')) return;
   ['apexAlerts','momoHistory','swingHistory','coreHistory','reconJournal'].forEach(function(k){localStorage.removeItem(k);});
@@ -1931,6 +2127,29 @@ function loadAllMarket(){
   loadMarketData();
   loadFearGreed();
   loadMovers();
+  checkMarketRegime();
+}
+
+// SPY MA200 기준 시장 국면 판단
+async function checkMarketRegime(){
+  try{
+    var dc = await fetchWithProxy(
+      'https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=1y'
+    );
+    var closes = dc?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
+    closes = closes.filter(function(v){return v&&v>0;});
+    if(closes.length < 200) return;
+    var ma200 = closes.slice(-200).reduce(function(a,b){return a+b;},0)/200;
+    var price  = closes[closes.length-1];
+    var above  = price > ma200;
+    G.spyAboveMA200 = above;
+    // 대시보드에 표시
+    var el = document.getElementById('marketRegimeEl');
+    if(el){
+      el.textContent = above ? '📈 SPY MA200 위 — 스윙 진입 우호적' : '📉 SPY MA200 아래 — 스윙 신호 WATCH 다운그레이드';
+      el.style.color = above ? 'var(--g)' : 'var(--r)';
+    }
+  }catch(e){}
 }
 
 // 대시보드 데이터 로드 (최초 1회)
