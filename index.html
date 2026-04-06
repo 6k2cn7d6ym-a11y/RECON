@@ -1785,14 +1785,19 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
       return '당신은 MOMO 당일 트레이딩 전문 AI입니다. 지금 이 순간 이 포지션을 어떻게 해야 하는지 구체적으로 알려주세요.\n\n' +
         posInfo + sellHistStr + buyHistStr + dataStr + chartLevels +
         '현재 시장 시간대: '+phaseNow+'\n\n' +
-        '판단 기준:\n' +
-        '- SELL_ALL: VWAP 이탈+거래량 소멸 / 고점 2회 이상 저항 / 페이드구간 과확장\n' +
-        '- SELL_HALF: T1 레벨 도달 / PM고점 근접 / 저항선 직전\n' +
-        '- HOLD: VWAP 위 + 거래량 유지 + 저항 돌파 중\n' +
-        '- STOP_LOSS: VWAP 아래 + 진입가 -5% 이탈\n' +
-        '- trailing_stop: 고점 대비 -8% 이하로 손절 올리기\n\n' +
+        '판단 기준 (엄격하게 적용):\n' +
+        '- HOLD: 거래량 RVol 3x+ 유지 중이면 기본값. 진입가 아래 -5% 이내 눌림은 PRE/EARLY 정상 범위\n' +
+        '- SELL_HALF: T1 레벨 도달 / PM고점 근접 / 지지선 깨지기 직전\n' +
+        '- SELL_ALL: 아래 2개 이상 동시 충족 시만\n' +
+        '  1) 지지선 완전 이탈 (종가 기준)\n' +
+        '  2) 거래량 급감 (RVol 2x 이하)\n' +
+        '  3) 연속 음봉 3개+\n' +
+        '  4) VWAP 아래 + 반등 없음\n' +
+        '- STOP_LOSS: 진입가 -7%+ 이탈 AND 거래량 소멸 동시\n' +
+        '- trailing_stop: 포지션 수익 중일 때 고점 대비 -8% 레벨로 손절 올리기\n\n' +
+        '⚠️ 중요: 진입가 아래 단순 눌림(-5% 이내)만으로는 절대 SELL_ALL 하지 말 것. 거래량 강하면 HOLD.\n\n' +
         'reason과 summary는 반드시 한국어로, 구체적 가격($X.XX)을 포함해서 작성.\n' +
-        '예: "$1.97 고점 2회 저항 + 거래량 감소 — 절반 익절 권장, 잔량 손절 $1.70으로 올리기"\n\n' +
+        '예: "$1.86 지지 유지 + RVol 4.9x 강세 — 홀드, 손절 $1.86으로 올리기"\n\n' +
         '{"hold_action":"SELL_ALL"|"SELL_HALF"|"HOLD"|"STOP_LOSS",'+
         '"urgency":"immediate"|"today"|"monitor",'+
         '"t1":1차익절가(실제저항레벨),'+
@@ -2519,6 +2524,16 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       var minScore = parseInt(document.getElementById('minScore').textContent)||70;
       if(result.action==='ENTER'&&result.score>=minScore){ fireAlert(result,'ENTER'); if(document.getElementById('tgSound').classList.contains('on')) playBeep(true); }
       else if(result.action==='BLOCK'&&document.getElementById('tgBlock').classList.contains('on')) fireAlert(result,'BLOCK');
+    }
+
+    // ── 트레일링 손절 이탈 시 SELL_ALL 강제 적용 ──
+    if(openTrade && mode==='momo' && result.trailing_stop && result.price){
+      if(result.price < result.trailing_stop){
+        result.hold_action = 'SELL_ALL';
+        result.urgency = 'immediate';
+        result.reason = (result.reason||'')+' / 트레일링 손절 $'+result.trailing_stop+' 이탈';
+        result.summary = '트레일링 손절 $'+result.trailing_stop+' 이탈 — 즉시 전량 매도';
+      }
     }
 
     saveToHistory(mode, result);
@@ -3534,6 +3549,7 @@ function confirmPartialBuy(tradeId){
   document.querySelector('div[style*=fixed]')?.remove();
   showToast(trade.ticker+' +'+shares+'주 추가 · 평균단가 $'+trade.entry);
   renderJournal(G.currentMode);
+  renderOpenPositions(G.currentMode);
 }
 
 async function rerunCard(ticker, mode){
@@ -3586,6 +3602,8 @@ function saveTradeLog(ticker){
   localStorage.setItem('reconJournal',JSON.stringify(G_journal));
   document.querySelector('div[style*=fixed]')?.remove();
   showToast(ticker+' 거래 기록 저장됨');
+  renderOpenPositions(G.currentMode);
+  renderJournal(G.currentMode);
 }
 
 // ═══════════════════════════════════════
