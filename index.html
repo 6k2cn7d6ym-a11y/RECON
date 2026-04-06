@@ -668,6 +668,17 @@ function rescanOpenTrade(mode, ticker){
   runModeScan(mode);
 }
 
+function closeOpenPosition(tradeId){
+  var trade = G_journal.find(function(t){return t.id===tradeId;});
+  if(!trade) return;
+  if(!confirm(trade.ticker+' 포지션을 보유아님으로 처리할까요? (일지에서 삭제됩니다)')) return;
+  G_journal = G_journal.filter(function(t){return t.id!==tradeId;});
+  localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+  renderOpenPositions(G.currentMode);
+  renderJournal(G.currentMode);
+  showToast(trade.ticker+' 포지션 제거됨');
+}
+
 // ═══════════════════════════════════════
 // 보유 포지션 고정 렌더링
 // ═══════════════════════════════════════
@@ -680,9 +691,6 @@ function renderOpenPositions(mode){
   if(!openTrades.length){ el.innerHTML=''; return; }
   var html = '<div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.1em;margin:8px 0 4px;padding:0 2px">📌 보유 중 — 매도 완료 시 자동 제거</div>';
   openTrades.forEach(function(t){
-    var curPrice = t.price||t.entry;
-    var pnlP = ((curPrice-t.entry)/t.entry*100).toFixed(1);
-    var pnlColor = parseFloat(pnlP)>=0?'var(--g)':'var(--r)';
     var remaining = t.remaining!==undefined?t.remaining:(t.shares||0);
     var isPartial = t.status==='partial';
     html +=
@@ -692,7 +700,7 @@ function renderOpenPositions(mode){
             '<span style="font-family:var(--mono);font-size:18px;color:var(--t)">'+t.ticker+'</span>'+
             '<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;background:'+(isPartial?'rgba(255,170,0,.12)':'rgba(43,159,255,.12)')+';color:'+(isPartial?'var(--a)':'var(--bl)')+';">'+(isPartial?'분할매도중':'보유중')+'</span>'+
           '</div>'+
-          '<span style="font-family:var(--mono);font-size:16px;color:'+pnlColor+'">'+(parseFloat(pnlP)>=0?'+':'')+pnlP+'%</span>'+
+          '<button onclick="closeOpenPosition('+t.id+')" style="font-size:11px;color:var(--t3);background:none;border:1px solid var(--b);border-radius:6px;padding:3px 8px;cursor:pointer;font-family:var(--mono)">X 보유아님</button>'+
         '</div>'+
         '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">'+
           '<div style="background:var(--bg2);border-radius:8px;padding:7px;text-align:center">'+
@@ -709,7 +717,7 @@ function renderOpenPositions(mode){
           '</div>'+
         '</div>'+
         '<div style="display:flex;gap:6px">'+
-          '<button onclick="rescanOpenTrade(\''+mode+'\',\''+t.ticker+'\',\''+t.id+'\')" '+
+          '<button onclick="rescanOpenTrade(\''+mode+'\',\''+t.ticker+'\')" '+
             'style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">↻ 재분석</button>'+
           '<button onclick="openPartialSell('+t.id+')" '+
             'style="flex:1;background:rgba(255,170,0,.08);border:1px solid rgba(255,170,0,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--a);cursor:pointer">매도</button>'+
