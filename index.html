@@ -2741,24 +2741,26 @@ function calcEntryAction(r){
     };
   }
   // Default — VWAP 위/아래에 따라 트리거 다르게
-  var parts=['VWAP '+(aboveVwap?'위':'아래')+'['+phase+']'];
-  if(pmHigh) parts.push('PM고점 $'+pmHigh.toFixed(2));
-  if(res1) parts.push('저항 $'+res1.toFixed(2));
-  if(sup1) parts.push('지지 $'+sup1.toFixed(2));
+  // Default — 상황별로 가장 유용한 정보 표시
+  var vwapLabel=vwap?'VWAP '+(aboveVwap?'위':'아래')+' $'+vwap.toFixed(2):'VWAP 미계산';
+  var defaultReason='['+phase+'] '+vwapLabel;
+  if(pmHigh) defaultReason+=' / PM고점 $'+pmHigh.toFixed(2);
+  if(sup1) defaultReason+=' / 지지 $'+sup1.toFixed(2);
   var defaultTrigger;
-  if(!aboveVwap&&vwap){
-    // VWAP 아래 → VWAP 탈환이 먼저
-    defaultTrigger = 'VWAP $'+vwap.toFixed(2)+' 탈환 후 → '+(res1?'$'+(res1+0.02).toFixed(2)+' 돌파':pmHigh?'$'+(pmHigh+0.02).toFixed(2)+' 돌파':'재판단');
-  } else if(res1){
-    defaultTrigger = '진입: $'+(res1+0.02).toFixed(2)+' 돌파 + 거래량 확인';
+  if(vwap&&!aboveVwap){
+    // VWAP 아래 → VWAP 탈환 먼저
+    defaultTrigger='VWAP $'+vwap.toFixed(2)+' 탈환 후 → '+(sup1?'$'+sup1.toFixed(2)+' 눌림 반등':pmHigh?'$'+pmHigh.toFixed(2)+' 돌파':'재판단');
+  } else if(sup1&&pmHigh){
+    // VWAP 위 or VWAP 없음 → 지지선 눌림 기다림
+    defaultTrigger='진입: $'+sup1.toFixed(2)+' 눌림 반등 확인 / 목표 $'+pmHigh.toFixed(2);
   } else if(pmHigh){
-    defaultTrigger = '진입: $'+(pmHigh+0.02).toFixed(2)+' 돌파 + 거래량 확인';
+    defaultTrigger='PM고점 $'+pmHigh.toFixed(2)+' 미돌파 — 눌림 대기';
   } else {
-    defaultTrigger = null;
+    defaultTrigger=null;
   }
   return {
     signal:'WAIT',icon:'🟡',label:'기다려',
-    reason:parts.join(' / '),
+    reason:defaultReason,
     trigger:defaultTrigger,
     css:'wait'
   };
