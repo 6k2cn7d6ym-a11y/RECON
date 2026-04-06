@@ -1177,7 +1177,7 @@ async function fetchSwingData(ticker){
 // ═══════════════════════════════════════
 // 프롬프트 생성 (모드별)
 // ═══════════════════════════════════════
-function makePrompt(mode, ticker, ydata, swingData){
+function makePrompt(mode, ticker, ydata, swingData, openTrade){
   var minGap   = parseInt(document.getElementById('minGap').textContent)||20;
   var maxFloat = parseInt(document.getElementById('maxFloat').textContent)||20;
 
@@ -1196,12 +1196,127 @@ function makePrompt(mode, ticker, ydata, swingData){
   // 뉴스 품질 힌트 (출처 기반 사전 판단)
   var newsHint = ydata.newsQualityHint ? '\n뉴스 출처 기반 사전 판단: '+ydata.newsQualityHint+' (제목과 함께 최종 판단할 것)' : '';
 
+  // ── 보유 중 포지션 관리 프롬프트 ──
+  if(openTrade){
+    var entryP  = openTrade.entry;
+    var curP    = ydata.price || entryP;
+    var pnlPct  = entryP ? ((curP - entryP)/entryP*100).toFixed(2) : '알수없음';
+    var pnlAmt  = (openTrade.shares && entryP) ? ((curP-entryP)*openTrade.shares).toFixed(2) : null;
+    var heldStr = openTrade.date ? '진입일: '+openTrade.date : '';
+
+    var posInfo =
+      '=== 현재 보유 포지션 ===\n' +
+      '진입가: $'+entryP+'\n' +
+      '현재가: $'+(curP||'알수없음')+'\n' +
+      '수익률: '+(pnlPct >= 0 ? '+':'')+pnlPct+'%' + (pnlAmt ? ' ($'+(pnlAmt >= 0?'+':'')+pnlAmt+')' : '') + '\n' +
+      (openTrade.shares ? '보유 수량: '+openTrade.shares+'주\n' : '') +
+      heldStr + '\n' +
+      (openTrade.memo ? '메모: '+openTrade.memo+'\n' : '') + '\n';
+
+    var dataStr =
+      '현재가: $'+(curP||'알수없음')+'\n' +
+      'VWAP: '+(ydata.vwap?'$'+ydata.vwap+(ydata.vwap_pct!==null?' ('+(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%)':''):'알수없음')+'\n' +
+      'PM 고점: '+(ydata.pm_high?'$'+ydata.pm_high.toFixed(2):'알수없음')+'\n' +
+      'PM 저점: '+(ydata.pm_low?'$'+ydata.pm_low.toFixed(2):'알수없음')+'\n' +
+      'ORB 고점: '+(ydata.orb_high?'$'+ydata.orb_high.toFixed(2):'알수없음')+'\n' +
+      'RVol: '+(ydata.rvol?ydata.rvol.toFixed(1)+'x':'알수없음')+'\n' +
+      '52주 고가: '+(ydata.fiftyTwoWeekHigh?'$'+ydata.fiftyTwoWeekHigh.toFixed(2):'알수없음')+'\n' +
+      '최근 뉴스: '+(ydata.newsText||'없음')+'\n\n';
+
+    if(mode === 'momo'){
+      return '당신은 MOMO 당일 트레이딩 전문 AI입니다. 아래는 현재 보유 중인 포지션입니다.\n\n' +
+        posInfo + dataStr +
+        '이 포지션을 지금 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
+        'MOMO 매도 판단 기준:\n' +
+        '- T1(50% 익절): 진입가 기준 +1R 도달 시 / VWAP 대비 +10% 이상 과확장 시\n' +
+        '- T2(잔량 익절): +2R 또는 PM 고점 대비 +20% 이상\n' +
+        '- 즉시 손절: VWAP 이탈 + 거래량 소멸 / 진입가 -3% 이탈 / Open=High 패턴\n' +
+        '- 홀드: VWAP 위 + 거래량 유지 + 추가 고점 갱신 중\n\n' +
+        '{'+
+        '"hold_action": "SELL_ALL"|"SELL_HALF"|"HOLD"|"STOP_LOSS",'+
+        '"urgency": "immediate"|"today"|"monitor",'+
+        '"t1": 1차익절가(숫자),'+
+        '"t2": 2차익절가(숫자),'+
+        '"stop": 손절가(숫자),'+
+        '"current_pnl_pct": 현재수익률,'+
+        '"reason": "매도/홀드 핵심 판단 근거 두 줄 이내",'+
+        '"signals": ["긍정신호들"],'+
+        '"warnings": ["위험신호들"],'+
+        '"summary": "한줄 행동 지침"'+
+        '}\n\n' +
+        '알수없음 항목은 알고 있는 정보로 최대한 분석';
+    }
+
+    if(mode === 'swing'){
+      var swStr2 = '';
+      if(swingData){
+        swStr2 = '=== 기술적 지표 (실제 계산) ===\n' +
+          'RSI(14): '+(swingData.rsi14||'?')+'\n' +
+          'MA20 기울기: '+(swingData.ma20_slope!==null?swingData.ma20_slope+'%':'?')+'\n' +
+          '거래량 비율: '+(swingData.vol_ratio?swingData.vol_ratio+'x':'?')+'\n' +
+          'MA5/MA20: '+(swingData.ma5&&swingData.ma20?'$'+swingData.ma5.toFixed(2)+' / $'+swingData.ma20.toFixed(2):'?')+'\n' +
+          '10일 최고가: '+(swingData.high10?'$'+swingData.high10:'?')+'\n\n';
+      }
+      return '당신은 스윙 트레이딩 전문 AI입니다. 아래는 현재 보유 중인 스윙 포지션입니다.\n\n' +
+        posInfo + dataStr + swStr2 +
+        '이 포지션을 스윙 관점에서 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
+        'SWING 포지션 관리 기준:\n' +
+        '- 추가매수(피라미딩): 수익 중 + MA20 눌림 + 거래량 지지 + RSI 50 이하\n' +
+        '- 1차 익절(50%): 10일 최고가(저항) 근접 또는 +1R 도달\n' +
+        '- 최종 익절: 52주 고가 근접 또는 추세 꺾임\n' +
+        '- 손절: MA5 종가 2일 연속 이탈 / RSI 72이상+음봉 / 진입가 -3%\n' +
+        '- 홀드: 정배열 유지 + VWAP/MA20 위 + 거래량 정상\n\n' +
+        '{'+
+        '"hold_action": "ADD"|"SELL_HALF"|"SELL_ALL"|"HOLD"|"STOP_LOSS",'+
+        '"urgency": "immediate"|"this_week"|"monitor",'+
+        '"add_price": 추가매수가(숫자,없으면null),'+
+        '"t1": 1차익절가(숫자),'+
+        '"t2": 최종익절가(숫자),'+
+        '"stop": 손절가(숫자),'+
+        '"current_pnl_pct": 현재수익률,'+
+        '"reason": "행동 근거 두 줄 이내",'+
+        '"signals": ["긍정신호들"],'+
+        '"warnings": ["위험신호들"],'+
+        '"summary": "한줄 행동 지침"'+
+        '}\n\n' +
+        '알수없음 항목은 알고 있는 정보로 최대한 분석';
+    }
+  }
+
   var base =
     '종목: '+ticker+'\n거래소: '+exch+'\n현재가: '+price+'\n프리마켓가: '+pmPrice+'\n' +
     '갭업: '+gapStr+'\nFloat: '+floatStr+'\nShort Interest: '+shortStr+'\nRVol: '+rvolStr+'\n' +
     '스프레드: '+spreadStr+'\nVWAP: '+vwapStr+'\nPM 눌림: '+pmCons+'\n최근 뉴스: '+newsStr+'\n\n';
 
   if(mode === 'momo'){
+    // 보유 포지션 관리 모드
+    if(openTrade){
+      var entryP = openTrade.entry;
+      var shares = openTrade.shares || 0;
+      var curP   = ydata.price || entryP;
+      var pnlPct = ((curP - entryP)/entryP*100).toFixed(1);
+      var pnlDol = ((curP - entryP)*shares).toFixed(2);
+      var holdStr = '=== 보유 포지션 정보 ===\n진입가: $'+entryP+'\n현재가: $'+(curP||'알수없음')+'\n수익률: '+pnlPct+'%'+(shares?'  손익: $'+pnlDol:'')+'\n진입일: '+openTrade.date+'\n\n';
+      return '당신은 MOMO 트레이딩 포지션 관리 AI입니다.\n\n' + base + holdStr +
+        '위 데이터를 바탕으로 현재 보유 중인 포지션의 매도 전략을 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
+        '{"ticker":"'+ticker+'","mode":"hold","action":"SELL_NOW"|"HOLD_T1"|"HOLD_T2"|"ADD",' +
+        '"score":0-100,' +
+        '"stop":즉시손절가(진입가×0.97),' +
+        '"t1":1차매도목표가,' +
+        '"t2":2차매도목표가,' +
+        '"add_price":추가매수가격(null이면미해당),' +
+        '"urgency":"high"|"medium"|"low",' +
+        '"action_reason":"지금 당장 해야 할 행동 한 줄",' +
+        '"sell_signals":["매도 근거들"],' +
+        '"hold_signals":["홀드 근거들"],' +
+        '"risk_factors":["리스크 요인들"],' +
+        '"summary":"포지션 관리 한줄 판단"}\n\n' +
+        'SELL_NOW: VWAP 이탈/거래량 소멸/Lower High/손절선 근접/파라볼릭 과확장\n' +
+        'HOLD_T1: T1 미도달, 구조 건전, VWAP 위\n' +
+        'HOLD_T2: T1 달성 후 잔량 홀드, 추세 강함\n' +
+        'ADD: 눌림목 추가매수 적합 (MOMO는 드물게만)\n' +
+        '알수없음 항목은 알고 있는 정보로 최대한 분석';
+    }
     return '당신은 프리마켓 급등주 전문 MOMO 트레이딩 AI입니다.\n\n' + base +
       '위 실제 데이터를 바탕으로 MOMO(당일 모멘텀) 관점에서 분석하고 반드시 순수 JSON만 반환하세요:\n\n' +
       '{"ticker":"'+ticker+'","action":"ENTER"|"WATCH"|"BLOCK","score":0-100,' +
@@ -1217,6 +1332,42 @@ function makePrompt(mode, ticker, ydata, swingData){
   }
 
   if(mode === 'swing'){
+    // 보유 포지션 관리 모드
+    if(openTrade){
+      var entryP = openTrade.entry;
+      var shares = openTrade.shares || 0;
+      var curP   = ydata.price || entryP;
+      var pnlPct = ((curP - entryP)/entryP*100).toFixed(1);
+      var pnlDol = ((curP - entryP)*shares).toFixed(2);
+      var holdStr = '=== 보유 포지션 정보 ===\n진입가: $'+entryP+'\n현재가: $'+(curP||'알수없음')+'\n수익률: '+pnlPct+'%'+(shares?'  손익: $'+pnlDol:'')+'\n진입일: '+openTrade.date+'\n\n';
+      var swStr2 = '';
+      if(swingData){
+        swStr2 = '=== 현재 기술적 지표 ===\n조건 충족: '+swingData.conditions_met+'/8\n'+
+          'RSI: '+(swingData.rsi14||'?')+'\nMA20 기울기: '+(swingData.ma20_slope!==null?swingData.ma20_slope+'%':'?')+'\n'+
+          '거래량 비율: '+(swingData.vol_ratio||'?')+'x\n10일 최고가: $'+(swingData.high10||'?')+'\n\n';
+      }
+      return '당신은 스윙 트레이딩 포지션 관리 AI입니다.\n\n' + base + holdStr + swStr2 +
+        '위 데이터를 바탕으로 현재 보유 중인 스윙 포지션을 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
+        '{"ticker":"'+ticker+'","mode":"hold","action":"SELL_NOW"|"SELL_PARTIAL"|"HOLD"|"ADD",' +
+        '"score":0-100,' +
+        '"stop":손절가(진입가×0.97또는MA20이탈),' +
+        '"t1":1차익절목표가,' +
+        '"t2":최종목표가,' +
+        '"add_price":추가매수가격(null이면미해당),' +
+        '"add_reason":추가매수근거(null가능),' +
+        '"urgency":"high"|"medium"|"low",' +
+        '"action_reason":"지금 당장 해야 할 행동 한 줄",' +
+        '"sell_signals":["매도/축소 근거"],' +
+        '"hold_signals":["홀드/추가 근거"],' +
+        '"risk_factors":["리스크 요인"],' +
+        '"summary":"포지션 관리 한줄 판단"}\n\n' +
+        'SELL_NOW: MA5 2일 연속 이탈/RSI 72이상+음봉/10일 경과 무움직임/지지선 붕괴\n' +
+        'SELL_PARTIAL: T1 도달 시 50% 매도 후 잔량 홀드\n' +
+        'HOLD: 추세 건전, 목표가 미도달, 조건 유지\n' +
+        'ADD: MA20 눌림목 + 조건 5개이상 재충족 + 추세 유지 → 추가매수 적합\n' +
+        '추가매수 조건: 현재가가 MA20 ±3% + 정배열 유지 + 거래량 지지\n' +
+        '알수없음 항목은 알고 있는 정보로 최대한 분석';
+    }
     // 실제 계산된 지표 문자열 구성
     var swStr = '';
     if(swingData){
@@ -1389,11 +1540,16 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   var minGap   = parseInt(document.getElementById('minGap').textContent)||20;
   var maxFloat = parseInt(document.getElementById('maxFloat').textContent)||20;
 
+  // ── 보유 포지션 감지 ──
+  var openTrade = G_journal.find(function(t){
+    return t.ticker === ticker && t.status === 'open' && (!t.mode || t.mode === mode);
+  });
+
   analyzeEl.innerHTML =
     '<div class="analyzing-card">'+
     '<div class="analyzing-spinner"></div>'+
     '<div><div class="analyzing-ticker">'+ticker+'</div>'+
-    '<div class="analyzing-text">Yahoo Finance 데이터 수집 중...</div></div></div>';
+    '<div class="analyzing-text">'+(openTrade?'📌 보유 포지션 감지 — 매도/관리 분석 중...':'Yahoo Finance 데이터 수집 중...')+'</div></div></div>';
 
   var ydata = await fetchYahooData(ticker);
 
@@ -1442,7 +1598,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     '<div><div class="analyzing-ticker">'+ticker+'</div>'+
     '<div class="analyzing-text">'+(ydata.price?'✓ 데이터 확보':'⚠ 데이터 부족')+'<br>Claude AI 분석 중...</div></div></div>';
 
-  var prompt = makePrompt(mode, ticker, ydata, swingData);
+  var prompt = makePrompt(mode, ticker, ydata, swingData, openTrade);
 
   try{
     var apiKey = localStorage.getItem('apexKey')||'';
@@ -1538,6 +1694,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     result._date = new Date().toLocaleDateString('ko-KR');
     result._ts   = Date.now();
     result._mode = mode;
+    result._openTrade = openTrade || null; // 보유 포지션 정보
 
     applyHistory(result);
     result.action = hardFilter(result, mode);
@@ -1568,7 +1725,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
 
     saveToHistory(mode, result);
     analyzeEl.innerHTML = '';
-    resultEl.innerHTML = cardHTML(result, mode);
+    resultEl.innerHTML = openTrade ? holdCardHTML(result, mode, openTrade) : cardHTML(result, mode);
 
   }catch(e){
     analyzeEl.innerHTML='';
@@ -1744,7 +1901,79 @@ function cardHTML(r, mode){
   var tsStr='';
   if(r._ts){ var d=new Date(r._ts); tsStr='<span style="font-family:var(--mono);font-size:9px;color:var(--t3)">'+d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})+'</span>'; }
 
+  // ── 보유 포지션 배너 ──
+  var holdBanner = '';
+  if(r._openTrade){
+    var ot = r._openTrade;
+    var curPrc = r.price || ot.entry;
+    var pnlP = ((curPrc - ot.entry)/ot.entry*100).toFixed(1);
+    var pnlD = ot.shares ? ((curPrc - ot.entry)*ot.shares).toFixed(2) : null;
+    var pnlColor = parseFloat(pnlP)>=0?'var(--g)':'var(--r)';
+    holdBanner =
+      '<div style="background:rgba(255,170,0,.08);border:1px solid rgba(255,170,0,.25);border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--a);font-weight:700">📌 보유 중</span>'+
+          '<span style="font-family:var(--mono);font-size:13px;color:'+pnlColor+'">'+(parseFloat(pnlP)>=0?'+':'')+pnlP+'%'+(pnlD?' ($'+(parseFloat(pnlD)>=0?'+':'')+pnlD+')':'')+'</span>'+
+        '</div>'+
+        '<div style="display:flex;gap:16px;font-family:var(--mono);font-size:11px;color:var(--t2)">'+
+          '<span>진입 <span style="color:var(--t)">$'+ot.entry+'</span></span>'+
+          (ot.shares?'<span>'+ot.shares+'주</span>':'')+
+          '<span>'+ot.date+'</span>'+
+        '</div>'+
+      '</div>';
+  }
+
+  // ── 보유 모드 카드 (hold) ──
+  if(r.mode === 'hold'){
+    var holdAc = r.action||'HOLD';
+    var holdColors = {'SELL_NOW':'var(--r)','SELL_PARTIAL':'var(--a)','HOLD':'var(--g)','HOLD_T1':'var(--g)','HOLD_T2':'var(--g)','ADD':'var(--bl)'};
+    var holdLabels = {'SELL_NOW':'즉시매도','SELL_PARTIAL':'일부매도','HOLD':'홀드','HOLD_T1':'T1홀드','HOLD_T2':'T2홀드','ADD':'추가매수'};
+    var holdColor = holdColors[holdAc]||'var(--t2)';
+    var holdLabel = holdLabels[holdAc]||holdAc;
+    var urgBg = r.urgency==='high'?'rgba(255,45,78,.1)':r.urgency==='medium'?'rgba(255,170,0,.08)':'rgba(0,240,122,.06)';
+    var urgBorder = r.urgency==='high'?'rgba(255,45,78,.3)':r.urgency==='medium'?'rgba(255,170,0,.25)':'rgba(0,240,122,.2)';
+    var urgColor  = r.urgency==='high'?'var(--r)':r.urgency==='medium'?'var(--a)':'var(--g)';
+    var urgIcon   = r.urgency==='high'?'⚡':r.urgency==='medium'?'⚠':'✓';
+    var price2 = r.price ? '$'+r.price.toFixed(2) : '--';
+    var _m2 = mode||r._mode||'momo';
+    return '<div class="stock-card watch">'+
+      holdBanner+
+      '<div class="card-row1">'+
+        '<div style="flex:1">'+
+          '<div style="display:flex;align-items:center;gap:6px">'+
+            '<div class="card-ticker">'+r.ticker+'</div>'+
+            '<span style="font-family:var(--mono);font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;background:rgba(255,255,255,.06);border:1px solid '+holdColor+';color:'+holdColor+'">'+holdLabel+'</span>'+
+          '</div>'+
+          '<div class="card-sub">'+(_m2||'').toUpperCase()+' · 포지션 관리</div>'+
+        '</div>'+
+        '<div style="text-align:right">'+
+          '<div style="font-family:var(--mono);font-size:22px;color:var(--t)">'+price2+'</div>'+
+          '<div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-top:2px">점수 '+r.score+'</div>'+
+        '</div>'+
+      '</div>'+
+      '<div style="background:'+urgBg+';border:1px solid '+urgBorder+';border-radius:8px;padding:8px 12px;font-family:var(--mono);font-size:12px;color:'+urgColor+';margin-bottom:8px">'+urgIcon+' '+(r.action_reason||'')+'</div>'+
+      '<div class="levels" style="margin-bottom:8px">'+
+        '<div class="lv lv-t1"><div class="lv-label">T1 익절</div><div class="lv-val">'+(r.t1?'$'+r.t1:'--')+'</div></div>'+
+        '<div class="lv lv-rr"><div class="lv-label">T2 익절</div><div class="lv-val" style="color:var(--bl)">'+(r.t2?'$'+r.t2:'--')+'</div></div>'+
+        '<div class="lv lv-stop"><div class="lv-label">손절선</div><div class="lv-val">'+(r.stop?'$'+r.stop:'--')+'</div></div>'+
+        '<div class="lv lv-entry"><div class="lv-label">추가매수</div><div class="lv-val" style="color:var(--a)">'+(r.add_price?'$'+r.add_price:'--')+'</div></div>'+
+      '</div>'+
+      ((r.sell_signals&&r.sell_signals.length)?'<div style="margin-bottom:4px">'+r.sell_signals.slice(0,2).map(function(s){return '<div class="sig-line"><span class="sig-icon" style="color:var(--r)">✗</span>'+s+'</div>';}).join('')+'</div>':'')+
+      ((r.hold_signals&&r.hold_signals.length)?'<div style="margin-bottom:4px">'+r.hold_signals.slice(0,2).map(function(s){return '<div class="sig-line"><span class="sig-icon" style="color:var(--g)">✓</span>'+s+'</div>';}).join('')+'</div>':'')+
+      ((r.add_price&&r.add_reason)?'<div style="background:rgba(43,159,255,.08);border:1px solid rgba(43,159,255,.2);border-radius:8px;padding:8px 12px;font-size:11px;color:var(--bl);margin-bottom:6px">➕ '+r.add_reason+'</div>':'')+
+      vwapHtml+
+      (r.news?'<div class="news-line">'+r.news+'</div>':'')+
+      '<div style="font-size:11px;color:var(--t2);margin-top:6px">'+(r.summary||'')+'</div>'+
+      ((r.risk_factors&&r.risk_factors.length)?'<div style="margin-top:6px">'+r.risk_factors.slice(0,2).map(function(f){return '<div class="sig-line"><span class="sig-icon" style="color:var(--a)">⚠</span>'+f+'</div>';}).join('')+'</div>':'')+
+      '<div style="margin-top:10px;display:flex;gap:6px">'+
+        '<button onclick="openTradeLog(''+r.ticker+'','+(r.price||0)+')" style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">✓ 매도 기록</button>'+
+        '<button onclick="rerunCard(''+r.ticker+'',''+_m2+'')" style="flex:1;background:none;border:1px solid var(--b);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--t2);cursor:pointer">↻ 재분석</button>'+
+      '</div>'+
+    '</div>';
+  }
+
   return '<div class="stock-card '+cardC+'">'+
+    holdBanner+
 
     '<div class="card-row1">'+
       '<div style="flex:1">'+
@@ -1821,6 +2050,164 @@ function cardHTML(r, mode){
 
     sigs+
   '</div>';
+}
+
+// ═══════════════════════════════════════
+// 보유 포지션 카드 HTML
+// ═══════════════════════════════════════
+function holdCardHTML(r, mode, trade){
+  var ac = r.hold_action || 'HOLD';
+  var urgency = r.urgency || 'monitor';
+
+  // 액션 색상
+  var acColor = {
+    'SELL_ALL':'var(--r)', 'STOP_LOSS':'var(--r)',
+    'SELL_HALF':'var(--a)', 'ADD':'var(--bl)',
+    'HOLD':'var(--g)'
+  }[ac] || 'var(--t2)';
+
+  var acLabel = {
+    'SELL_ALL':'전량 매도', 'STOP_LOSS':'즉시 손절',
+    'SELL_HALF':'절반 익절', 'ADD':'추가 매수',
+    'HOLD':'홀드 유지'
+  }[ac] || ac;
+
+  var urgencyLabel = {
+    'immediate':'🔴 즉시', 'today':'🟡 오늘 중', 'this_week':'🟡 이번주',
+    'monitor':'🟢 모니터링'
+  }[urgency] || urgency;
+
+  var curP  = r.price || trade.entry;
+  var pnlPct = ((curP - trade.entry)/trade.entry*100);
+  var pnlAmt = trade.shares ? (curP - trade.entry)*trade.shares : null;
+  var pnlColor = pnlPct >= 0 ? 'var(--g)' : 'var(--r)';
+
+  // T1까지 거리, 손절까지 거리
+  var t1dist  = r.t1  ? ((r.t1  - curP)/curP*100).toFixed(1) : null;
+  var stopdist= r.stop? ((curP  - r.stop)/curP*100).toFixed(1) : null;
+
+  var signals = (r.signals||[]).slice(0,3).map(function(s){
+    return '<div style="display:flex;gap:6px;font-size:11px;color:var(--t);line-height:1.5"><span style="color:var(--g);flex-shrink:0">✓</span>'+s+'</div>';
+  }).join('');
+  var warnings = (r.warnings||[]).slice(0,3).map(function(w){
+    return '<div style="display:flex;gap:6px;font-size:11px;color:var(--t);line-height:1.5"><span style="color:var(--a);flex-shrink:0">⚠</span>'+w+'</div>';
+  }).join('');
+
+  // 모드 색상
+  var modeColor = mode==='momo'?'var(--a)':mode==='swing'?'var(--bl)':'var(--pu)';
+
+  return '<div class="stock-card" style="border-color:'+acColor+';border-width:1.5px">'+
+
+    // 보유 배너
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding:8px 10px;background:rgba(255,255,255,.04);border-radius:8px;border:1px solid var(--b2)">'+
+      '<div style="display:flex;align-items:center;gap:8px">'+
+        '<span style="font-size:13px">📌</span>'+
+        '<div>'+
+          '<div style="font-family:var(--mono);font-size:11px;color:var(--t2)">보유 중 · 진입 <span style="color:var(--t)">$'+trade.entry+'</span></div>'+
+          (trade.shares?'<div style="font-family:var(--mono);font-size:10px;color:var(--t3)">'+trade.shares+'주'+(pnlAmt!==null?' · $'+(pnlAmt>=0?'+':'')+pnlAmt.toFixed(2):'')+'</div>':'')+
+        '</div>'+
+      '</div>'+
+      '<div style="text-align:right">'+
+        '<div style="font-family:var(--mono);font-size:16px;color:'+pnlColor+'">'+(pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%</div>'+
+        '<div style="font-family:var(--mono);font-size:10px;color:var(--t2)">$'+curP.toFixed(2)+'</div>'+
+      '</div>'+
+    '</div>'+
+
+    // 티커 + 행동 판단
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'+
+      '<div>'+
+        '<div style="font-family:var(--mono);font-size:22px;color:var(--t)">'+r.ticker+'</div>'+
+        '<div style="font-size:10px;color:var(--t2);font-family:var(--mono);margin-top:2px">'+urgencyLabel+'</div>'+
+      '</div>'+
+      '<div style="text-align:center;padding:8px 16px;border-radius:10px;border:1.5px solid '+acColor+';background:rgba(255,255,255,.04)">'+
+        '<div style="font-family:var(--mono);font-size:13px;font-weight:700;color:'+acColor+'">'+acLabel+'</div>'+
+      '</div>'+
+    '</div>'+
+
+    // 핵심 판단 근거
+    '<div style="font-size:12px;color:var(--t);line-height:1.6;padding:10px 12px;background:var(--bg2);border-radius:10px;margin-bottom:10px">'+
+      (r.reason||r.summary||'')+'</div>'+
+
+    // 가격 레벨
+    '<div style="display:grid;grid-template-columns:repeat('+(mode==='swing'&&r.add_price?'4':'3')+',1fr);background:var(--bg2);border-radius:11px;overflow:hidden;margin-bottom:10px">'+
+      (mode==='swing'&&r.add_price?
+        '<div style="padding:8px 6px;text-align:center;border-right:1px solid var(--b)">'+
+          '<div style="font-size:8px;color:var(--t2);margin-bottom:3px;text-transform:uppercase">추가매수</div>'+
+          '<div style="font-family:var(--mono);font-size:13px;color:var(--bl)">$'+r.add_price+'</div>'+
+        '</div>':'')+
+      '<div style="padding:8px 6px;text-align:center;border-right:1px solid var(--b)">'+
+        '<div style="font-size:8px;color:var(--t2);margin-bottom:3px;text-transform:uppercase">T1 익절</div>'+
+        '<div style="font-family:var(--mono);font-size:13px;color:var(--g)">'+(r.t1?'$'+r.t1:'--')+'</div>'+
+        (t1dist?'<div style="font-size:9px;color:var(--t3)">잔여 +'+t1dist+'%</div>':'')+
+      '</div>'+
+      '<div style="padding:8px 6px;text-align:center;border-right:1px solid var(--b)">'+
+        '<div style="font-size:8px;color:var(--t2);margin-bottom:3px;text-transform:uppercase">T2 익절</div>'+
+        '<div style="font-family:var(--mono);font-size:13px;color:var(--bl)">'+(r.t2?'$'+r.t2:'--')+'</div>'+
+      '</div>'+
+      '<div style="padding:8px 6px;text-align:center">'+
+        '<div style="font-size:8px;color:var(--t2);margin-bottom:3px;text-transform:uppercase">손절</div>'+
+        '<div style="font-family:var(--mono);font-size:13px;color:var(--r)">'+(r.stop?'$'+r.stop:'--')+'</div>'+
+        (stopdist?'<div style="font-size:9px;color:var(--t3)">여유 -'+stopdist+'%</div>':'')+
+      '</div>'+
+    '</div>'+
+
+    // 신호
+    (signals||warnings?
+      '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px">'+signals+warnings+'</div>'
+    :'')+
+
+    // 요약
+    '<div style="font-size:11px;color:var(--t2);margin-bottom:10px">'+(r.summary||'')+'</div>'+
+
+    // 버튼
+    '<div style="display:flex;gap:6px">'+
+      '<button onclick="markTradeClosed('+trade.id+','+curP.toFixed(2)+')" '+
+        'style="flex:2;background:rgba(255,45,78,.1);border:1px solid rgba(255,45,78,.3);border-radius:8px;padding:9px;font-family:var(--mono);font-size:11px;color:var(--r);cursor:pointer">✓ 매도 기록</button>'+
+      '<button onclick="rerunCard(''+r.ticker+'',''+mode+'')" '+
+        'style="flex:1;background:none;border:1px solid var(--b);border-radius:8px;padding:9px;font-family:var(--mono);font-size:11px;color:var(--t2);cursor:pointer">↻ 재분석</button>'+
+    '</div>'+
+  '</div>';
+}
+
+// 매도 기록 처리
+function markTradeClosed(tradeId, curPrice){
+  var trade = G_journal.find(function(t){return t.id===tradeId;});
+  if(!trade){ showToast('거래 기록을 찾을 수 없어요'); return; }
+
+  var modal = document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:flex-end;justify-content:center';
+  modal.innerHTML=
+    '<div style="background:var(--bg1);border:1px solid var(--b);border-radius:20px 20px 0 0;padding:20px;width:100%;max-width:480px;padding-bottom:max(20px,env(safe-area-inset-bottom))">'+
+    '<div style="font-family:var(--mono);font-size:15px;color:var(--t);margin-bottom:4px">'+trade.ticker+' 매도 기록</div>'+
+    '<div style="font-size:11px;color:var(--t2);margin-bottom:16px">진입가: $'+trade.entry+' · '+trade.shares+'주</div>'+
+    '<div style="display:flex;flex-direction:column;gap:10px">'+
+      '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">매도가</div>'+
+        '<input id="mc_exit" type="number" step="0.01" value="'+curPrice+'" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
+      '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">메모 (선택)</div>'+
+        '<input id="mc_memo" type="text" placeholder="예: T1 도달 익절" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-size:13px;color:var(--t);outline:none"></div>'+
+    '</div>'+
+    '<div style="display:flex;gap:8px;margin-top:16px">'+
+      '<button onclick="this.closest('div[style*=fixed]').remove()" style="flex:1;padding:12px;background:var(--bg2);border:1px solid var(--b);border-radius:10px;color:var(--t2);font-size:14px;cursor:pointer">취소</button>'+
+      '<button onclick="confirmClose('+tradeId+')" style="flex:2;padding:12px;background:var(--r);border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:700;cursor:pointer">매도 확정</button>'+
+    '</div></div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click',function(e){if(e.target===modal) modal.remove();});
+}
+
+function confirmClose(tradeId){
+  var exit = parseFloat(document.getElementById('mc_exit').value);
+  var memo = document.getElementById('mc_memo').value.trim();
+  if(!exit){ showToast('매도가를 입력하세요'); return; }
+  var trade = G_journal.find(function(t){return t.id===tradeId;});
+  if(!trade) return;
+  trade.exit    = exit;
+  trade.memo    = memo || trade.memo;
+  trade.pnl     = parseFloat(((exit-trade.entry)*(trade.shares||1)).toFixed(2));
+  trade.pnl_pct = parseFloat(((exit-trade.entry)/trade.entry*100).toFixed(2));
+  trade.status  = trade.pnl >= 0 ? 'win' : 'loss';
+  localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+  document.querySelector('div[style*=fixed]')?.remove();
+  showToast(trade.ticker+' 매도 기록 완료 · '+(trade.pnl>=0?'+':'')+trade.pnl+'$');
 }
 
 async function rerunCard(ticker, mode){
