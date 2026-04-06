@@ -1025,66 +1025,116 @@ async function fetchYahooData(ticker){
       var res1=result.nearest_resistance, sup1=result.nearest_support;
 
       if(IS_PRE && result.pm_high && result.pm_low){
-        result.entry_calc  = parseFloat((result.pm_high+0.02).toFixed(2));
-        result.stop_calc   = parseFloat((result.pm_low*0.98).toFixed(2));
-        var r1=result.entry_calc-result.stop_calc;
-        result.target_calc = (result.fiftyTwoWeekHigh&&result.fiftyTwoWeekHigh>result.entry_calc)
-          ? parseFloat(result.fiftyTwoWeekHigh.toFixed(2))
-          : parseFloat((result.entry_calc+r1*2).toFixed(2));
-        result.rr_calc = r1>0 ? parseFloat(((result.target_calc-result.entry_calc)/r1).toFixed(1)) : null;
-        // 눌림목 진입각: 지지선 기반
+        // ▲ 진입각: 응축 구간 지지선 기반 (VWAP or 지지선 or 박스권 하단)
+        var mainEntry, mainStop;
+        if(result.intraday_consolidation&&result.intraday_range_low){
+          mainEntry=parseFloat((parseFloat(result.intraday_range_low)+0.01).toFixed(2)); // 박스권 하단
+        } else if(result.vwap&&ep&&Math.abs(ep-result.vwap)/result.vwap<0.05){
+          mainEntry=parseFloat((parseFloat(result.vwap)+0.01).toFixed(2)); // VWAP 근처
+        } else if(sup1&&sup1>result.pm_low){
+          mainEntry=parseFloat((sup1+0.01).toFixed(2)); // 지지선
+        } else {
+          mainEntry=parseFloat((result.pm_low*1.02).toFixed(2)); // PM 저점 위
+        }
+        // 손절: 지지선 or VWAP 아래
+        if(sup1&&sup1<mainEntry&&sup1>mainEntry*0.93){
+          mainStop=parseFloat((sup1-0.02).toFixed(2));
+        } else if(result.vwap&&parseFloat(result.vwap)<mainEntry){
+          mainStop=parseFloat((parseFloat(result.vwap)*0.985).toFixed(2));
+        } else {
+          mainStop=parseFloat((result.pm_low*0.97).toFixed(2));
+        }
+        result.entry_calc = mainEntry;
+        result.stop_calc  = mainStop;
+        var r1=mainEntry-mainStop;
+        // 목표: PM 고점 or 저항선
+        var _t1lvls=[];
+        if(result.pm_high&&result.pm_high>mainEntry)              _t1lvls.push(result.pm_high);
+        if(result.nearest_resistance&&result.nearest_resistance>mainEntry) _t1lvls.push(result.nearest_resistance);
+        _t1lvls.sort(function(a,b){return a-b;});
+        result.target_calc = _t1lvls.length>0
+          ? parseFloat(_t1lvls[0].toFixed(2))
+          : parseFloat((mainEntry+r1*2).toFixed(2));
+        result.rr_calc = r1>0 ? parseFloat(((result.target_calc-mainEntry)/r1).toFixed(1)) : null;
+
+        // ↘ 눌림목 진입각: 더 눌렸을 때 (PM 저점 근처 or 더 깊은 지지)
         if(ep){
-          // 진입: 가장 가까운 저항 돌파 or VWAP 바운스
           var pbEntry, pbStop;
-          if(res1&&res1>ep&&res1<ep*1.06){
-            pbEntry=parseFloat((res1+0.02).toFixed(2)); // 저항 돌파
-          } else if(result.vwap&&Math.abs(ep-result.vwap)/result.vwap<0.015){
-            pbEntry=parseFloat((result.vwap+0.02).toFixed(2)); // VWAP 바운스
+          // 더 깊은 눌림: PM 저점 근처 or sup2 or PM 저점+버퍼
+          var sup2=result.second_support;
+          if(sup2&&sup2>result.pm_low&&sup2<mainEntry){
+            pbEntry=parseFloat((sup2+0.01).toFixed(2));
+          } else if(result.pm_low){
+            pbEntry=parseFloat((result.pm_low*1.01).toFixed(2));
           } else {
-            pbEntry=parseFloat((ep+(atr>0?atr:ep*0.005)).toFixed(2));
+            pbEntry=parseFloat((mainEntry*0.97).toFixed(2));
           }
-          // 손절: 지지선 아래 or VWAP 아래
-          if(sup1&&sup1>ep*0.94){
-            pbStop=parseFloat((sup1-0.02).toFixed(2));
-          } else if(result.vwap){
-            pbStop=parseFloat((result.vwap*0.99).toFixed(2));
-          } else {
-            pbStop=parseFloat((result.pm_low*0.98).toFixed(2));
-          }
+          pbStop=parseFloat((pbEntry*0.93).toFixed(2));
+          var _pb1lvls=[];
+          if(result.vwap&&parseFloat(result.vwap)>pbEntry)        _pb1lvls.push(parseFloat(result.vwap));
+          if(result.pm_high&&result.pm_high>pbEntry)               _pb1lvls.push(result.pm_high);
+          if(result.nearest_resistance&&result.nearest_resistance>pbEntry) _pb1lvls.push(result.nearest_resistance);
+          _pb1lvls.sort(function(a,b){return a-b;});
           var rp=pbEntry-pbStop;
+          var pbTarget=_pb1lvls.length>0?parseFloat(_pb1lvls[0].toFixed(2)):parseFloat((pbEntry+rp*2).toFixed(2));
           result.pullback_entry  = pbEntry;
           result.pullback_stop   = pbStop;
-          result.pullback_target = rp>0?parseFloat((pbEntry+rp*2).toFixed(2)):null;
-          result.pullback_rr     = rp>0?parseFloat(((pbEntry+rp*2-pbEntry)/rp).toFixed(1)):null;
+          result.pullback_target = pbTarget;
+          result.pullback_rr     = rp>0?parseFloat(((pbTarget-pbEntry)/rp).toFixed(1)):null;
         }
       } else if(IS_OPEN && result.orb_high && result.orb_low){
-        result.entry_calc  = parseFloat((result.orb_high+0.02).toFixed(2));
-        result.stop_calc   = parseFloat((result.orb_low*0.97).toFixed(2));
-        var r2=result.entry_calc-result.stop_calc;
-        result.target_calc = parseFloat((result.entry_calc+r2*2).toFixed(2));
-        result.rr_calc = r2>0 ? parseFloat(((result.target_calc-result.entry_calc)/r2).toFixed(1)) : null;
-        // 장중 눌림목 진입각
+        // ▲ 진입각: 장중 응축 구간 지지선 기반
+        var mainEntry2, mainStop2;
+        if(result.intraday_consolidation&&result.intraday_range_low){
+          mainEntry2=parseFloat((parseFloat(result.intraday_range_low)+0.01).toFixed(2));
+        } else if(result.vwap&&ep&&Math.abs(ep-parseFloat(result.vwap))/parseFloat(result.vwap)<0.05){
+          mainEntry2=parseFloat((parseFloat(result.vwap)+0.01).toFixed(2));
+        } else if(sup1){
+          mainEntry2=parseFloat((sup1+0.01).toFixed(2));
+        } else {
+          mainEntry2=parseFloat((result.orb_low*1.02).toFixed(2));
+        }
+        if(sup1&&sup1<mainEntry2&&sup1>mainEntry2*0.94){
+          mainStop2=parseFloat((sup1-0.02).toFixed(2));
+        } else if(result.vwap&&parseFloat(result.vwap)<mainEntry2){
+          mainStop2=parseFloat((parseFloat(result.vwap)*0.985).toFixed(2));
+        } else {
+          mainStop2=parseFloat((result.orb_low*0.97).toFixed(2));
+        }
+        result.entry_calc = mainEntry2;
+        result.stop_calc  = mainStop2;
+        var r2=mainEntry2-mainStop2;
+        var _t2lvls=[];
+        if(res1&&res1>mainEntry2)              _t2lvls.push(res1);
+        if(result.pm_high&&result.pm_high>mainEntry2) _t2lvls.push(result.pm_high);
+        if(result.intraday_range_high&&parseFloat(result.intraday_range_high)>mainEntry2) _t2lvls.push(parseFloat(result.intraday_range_high));
+        _t2lvls.sort(function(a,b){return a-b;});
+        result.target_calc = _t2lvls.length>0?parseFloat(_t2lvls[0].toFixed(2)):parseFloat((mainEntry2+r2*2).toFixed(2));
+        result.rr_calc = r2>0 ? parseFloat(((result.target_calc-mainEntry2)/r2).toFixed(1)) : null;
+
+        // ↘ 눌림목 진입각: ORB 저점 or 더 깊은 지지
         if(ep){
           var pbEntry2, pbStop2;
-          if(res1&&res1>ep&&res1<ep*1.05){
-            pbEntry2=parseFloat((res1+0.02).toFixed(2));
-          } else if(result.intraday_range_high&&result.intraday_consolidation){
-            pbEntry2=parseFloat((result.intraday_range_high+0.02).toFixed(2));
+          var sup2b=result.second_support;
+          if(sup2b&&sup2b>result.orb_low&&sup2b<mainEntry2){
+            pbEntry2=parseFloat((sup2b+0.01).toFixed(2));
+          } else if(result.vwap&&parseFloat(result.vwap)<mainEntry2){
+            pbEntry2=parseFloat((parseFloat(result.vwap)+0.01).toFixed(2));
           } else {
-            pbEntry2=parseFloat((ep+(atr>0?atr:ep*0.005)).toFixed(2));
+            pbEntry2=parseFloat((result.orb_low*1.01).toFixed(2));
           }
-          if(sup1&&sup1>ep*0.95){
-            pbStop2=parseFloat((sup1-0.02).toFixed(2));
-          } else if(result.vwap){
-            pbStop2=parseFloat((result.vwap*0.99).toFixed(2));
-          } else {
-            pbStop2=parseFloat((result.orb_low*0.97).toFixed(2));
-          }
+          pbStop2=parseFloat((pbEntry2*0.93).toFixed(2));
+          var _pb2lvls=[];
+          if(res1&&res1>pbEntry2)                _pb2lvls.push(res1);
+          if(result.pm_high&&result.pm_high>pbEntry2) _pb2lvls.push(result.pm_high);
+          if(result.intraday_range_high&&parseFloat(result.intraday_range_high)>pbEntry2) _pb2lvls.push(parseFloat(result.intraday_range_high));
+          _pb2lvls.sort(function(a,b){return a-b;});
           var rp2=pbEntry2-pbStop2;
+          var pbTarget2=_pb2lvls.length>0?parseFloat(_pb2lvls[0].toFixed(2)):parseFloat((pbEntry2+rp2*2).toFixed(2));
           result.pullback_entry  = pbEntry2;
           result.pullback_stop   = pbStop2;
-          result.pullback_target = rp2>0?parseFloat((pbEntry2+rp2*2).toFixed(2)):null;
-          result.pullback_rr     = rp2>0?parseFloat((rp2*2/rp2).toFixed(1)):null;
+          result.pullback_target = pbTarget2;
+          result.pullback_rr     = rp2>0?parseFloat(((pbTarget2-pbEntry2)/rp2).toFixed(1)):null;
         }
       }
     }
@@ -2009,7 +2059,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
 
   // ── 보유 포지션 감지 ──
   var openTrade = G_journal.find(function(t){
-    return t.ticker === ticker && t.status === 'open' && (!t.mode || t.mode === mode);
+    return t.ticker === ticker && (t.status === 'open' || t.status === 'partial') && (!t.mode || t.mode === mode);
   });
 
   analyzeEl.innerHTML =
@@ -2026,8 +2076,8 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     var validExchanges = ['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS'];
     if(ydata.exchange && !validExchanges.includes((ydata.exchange||'').toUpperCase()))
       earlyBlock.push('OTC/비상장 ('+ydata.exchange+')');
-    if(ydata.price && (ydata.price<1||ydata.price>20))
-      earlyBlock.push('주가 범위 외 ($'+(ydata.price||0).toFixed(2)+')');
+    if(ydata.price && ydata.price<0.5)
+      earlyBlock.push('주가 범위 외 ($'+(ydata.price||0).toFixed(2)+') — $0.5 미만 페니스탁');
     if(ydata.gap_pct!==null && ydata.gap_pct<minGap)
       earlyBlock.push('갭업 부족 (+'+( ydata.gap_pct||0).toFixed(1)+'%)');
     if(ydata.float_m!==null && ydata.float_m>maxFloat)
@@ -2455,7 +2505,30 @@ function calcSellTargets(r){
   var t1=parseFloat((entry+risk).toFixed(2));
   var t2base=parseFloat((entry+risk*2).toFixed(2));
   var t2=t2base;
-  if(r.fiftyTwoWeekHigh&&r.fiftyTwoWeekHigh>entry&&r.fiftyTwoWeekHigh<t2base) t2=parseFloat(r.fiftyTwoWeekHigh.toFixed(2));
+  var isMomo=r._mode==='momo'||(r.float_m&&r.float_m<20&&r.gap_pct&&r.gap_pct>20);
+  if(isMomo){
+    // MOMO 당일 매매 — 실제 차트 레벨 기반
+    // T1: PM 고점 or 가장 가까운 저항선 중 entry보다 높은 것
+    var lvls=[];
+    if(r.pm_high&&r.pm_high>entry)           lvls.push(r.pm_high);
+    if(r.nearest_resistance&&r.nearest_resistance>entry) lvls.push(r.nearest_resistance);
+    if(r.orb_high&&r.orb_high>entry)         lvls.push(r.orb_high);
+    lvls.sort(function(a,b){return a-b;});
+    if(lvls.length>0) t1=parseFloat(lvls[0].toFixed(2));
+
+    // T2: 2차 저항선 or PM 고점 넘어 다음 레벨
+    var lvls2=[];
+    if(r.second_resistance&&r.second_resistance>t1) lvls2.push(r.second_resistance);
+    if(r.pm_high&&r.pm_high>t1)             lvls2.push(r.pm_high);
+    if(r.nearest_resistance&&r.nearest_resistance>t1) lvls2.push(r.nearest_resistance);
+    lvls2.sort(function(a,b){return a-b;});
+    if(lvls2.length>0) t2=parseFloat(lvls2[0].toFixed(2));
+    else t2=t2base; // 레벨 없으면 +2R 폴백
+  } else {
+    // SWING/CORE — 52주 고가 사용 가능
+    if(r.fiftyTwoWeekHigh&&r.fiftyTwoWeekHigh>entry&&r.fiftyTwoWeekHigh<t2base)
+      t2=parseFloat(r.fiftyTwoWeekHigh.toFixed(2));
+  }
   var parabolic=r.price&&entry&&r.price>entry*1.30;
   var overextended=r.pm_high&&r.price&&r.price>r.pm_high*1.15;
   return {t1,t2,risk:parseFloat(risk.toFixed(2)),parabolic,overextended};
@@ -2586,28 +2659,28 @@ function cardHTML(r, mode){
   if(r._mode==='momo'&&ac!=='BLOCK'){
     var bLow=r.intraday_consolidation?r.intraday_range_low:null;
     var bHigh=r.intraday_consolidation?r.intraday_range_high:null;
-    var bRes1=r.nearest_resistance, bSup1=r.nearest_support, bPmH=r.pm_high;
-    var sLow=bLow||(bSup1?bSup1.toFixed(2):null);
-    var sHigh=bHigh||(bPmH?bPmH.toFixed(2):(bRes1?bRes1.toFixed(2):null));
+    var bRes1=r.nearest_resistance,bSup1=r.nearest_support,bPmH=r.pm_high;
+    var sLow=bLow||(bSup1?parseFloat(bSup1).toFixed(2):null);
+    var sHigh=bHigh||(bPmH?parseFloat(bPmH).toFixed(2):(bRes1?parseFloat(bRes1).toFixed(2):null));
     if(sLow&&sHigh&&parseFloat(sHigh)>parseFloat(sLow)){
       var upNext=bRes1&&bRes1>parseFloat(sHigh)?'$'+bRes1.toFixed(2):(bPmH&&bPmH>parseFloat(sHigh)?'$'+bPmH.toFixed(2):'$'+(parseFloat(sHigh)*1.10).toFixed(2));
       var dnNext=bSup1&&bSup1<parseFloat(sLow)?'$'+bSup1.toFixed(2):'$'+(parseFloat(sLow)*0.95).toFixed(2);
       boxScenarioHtml=
         '<div style="margin:10px 0 6px;padding:10px 12px;background:rgba(43,159,255,.05);border:1px solid rgba(43,159,255,.15);border-radius:10px">'+
-          '<div style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.1em;margin-bottom:7px">📦 박스권 시나리오</div>'+
-          '<div style="text-align:center;font-family:var(--mono);font-size:11px;color:var(--a);margin-bottom:8px">$'+sLow+' ── 압축 중 ── $'+sHigh+'</div>'+
-          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'+
-            '<div style="background:rgba(0,240,122,.06);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px 10px">'+
-              '<div style="font-size:9px;color:var(--g);letter-spacing:.06em;margin-bottom:4px">🟢 돌파 시</div>'+
-              '<div style="font-family:var(--mono);font-size:13px;color:var(--g)">→ '+upNext+'</div>'+
-              '<div style="font-size:10px;color:var(--t2);margin-top:2px">$'+sHigh+' 돌파+거래량</div>'+
-            '</div>'+
-            '<div style="background:rgba(255,45,78,.06);border:1px solid rgba(255,45,78,.2);border-radius:8px;padding:8px 10px">'+
-              '<div style="font-size:9px;color:var(--r);letter-spacing:.06em;margin-bottom:4px">🔴 이탈 시</div>'+
-              '<div style="font-family:var(--mono);font-size:13px;color:var(--r)">→ '+dnNext+'</div>'+
-              '<div style="font-size:10px;color:var(--t2);margin-top:2px">$'+sLow+' 이탈→손절</div>'+
-            '</div>'+
+        '<div style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.1em;margin-bottom:7px">📦 박스권 시나리오</div>'+
+        '<div style="text-align:center;font-family:var(--mono);font-size:11px;color:var(--a);margin-bottom:8px">$'+sLow+' ── 압축 중 ── $'+sHigh+'</div>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'+
+          '<div style="background:rgba(0,240,122,.06);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px 10px">'+
+            '<div style="font-size:9px;color:var(--g);margin-bottom:4px">🟢 돌파 시</div>'+
+            '<div style="font-family:var(--mono);font-size:13px;color:var(--g)">→ '+upNext+'</div>'+
+            '<div style="font-size:10px;color:var(--t2);margin-top:2px">$'+sHigh+' 돌파+거래량</div>'+
           '</div>'+
+          '<div style="background:rgba(255,45,78,.06);border:1px solid rgba(255,45,78,.2);border-radius:8px;padding:8px 10px">'+
+            '<div style="font-size:9px;color:var(--r);margin-bottom:4px">🔴 이탈 시</div>'+
+            '<div style="font-family:var(--mono);font-size:13px;color:var(--r)">→ '+dnNext+'</div>'+
+            '<div style="font-size:10px;color:var(--t2);margin-top:2px">$'+sLow+' 이탈→손절</div>'+
+          '</div>'+
+        '</div>'+
         '</div>';
     }
   }
@@ -2616,13 +2689,13 @@ function cardHTML(r, mode){
   var checklistHtml='';
   if(r._mode==='momo'&&ac!=='BLOCK'&&r.price){
     var ckLevels=[];
-    if(r.pm_low)              ckLevels.push({label:'PM 저점',  price:r.pm_low,             color:'var(--t2)'});
-    if(r.vwap)                ckLevels.push({label:'VWAP',     price:parseFloat(r.vwap),   color:'var(--bl)'});
-    if(r.nearest_support)     ckLevels.push({label:'지지선',   price:r.nearest_support,    color:'var(--t2)'});
-    if(r.orb_high)            ckLevels.push({label:'ORB',      price:r.orb_high,           color:'var(--bl)'});
-    if(r.pm_high)             ckLevels.push({label:'PM 고점',  price:r.pm_high,            color:'var(--a)'});
-    if(r.nearest_resistance)  ckLevels.push({label:'1차 저항', price:r.nearest_resistance, color:'var(--a)'});
-    if(r.second_resistance)   ckLevels.push({label:'2차 저항', price:r.second_resistance,  color:'var(--r)'});
+    if(r.pm_low)             ckLevels.push({label:'PM 저점',  price:parseFloat(r.pm_low),             color:'var(--t2)'});
+    if(r.vwap)               ckLevels.push({label:'VWAP',     price:parseFloat(r.vwap),              color:'var(--bl)'});
+    if(r.nearest_support)    ckLevels.push({label:'지지선',   price:parseFloat(r.nearest_support),   color:'var(--t2)'});
+    if(r.orb_high)           ckLevels.push({label:'ORB',      price:parseFloat(r.orb_high),          color:'var(--bl)'});
+    if(r.pm_high)            ckLevels.push({label:'PM 고점',  price:parseFloat(r.pm_high),           color:'var(--a)'});
+    if(r.nearest_resistance) ckLevels.push({label:'1차 저항', price:parseFloat(r.nearest_resistance),color:'var(--a)'});
+    if(r.second_resistance)  ckLevels.push({label:'2차 저항', price:parseFloat(r.second_resistance), color:'var(--r)'});
     ckLevels.sort(function(a,b){return a.price-b.price;});
     if(ckLevels.length>=2){
       var ckItems=ckLevels.map(function(lv){
@@ -2631,13 +2704,13 @@ function cardHTML(r, mode){
           '<span style="font-size:13px">'+(done?'✅':'⬜')+'</span>'+
           '<span style="font-family:var(--mono);font-size:10px;color:'+(done?'var(--g)':lv.color)+'">'+lv.label+'</span>'+
           '<span style="font-family:var(--mono);font-size:11px;color:'+(done?'var(--g)':lv.color)+';margin-left:auto">$'+lv.price.toFixed(2)+'</span>'+
-          '<span style="font-size:9px;color:'+(done?'var(--g)':'var(--t3)')+';">'+(done?'✓ 돌파':'대기')+'</span>'+
+          '<span style="font-size:9px;color:'+(done?'var(--g)':'var(--t3)')+';">'+(done?'✓':'대기')+'</span>'+
         '</div>';
       }).join('');
       checklistHtml=
         '<div style="margin:10px 0 6px;padding:10px 12px;background:var(--bg2);border:1px solid var(--b);border-radius:10px">'+
-          '<div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.1em;margin-bottom:6px">🎯 돌파 체크리스트</div>'+
-          ckItems+
+        '<div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.1em;margin-bottom:6px">🎯 돌파 체크리스트</div>'+
+        ckItems+
         '</div>';
     }
   }
