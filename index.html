@@ -380,6 +380,8 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   <div id="momoAnalyzeArea"></div>
   <div class="cards-area"><div id="momoOpenArea"></div></div>
   <div class="cards-area"><div id="momoResultArea"></div></div>
+  <!-- 오늘 분석한 ENTER/WATCH 카드 누적 표시 -->
+  <div id="momoTodayArea"></div>
 </div>
 
 <!-- MOMO 히스토리 -->
@@ -606,7 +608,11 @@ var G = {
 
 var G_journal = JSON.parse(localStorage.getItem('reconJournal')||'[]');
 var G_jFilters = { momo:'today', swing:'today', core:'today' };
-var G_cardSnapshots = {}; // ticker별 최신 분석 스냅샷 (거래 기록 시 첨부용)
+var G_cardSnapshots = {};
+
+// MOMO 오늘 분석 카드 (BLOCK 제외, 날짜 바뀌면 히스토리로 이동)
+var G_momoTodayCards = JSON.parse(localStorage.getItem('momoTodayCards')||'[]');
+var G_momoTodayDate  = localStorage.getItem('momoTodayDate') || ''; // ticker별 최신 분석 스냅샷 (거래 기록 시 첨부용)
 
 // ═══════════════════════════════════════
 // 레버리지 ETF 맵 (242개 — 레버리지맵.numbers 기반)
@@ -919,6 +925,26 @@ function parseLeverageETF(longName, shortName){
 if(G.apiKey){ document.getElementById('apiKeyInput').value = G.apiKey; }
 if(G.ntfy)  { document.getElementById('ntfyChInput').value = G.ntfy; }
 
+// MOMO 오늘 카드 날짜 체크 — 날짜 바뀌면 히스토리로 이동
+(function(){
+  var today = new Date().toLocaleDateString('en-US', {timeZone:'America/New_York'});
+  if(G_momoTodayDate && G_momoTodayDate !== today && G_momoTodayCards.length > 0){
+    // 어제 카드 → 히스토리에 병합 (중복 제거)
+    G_momoTodayCards.forEach(function(c){
+      G.momoHistory = G.momoHistory.filter(function(h){ return h.ticker !== c.ticker; });
+      G.momoHistory.push(c);
+    });
+    G.momoHistory = G.momoHistory.slice(0, 50);
+    localStorage.setItem('momoHistory', JSON.stringify(G.momoHistory));
+    G_momoTodayCards = [];
+    localStorage.removeItem('momoTodayCards');
+    // 날짜 바뀌면 PM 고점 캐시 전체 삭제
+    Object.keys(localStorage).filter(function(k){ return k.startsWith('pmHigh_'); }).forEach(function(k){ localStorage.removeItem(k); });
+  }
+  G_momoTodayDate = today;
+  localStorage.setItem('momoTodayDate', today);
+})();
+
 // ═══════════════════════════════════════
 // 모드/탭 전환
 // ═══════════════════════════════════════
@@ -1065,7 +1091,10 @@ function switchSubTab(sub){
 
   if(sub === 'history') renderHistory(G.currentMode);
   if(sub === 'journal') renderJournal(G.currentMode);
-  if(sub === 'search')  renderOpenPositions(G.currentMode);
+  if(sub === 'search'){
+    renderOpenPositions(G.currentMode);
+    if(G.currentMode === 'momo') renderMomoTodayCards();
+  }
 }
 
 function updateKeyStatus(){
@@ -1365,7 +1394,19 @@ async function fetchYahooData(ticker){
         if(hm>=400 && hm<930)  { pmH.push(h); pmL.push(l); }
         if(hm>=930 && hm<=935) { orbH.push(h); orbL.push(l); }
       });
-      if(pmH.length){ result.pm_high=Math.max.apply(null,pmH); result.pm_low=Math.min.apply(null,pmL); }
+      if(pmH.length){
+        result.pm_low = Math.min.apply(null, pmL);
+        // PM 고점 하루 고정 — 재스캔 시 기준점 변동 방지 (루프 방지)
+        var _today = new Date().toLocaleDateString('en-US', {timeZone:'America/New_York'});
+        var _pmKey = 'pmHigh_' + ticker + '_' + _today;
+        var _saved = localStorage.getItem(_pmKey);
+        if(_saved){
+          result.pm_high = parseFloat(_saved);
+        } else {
+          result.pm_high = Math.max.apply(null, pmH);
+          localStorage.setItem(_pmKey, result.pm_high);
+        }
+      }
       if(orbH.length){ result.orb_high=Math.max.apply(null,orbH); result.orb_low=Math.min.apply(null,orbL); }
 
       // VWAP
@@ -3139,6 +3180,12 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     }
 
     saveToHistory(mode, result);
+    // MOMO 오늘 카드 저장 (BLOCK 제외)
+    if(mode === 'momo' && result.action !== 'BLOCK'){
+      G_momoTodayCards = G_momoTodayCards.filter(function(c){ return c.ticker !== result.ticker; });
+      G_momoTodayCards.unshift(result);
+      localStorage.setItem('momoTodayCards', JSON.stringify(G_momoTodayCards));
+    }
     // 거래 기록용 스냅샷 저장 (진입 시 카드 상황 보존)
     G_cardSnapshots[mode+'_'+ticker] = {
       score:      result.score       || null,
@@ -3163,6 +3210,8 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     };
     analyzeEl.innerHTML = '';
     resultEl.innerHTML = openTrade ? holdCardHTML(result, mode, openTrade) : cardHTML(result, mode);
+    // MOMO: 오늘 분석 카드 목록 갱신
+    if(mode === 'momo') renderMomoTodayCards();
 
   }catch(e){
     analyzeEl.innerHTML='';
@@ -3173,6 +3222,32 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
 // ═══════════════════════════════════════
 // 히스토리 관리
 // ═══════════════════════════════════════
+function renderMomoTodayCards(){
+  var el = document.getElementById('momoTodayArea');
+  if(!el) return;
+  // 현재 결과창에 표시된 종목 제외 (중복 방지)
+  var currentResult = document.getElementById('momoResultArea');
+  var currentTicker = currentResult ? (currentResult.querySelector('.card-ticker')||{}).textContent : '';
+  var cards = G_momoTodayCards.filter(function(c){ return c.ticker !== currentTicker; });
+  if(!cards.length){ el.innerHTML=''; return; }
+  el.innerHTML =
+    '<div style="font-family:var(--mono);font-size:9px;color:var(--a);letter-spacing:.1em;margin:12px 16px 6px;display:flex;align-items:center;gap:8px">'+
+      '오늘 분석'+
+      '<span style="color:var(--t3)">'+cards.length+'개</span>'+
+      '<span style="flex:1;height:1px;background:var(--b)"></span>'+
+      '<button onclick="clearMomoTodayCards()" style="font-family:var(--mono);font-size:9px;color:var(--t3);background:none;border:none;cursor:pointer">전체 삭제</button>'+
+    '</div>'+
+    '<div class="cards-area">'+
+      cards.map(function(r){ return cardHTML(r,'momo'); }).join('')+
+    '</div>';
+}
+
+function clearMomoTodayCards(){
+  G_momoTodayCards = [];
+  localStorage.removeItem('momoTodayCards');
+  renderMomoTodayCards();
+}
+
 function saveToHistory(mode, card){
   var key = mode+'History';
   G[key] = G[key].filter(function(c){ return c.ticker !== card.ticker; });
@@ -4770,8 +4845,10 @@ function deleteTradeLog(id){
 
 function clearAllData(){
   if(!confirm('모든 데이터를 삭제할까요?')) return;
-  ['apexAlerts','momoHistory','swingHistory','coreHistory','reconJournal'].forEach(function(k){localStorage.removeItem(k);});
+  ['apexAlerts','momoHistory','swingHistory','coreHistory','reconJournal','momoTodayCards','momoTodayDate'].forEach(function(k){localStorage.removeItem(k);});
   G.momoHistory=[]; G.swingHistory=[]; G.coreHistory=[]; G.alerts=[]; G.unread=0;
+  G_momoTodayCards=[]; G_momoTodayDate='';
+  renderMomoTodayCards();
   updateBadge();
   showToast('모든 데이터 삭제 완료');
 }
