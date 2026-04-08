@@ -927,7 +927,7 @@ if(G.ntfy)  { document.getElementById('ntfyChInput').value = G.ntfy; }
 
 // MOMO 오늘 카드 날짜 체크 — 날짜 바뀌면 히스토리로 이동
 (function(){
-  var today = new Date().toLocaleDateString('en-US', {timeZone:'America/New_York'});
+  var today = new Date().toLocaleDateString('ko-KR');
   if(G_momoTodayDate && G_momoTodayDate !== today && G_momoTodayCards.length > 0){
     // 어제 카드 → 히스토리에 병합 (중복 제거)
     G_momoTodayCards.forEach(function(c){
@@ -938,8 +938,6 @@ if(G.ntfy)  { document.getElementById('ntfyChInput').value = G.ntfy; }
     localStorage.setItem('momoHistory', JSON.stringify(G.momoHistory));
     G_momoTodayCards = [];
     localStorage.removeItem('momoTodayCards');
-    // 날짜 바뀌면 PM 고점 캐시 전체 삭제
-    Object.keys(localStorage).filter(function(k){ return k.startsWith('pmHigh_'); }).forEach(function(k){ localStorage.removeItem(k); });
   }
   G_momoTodayDate = today;
   localStorage.setItem('momoTodayDate', today);
@@ -1394,19 +1392,7 @@ async function fetchYahooData(ticker){
         if(hm>=400 && hm<930)  { pmH.push(h); pmL.push(l); }
         if(hm>=930 && hm<=935) { orbH.push(h); orbL.push(l); }
       });
-      if(pmH.length){
-        result.pm_low = Math.min.apply(null, pmL);
-        // PM 고점 하루 고정 — 재스캔 시 기준점 변동 방지 (루프 방지)
-        var _today = new Date().toLocaleDateString('en-US', {timeZone:'America/New_York'});
-        var _pmKey = 'pmHigh_' + ticker + '_' + _today;
-        var _saved = localStorage.getItem(_pmKey);
-        if(_saved){
-          result.pm_high = parseFloat(_saved);
-        } else {
-          result.pm_high = Math.max.apply(null, pmH);
-          localStorage.setItem(_pmKey, result.pm_high);
-        }
-      }
+      if(pmH.length){ result.pm_high=Math.max.apply(null,pmH); result.pm_low=Math.min.apply(null,pmL); }
       if(orbH.length){ result.orb_high=Math.max.apply(null,orbH); result.orb_low=Math.min.apply(null,orbL); }
 
       // VWAP
@@ -2252,24 +2238,39 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
         posInfo + sellHistStr + buyHistStr + dataStr + chartLevels +
         '현재 시장 시간대: '+phaseNow+'\n\n' +
         '판단 기준 (엄격하게 적용):\n' +
-        '- HOLD: 거래량 RVol 3x+ 유지 중이면 기본값. 진입가 아래 -5% 이내 눌림은 PRE/EARLY 정상 범위\n' +
+        '- HOLD: 거래량 RVol 3x+ 유지 중이면 기본값. 진입가 아래 -7% 이내 눌림은 회복 가능 구간\n' +
+        '- HOLD (회복 중): 진입가 아래라도 아래 조건 중 2개 이상이면 HOLD\n' +
+        '  1) 거래량 RVol 3x+ 유지\n' +
+        '  2) VWAP 위로 재탈환 또는 근접\n' +
+        '  3) 지지선에서 반등 캔들 확인\n' +
+        '  4) 연속 양봉 2개+ (회복 추세)\n' +
+        '- ADD: 아래 조건 모두 충족 시 추가매수 적극 고려\n' +
+        '  1) 지지선에서 반등 확인 (종가 기준)\n' +
+        '  2) RVol 3x+ 유지\n' +
+        '  3) VWAP 위 또는 재탈환\n' +
+        '  4) 시간대 EARLY/PRIME (LATE는 추매 금지)\n' +
+        '  5) 진입가 대비 -10% 이내 (너무 깊이 빠진 경우 추매 금지)\n' +
         '- SELL_HALF: T1 레벨 도달 / PM고점 근접 / 지지선 깨지기 직전\n' +
         '- SELL_ALL: 아래 2개 이상 동시 충족 시만\n' +
         '  1) 지지선 완전 이탈 (종가 기준)\n' +
         '  2) 거래량 급감 (RVol 2x 이하)\n' +
         '  3) 연속 음봉 3개+\n' +
         '  4) VWAP 아래 + 반등 없음\n' +
-        '- STOP_LOSS: 진입가 -7%+ 이탈 AND 거래량 소멸 동시\n' +
-        '- trailing_stop: 포지션 수익 중일 때 고점 대비 -8% 레벨로 손절 올리기\n\n' +
-        '⚠️ 중요: 진입가 아래 단순 눌림(-5% 이내)만으로는 절대 SELL_ALL 하지 말 것. 거래량 강하면 HOLD.\n\n' +
+        '- STOP_LOSS: 진입가 -7%+ 이탈 AND 거래량 소멸 AND 반등 시도 없음 — 셋 동시\n' +
+        '- trailing_stop: 수익 중일 때 고점 대비 -8% 레벨로 손절 올리기\n\n' +
+        '⚠️ 중요: 진입가 아래 단순 눌림만으로는 절대 SELL_ALL 하지 말 것. 거래량 강하면 HOLD.\n' +
+        '⚠️ 중요: 현재가가 진입가 위(수익 중)이면 이전 손절 이탈 이력 무관하게 현재 상태 기준으로 재판단.\n' +
+        '⚠️ 중요: 손절 찍힌 후 회복 중이면 거래량/VWAP/지지선 기준으로 HOLD 또는 ADD 적극 고려. 이미 판 게 아니면 지금 상태로 판단.\n\n' +
         'reason과 summary는 반드시 한국어로, 구체적 가격($X.XX)을 포함해서 작성.\n' +
-        '예: "$1.86 지지 유지 + RVol 4.9x 강세 — 홀드, 손절 $1.86으로 올리기"\n\n' +
-        '{"hold_action":"SELL_ALL"|"SELL_HALF"|"HOLD"|"STOP_LOSS",'+
+        '예: "$1.86 지지 반등 + RVol 4.9x 회복 중 — 홀드, 추매 고려 $1.90"\'\n\n' +
+        '{"hold_action":"SELL_ALL"|"SELL_HALF"|"HOLD"|"STOP_LOSS"|"ADD",'+
         '"urgency":"immediate"|"today"|"monitor",'+
         '"t1":1차익절가(실제저항레벨),'+
         '"t2":2차익절가(다음저항레벨),'+
         '"stop":현재손절가(VWAP아래or지지선아래),'+
         '"trailing_stop":트레일링손절가(고점대비-8%),'+
+        '"add_price":추매권장가(null이면미해당),'+
+        '"add_reason":추매근거(null가능),'+
         '"current_pnl_pct":현재수익률,'+
         '"reason":"구체적가격포함 판단근거 두줄이내",'+
         '"signals":["긍정신호"],'+
@@ -2823,7 +2824,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     if(ydata.gap_pct!==null && ydata.gap_pct<minGap)
       earlyBlock.push('갭업 부족 (+'+( ydata.gap_pct||0).toFixed(1)+'%)');
     if(ydata.float_m!==null && ydata.float_m>maxFloat)
-      earlyBlock.push('Float 과다 ('+(ydata.float_m||0).toFixed(1)+'M)');
+      earlyBlock.push('Float 과다 ('+(ydata.float_m||0).toFixed(1)+'M) — 설정에서 최대 Float 올리면 분석 가능 (현재 '+maxFloat+'M)');
     if(ydata.spread_pct!==null && ydata.spread_pct>2.0)
       earlyBlock.push('스프레드 과다 ('+(ydata.spread_pct||0).toFixed(1)+'%)');
 
@@ -2896,7 +2897,11 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       renderUsage();
     }
 
-    var result = JSON.parse(data.content[0].text.trim().replace(/```json|```/g,'').trim());
+    var rawText = data.content[0].text.trim().replace(/```json|```/g,'').trim();
+    // { 이전 텍스트 제거 (Claude가 JSON 앞에 한국어/설명 붙이는 경우 대응)
+    var jsonStart = rawText.indexOf('{');
+    if(jsonStart > 0) rawText = rawText.slice(jsonStart);
+    var result = JSON.parse(rawText);
     // 야후 실제 데이터로 덮어쓰기
     result.ticker     = ticker;
     result.price      = ydata.price      || result.price;
@@ -3170,8 +3175,10 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     }
 
     // ── 트레일링 손절 이탈 시 SELL_ALL 강제 적용 ──
+    // 단, 현재가가 진입가 위(수익 구간)면 가격 회복으로 판단 — 강제 오버라이드 안 함
     if(openTrade && mode==='momo' && result.trailing_stop && result.price){
-      if(result.price < result.trailing_stop){
+      var isInProfit = openTrade.entry && result.price > openTrade.entry;
+      if(result.price < result.trailing_stop && !isInProfit){
         result.hold_action = 'SELL_ALL';
         result.urgency = 'immediate';
         result.reason = (result.reason||'')+' / 트레일링 손절 $'+result.trailing_stop+' 이탈';
@@ -3339,7 +3346,7 @@ function calcEntryAction(r){
   // 2a. PRE: PM 응집 돌파
   if(phase==='PRE'&&r.pm_consolidation&&pmHigh&&price>=pmHigh*0.99&&price<=pmHigh*1.04) return {
     signal:'GO',icon:'🟢',label:'지금 진입',
-    reason:'[PM] 응집($'+r.intraday_range_low+'~$'+r.intraday_range_high+') 돌파 — 오픈 시 강세 예상',
+    reason:'[PM] 응집 돌파'+(r.pm_range_pct?' (레인지 '+r.pm_range_pct+'%)':'')+' — 오픈 시 강세 예상',
     trigger:null,css:'go'
   };
   // 2b. EARLY/PRIME: ORB 브레이크아웃
@@ -3491,19 +3498,24 @@ function calcSellTargets(r){
   var isMomo=r._mode==='momo'||(r.float_m&&r.float_m<20&&r.gap_pct&&r.gap_pct>20);
   if(isMomo){
     // MOMO 당일 매매 — 실제 차트 레벨 기반
-    // T1: PM 고점 or 가장 가까운 저항선 중 entry보다 높은 것
+    // 현재가가 PM 고점을 이미 돌파했으면 PM 고점은 지지선으로 전환 — T1에서 제외
+    var curPrice = r.price || entry;
+    var pmHighAboveCur = r.pm_high && r.pm_high > curPrice * 1.005;
+
+    // T1: 현재가 위의 저항선 중 가장 가까운 것
     var lvls=[];
-    if(r.pm_high&&r.pm_high>entry)           lvls.push(r.pm_high);
-    if(r.nearest_resistance&&r.nearest_resistance>entry) lvls.push(r.nearest_resistance);
-    if(r.orb_high&&r.orb_high>entry)         lvls.push(r.orb_high);
+    if(pmHighAboveCur)                                               lvls.push(r.pm_high);
+    if(r.nearest_resistance&&r.nearest_resistance>curPrice*1.005)   lvls.push(r.nearest_resistance);
+    if(r.orb_high&&r.orb_high>curPrice*1.005)                       lvls.push(r.orb_high);
     lvls.sort(function(a,b){return a-b;});
     if(lvls.length>0) t1=parseFloat(lvls[0].toFixed(2));
+    else t1=parseFloat((curPrice*1.08).toFixed(2)); // 레벨 없으면 현재가+8%
 
     // T2: T1보다 반드시 높아야 함
     var lvls2=[];
-    if(r.second_resistance&&r.second_resistance>t1) lvls2.push(r.second_resistance);
-    if(r.pm_high&&r.pm_high>t1)             lvls2.push(r.pm_high);
-    if(r.nearest_resistance&&r.nearest_resistance>t1) lvls2.push(r.nearest_resistance);
+    if(r.second_resistance&&r.second_resistance>t1*1.005)   lvls2.push(r.second_resistance);
+    if(pmHighAboveCur&&r.pm_high>t1*1.005)                  lvls2.push(r.pm_high);
+    if(r.nearest_resistance&&r.nearest_resistance>t1*1.005) lvls2.push(r.nearest_resistance);
     lvls2.sort(function(a,b){return a-b;});
     if(lvls2.length>0) t2=parseFloat(lvls2[0].toFixed(2));
     else t2=parseFloat((t1*1.15).toFixed(2)); // 레벨 없으면 T1+15%
@@ -3946,13 +3958,13 @@ function holdCardHTML(r, mode, trade){
   var acColor = {
     'SELL_ALL':'var(--r)', 'STOP_LOSS':'var(--r)',
     'SELL_HALF':'var(--a)', 'ADD':'var(--bl)',
-    'HOLD':'var(--g)'
+    'HOLD':'var(--g)', 'HOLD_T1':'var(--g)', 'HOLD_T2':'var(--g)'
   }[ac] || 'var(--t2)';
 
   var acLabel = {
     'SELL_ALL':'전량 매도', 'STOP_LOSS':'즉시 손절',
-    'SELL_HALF':'절반 익절', 'ADD':'추가 매수',
-    'HOLD':'홀드 유지'
+    'SELL_HALF':'절반 익절', 'ADD':'추가매수 고려',
+    'HOLD':'홀드 유지', 'HOLD_T1':'T1 홀드', 'HOLD_T2':'T2 홀드'
   }[ac] || ac;
 
   var urgencyLabel = {
@@ -4012,8 +4024,8 @@ function holdCardHTML(r, mode, trade){
       (r.reason||r.summary||'')+'</div>'+
 
     // 가격 레벨
-    '<div style="display:grid;grid-template-columns:repeat('+(mode==='swing'&&r.add_price?'4':'3')+',1fr);background:var(--bg2);border-radius:11px;overflow:hidden;margin-bottom:10px">'+
-      (mode==='swing'&&r.add_price?
+    '<div style="display:grid;grid-template-columns:repeat('+(r.add_price?'4':'3')+',1fr);background:var(--bg2);border-radius:11px;overflow:hidden;margin-bottom:10px">'+
+      (r.add_price?
         '<div style="padding:8px 6px;text-align:center;border-right:1px solid var(--b)">'+
           '<div style="font-size:8px;color:var(--t2);margin-bottom:3px;text-transform:uppercase">추가매수</div>'+
           '<div style="font-family:var(--mono);font-size:13px;color:var(--bl)">$'+r.add_price+'</div>'+
@@ -4299,11 +4311,13 @@ function updateBuyPreview(tradeId){
   var el = document.getElementById('pb_preview');
   if(!el) return;
   if(!price||!shares){ el.style.display='none'; return; }
-  var totalVal = trade.entry * trade.shares + price * shares;
-  var totalSh  = trade.shares + shares;
-  var newAvg   = totalVal / totalSh;
+  // FIFO: 잔여 물량 + 신규 매수로 새 평균단가 계산
+  var remVal2 = trade.entry * trade.remaining + price * shares;
+  var remSh2  = trade.remaining + shares;
+  var newAvg  = remSh2 > 0 ? remVal2 / remSh2 : price;
+  var totalSh = (trade.shares||0) + shares;
   el.style.display = 'block';
-  el.textContent = '추가 후 평균단가: $'+newAvg.toFixed(2)+'  ·  총 '+totalSh+'주  (기존 $'+trade.entry.toFixed(2)+' → $'+newAvg.toFixed(2)+')';
+  el.textContent = '추가 후 잔여 평균단가: $'+newAvg.toFixed(2)+'  ·  잔여 '+remSh2+'주 / 총 '+totalSh+'주  (기존 $'+trade.entry.toFixed(2)+' → $'+newAvg.toFixed(2)+')';
 }
 
 function confirmPartialBuy(tradeId){
@@ -4698,28 +4712,67 @@ function renderJournal(mode){
 // 매도/매수 항목 수정·삭제
 // ═══════════════════════════════════════
 function recalcTrade(trade){
-  // 매수 평균단가 재계산
+  // ── 전체 매수 합산 (총 주수/총 금액)
   if(trade.buys&&trade.buys.length){
     var tv=trade.buys.reduce(function(s,b){return s+b.price*b.shares;},0);
     var ts=trade.buys.reduce(function(s,b){return s+b.shares;},0);
-    trade.entry=ts>0?parseFloat((tv/ts).toFixed(4)):trade.entry;
     trade.shares=ts;
+    // entry는 아래 FIFO 계산 후 잔여 평균단가로 덮어씀
   }
-  // 매도 재계산
+
+  // ── FIFO 평균단가 계산 (증권사 방식)
+  // 매수 큐에서 매도 수량만큼 순서대로 제거 → 남은 것들의 평균이 entry
+  var buyQueue = (trade.buys||[]).map(function(b){ return {price:b.price, shares:b.shares}; });
+  var totalSold = (trade.sells||[]).reduce(function(s,sv){return s+sv.shares;},0);
+  var remaining = totalSold;
+
+  // FIFO로 매도된 수량 제거
+  for(var i=0;i<buyQueue.length&&remaining>0;i++){
+    if(buyQueue[i].shares <= remaining){
+      remaining -= buyQueue[i].shares;
+      buyQueue[i].shares = 0;
+    } else {
+      buyQueue[i].shares -= remaining;
+      remaining = 0;
+    }
+  }
+
+  // 남은 매수 물량으로 평균단가 계산
+  var remVal = buyQueue.reduce(function(s,b){return s+b.price*b.shares;},0);
+  var remSh  = buyQueue.reduce(function(s,b){return s+b.shares;},0);
+  trade.entry = remSh>0 ? parseFloat((remVal/remSh).toFixed(4)) : (trade.buys&&trade.buys.length ? trade.buys[trade.buys.length-1].price : trade.entry);
+  trade.remaining = remSh;
+
+  // ── 매도 손익 재계산 (각 매도 시점의 FIFO 단가 기준)
   if(trade.sells&&trade.sells.length){
-    trade.sells.forEach(function(s){
-      s.pnl=parseFloat(((s.price-trade.entry)*s.shares).toFixed(2));
-      s.pnl_pct=parseFloat(((s.price-trade.entry)/trade.entry*100).toFixed(2));
+    // 각 매도의 손익은 해당 시점 FIFO 단가로 계산
+    var fifoQueue = (trade.buys||[]).map(function(b){ return {price:b.price, shares:b.shares}; });
+    trade.sells.forEach(function(sv){
+      var qty = sv.shares;
+      var costVal = 0;
+      for(var i=0;i<fifoQueue.length&&qty>0;i++){
+        if(fifoQueue[i].shares<=0) continue;
+        var take = Math.min(fifoQueue[i].shares, qty);
+        costVal += fifoQueue[i].price * take;
+        fifoQueue[i].shares -= take;
+        qty -= take;
+      }
+      var avgCost = sv.shares>0 ? costVal/sv.shares : trade.entry;
+      sv.pnl     = parseFloat(((sv.price - avgCost)*sv.shares).toFixed(2));
+      sv.pnl_pct = parseFloat(((sv.price - avgCost)/avgCost*100).toFixed(2));
     });
-    var soldSh=trade.sells.reduce(function(s,sv){return s+sv.shares;},0);
-    trade.remaining=(trade.shares||0)-soldSh;
-    trade.pnl=parseFloat(trade.sells.reduce(function(s,sv){return s+sv.pnl;},0).toFixed(2));
+
+    trade.pnl = parseFloat(trade.sells.reduce(function(s,sv){return s+(sv.pnl||0);},0).toFixed(2));
+
     if(trade.remaining<=0){
       trade.remaining=0;
       var totV=trade.sells.reduce(function(s,sv){return s+sv.price*sv.shares;},0);
       var totS=trade.sells.reduce(function(s,sv){return s+sv.shares;},0);
       trade.exit=parseFloat((totV/totS).toFixed(2));
-      trade.pnl_pct=parseFloat(((trade.exit-trade.entry)/trade.entry*100).toFixed(2));
+      var totalBuyCost=(trade.buys||[]).reduce(function(s,b){return s+b.price*b.shares;},0);
+      var totalBuySh=(trade.buys||[]).reduce(function(s,b){return s+b.shares;},0);
+      var avgBuy=totalBuySh>0?totalBuyCost/totalBuySh:trade.exit;
+      trade.pnl_pct=parseFloat(((trade.exit-avgBuy)/avgBuy*100).toFixed(2));
       trade.status=trade.pnl>=0?'win':'loss';
     } else {
       trade.status='partial';
