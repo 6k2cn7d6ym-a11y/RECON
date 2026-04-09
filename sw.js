@@ -1,7 +1,7 @@
 // RECON Service Worker
 // 버전 올리면 자동으로 새 캐시로 교체
 
-const VERSION = 'recon-v8';
+const VERSION = 'recon-v9';
 const CACHE   = VERSION;
 
 // 설치 — 핵심 파일 캐시
