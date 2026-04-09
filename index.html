@@ -1172,7 +1172,7 @@ async function fetchWithProxy(url){
 async function loadMarketData(){
   try{
     var d = await fetchWithProxy(
-      'https://query1.finance.yahoo.com/v6/finance/quote?symbols=SPY,QQQ,%5EVIX' +
+      'https://query1.finance.yahoo.com/v8/finance/quote?symbols=SPY,QQQ,%5EVIX' +
       '&fields=regularMarketPrice,regularMarketChangePercent,regularMarketPreviousClose'
     );
     var results = d?.quoteResponse?.result || [];
@@ -1306,7 +1306,7 @@ async function fetchYahooData(ticker){
   try{
     // 1. v6 Quote
     var d1 = await fetchWithProxy(
-      'https://query1.finance.yahoo.com/v6/finance/quote?symbols='+ticker+
+      'https://query1.finance.yahoo.com/v8/finance/quote?symbols='+ticker+
       '&fields=regularMarketPrice,regularMarketPreviousClose,preMarketPrice,preMarketChangePercent,regularMarketVolume,averageVolume,averageDailyVolume10Day,floatShares,shortPercentOfFloat,bid,ask,exchangeName,fiftyTwoWeekHigh,marketCap,longName,shortName,quoteType'
     );
     var qt = d1?.quoteResponse?.result?.[0] || null;
