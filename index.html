@@ -3482,7 +3482,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   // 하드 프리필터 (MOMO만)
   if(mode === 'momo'){
     var earlyBlock=[];
-    var validExchanges = ['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS','BTS','BATS','ARCA','PCX'];
+    var validExchanges = ['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS','BTS','BATS','ARCA','PCX','NGM','NGE'];
     if(ydata.exchange && !validExchanges.includes((ydata.exchange||'').toUpperCase()))
       earlyBlock.push('OTC/비상장 ('+ydata.exchange+')');
     if(ydata.price && ydata.price<0.5)
