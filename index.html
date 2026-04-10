@@ -601,6 +601,8 @@ var G = {
   spyAboveMA200: null,
   spyIntraday: null,   // {change_pct, trend:'up'|'down'|'crash', open, price}
   marketPhase: null,   // 'PRE'|'ORB'|'EARLY'|'PRIME'|'LATE'|'CLOSED'
+  vixLevel:  null,     // VIX 현재값
+  vixRegime: null,     // 'CALM'(<20) | 'CAUTION'(20~25) | 'STRESS'(25~35) | 'FEAR'(35+)
   momoHistory: JSON.parse(localStorage.getItem('momoHistory')||'[]'),
   swingHistory: JSON.parse(localStorage.getItem('swingHistory')||'[]'),
   coreHistory:  JSON.parse(localStorage.getItem('coreHistory')||'[]'),
@@ -1190,6 +1192,19 @@ async function loadMarketData(){
         var chg   = prev > 0 ? ((price - prev) / prev * 100) : 0;
         var chgStr = (chg>=0?'+':'')+chg.toFixed(2)+'%';
         var chgCls = chg>0?'idx-pos':chg<0?'idx-neg':'idx-flat';
+        // VIX → G 국면 저장
+        if(dispSym === 'VIX' && price > 0){
+          G.vixLevel  = parseFloat(price.toFixed(2));
+          G.vixRegime = price < 20 ? 'CALM' : price < 25 ? 'CAUTION' : price < 35 ? 'STRESS' : 'FEAR';
+          // VIX 카드 배경색 국면별 강조
+          var vixColor = {'CALM':'var(--g)','CAUTION':'var(--a)','STRESS':'var(--r)','FEAR':'var(--r)'}[G.vixRegime];
+          chgCls = G.vixRegime==='CALM'?'idx-flat':G.vixRegime==='CAUTION'?'idx-flat':'idx-neg';
+          el.innerHTML =
+            '<div class="idx-name">VIX</div>'+
+            '<div class="idx-price" style="color:'+vixColor+'">'+price.toFixed(2)+'</div>'+
+            '<div class="idx-chg idx-flat" style="color:'+vixColor+';font-size:9px">'+G.vixRegime+'</div>';
+          return;
+        }
         el.innerHTML =
           '<div class="idx-name">'+dispSym+'</div>'+
           '<div class="idx-price">'+price.toFixed(2)+'</div>'+
@@ -1324,6 +1339,14 @@ async function fetchYahooData(ticker){
       result.quoteType   = qtMeta.instrumentType || null;
       result.fiftyTwoWeekHigh = qtMeta.fiftyTwoWeekHigh || null;
       result.levInfo     = (result.quoteType === 'ETF') ? parseLeverageETF(result.longName, '') : null;
+      // 어닝 발표일 — earningsTimestamp / earningsTimestampStart 중 가까운 것
+      var ets = qtMeta.earningsTimestamp || qtMeta.earningsTimestampStart || null;
+      if(ets){
+        var daysAway = Math.round((ets * 1000 - Date.now()) / 86400000);
+        result.earningsDaysAway = daysAway; // 음수 = 이미 지남, 양수 = N일 후
+      } else {
+        result.earningsDaysAway = null;
+      }
       // averageVolume from v8
       var vols5 = qt0?.indicators?.quote?.[0]?.volume || [];
       vols5 = vols5.filter(function(v){ return v && v > 0; });
@@ -1848,8 +1871,18 @@ async function fetchSwingData(ticker){
     }
     sw.ma5   = ma(closes, 5);
     sw.ma20  = ma(closes, 20);
+    sw.ma50  = closes.length>=50  ? ma(closes,50)  : null;
     sw.ma60  = closes.length>=60  ? ma(closes,60)  : null;
+    sw.ma100 = closes.length>=100 ? ma(closes,100) : null; // 주봉 MA20 근사값
     sw.ma200 = closes.length>=200 ? ma(closes,200) : null;
+
+    // 주봉 추세 판단 (일봉 50/100일로 근사)
+    var price100 = closes[closes.length-1];
+    var ma100_5ago = closes.length>=105 ? ma(closes.slice(0,-5), 100) : null;
+    sw.weeklyUptrend = sw.ma100 && price100 > sw.ma100; // 주봉 MA20 위
+    sw.weeklySlope   = (sw.ma100 && ma100_5ago && ma100_5ago > 0)
+      ? parseFloat(((sw.ma100 - ma100_5ago) / ma100_5ago * 100).toFixed(3))
+      : null;
 
     // 20일선 기울기 (5일 전 MA20 대비)
     if(closes.length >= 25){
@@ -1934,8 +1967,9 @@ async function fetchSwingData(ticker){
     // 조건 4: 의미 있는 양봉 (몸통 0.3% 이상 — 도지/꼬리 캔들 제외)
     var bodyPct = (open && price>0) ? Math.abs(price-open)/price*100 : 0;
     var c4 = open && price > open && bodyPct >= 0.3;
-    // 조건 5: RSI 40~65
-    var c5 = sw.rsi14 && sw.rsi14>=40 && sw.rsi14<=65;
+    // 조건 5: RSI 40 ~ 설정값 (swingRsiMax 반영)
+    var rsiMax = parseInt((document.getElementById('swingRsiMax')||{textContent:'65'}).textContent||'65');
+    var c5 = sw.rsi14 && sw.rsi14>=40 && sw.rsi14<=rsiMax;
     // 조건 6: MACD 히스토그램 상승 (진짜 히스토그램 기준)
     var c6 = sw.macd_hist!==null && sw.macd_hist_prev!==null && sw.macd_hist > sw.macd_hist_prev;
     // 조건 7: 20일선 기울기 +0.2% 이상
@@ -1950,7 +1984,7 @@ async function fetchSwingData(ticker){
       (c2?'✓':'✗')+' 200일선 위'+(sw.ma200?' (MA200:'+sw.ma200.toFixed(2)+')':' (데이터부족)'),
       (c3?'✓':'✗')+' 눌림목 MA20 ±3%'+(sw.ma20?' (괴리:'+((price-sw.ma20)/sw.ma20*100).toFixed(1)+'%)':' (데이터부족)'),
       (c4?'✓':'✗')+' 양봉 (몸통 '+bodyPct.toFixed(2)+'% — 0.3%+ 필요)',
-      (c5?'✓':'✗')+' RSI 40~65'+(sw.rsi14?' ('+sw.rsi14+')':' (데이터부족)'),
+      (c5?'✓':'✗')+' RSI 40~'+rsiMax+(sw.rsi14?' ('+sw.rsi14+')':' (데이터부족)'),
       (c6?'✓':'✗')+' MACD 히스토그램 상승'+(sw.macd_hist!==null?' (hist:'+sw.macd_hist.toFixed(4)+' 전일:'+( sw.macd_hist_prev!==null?sw.macd_hist_prev.toFixed(4):'?')+')':' (데이터부족)'),
       (c7?'✓':'✗')+' 20일선 기울기 +0.2%+'+(sw.ma20_slope!==null?' ('+sw.ma20_slope+'%)':' (데이터부족)'),
       (c8?'✓':'✗')+' 반등 거래량 1.5배+'+(sw.vol_ratio?' ('+sw.vol_ratio+'x, '+(price>open?'양봉':'음봉')+')':' (데이터부족)'),
@@ -1960,6 +1994,8 @@ async function fetchSwingData(ticker){
     sw.above_ma20       = sw.ma20 && price > sw.ma20;
     sw.pullback_to_ma20 = c3;
     sw.bullish_candle   = c4;
+    // MA20 이격률 (swingEngine 경고 조건에서 사용)
+    sw.ma20_gap_pct     = sw.ma20 ? parseFloat(((price - sw.ma20) / sw.ma20 * 100).toFixed(1)) : null;
 
   }catch(e){ console.warn('[SwingData]',ticker,e.message); }
   return sw;
@@ -2939,21 +2975,68 @@ function swingEngine(ydata, swingData){
   var ma60  = swingData.ma60;
   var swingMinRR = parseFloat((document.getElementById('swingMinRR')||{textContent:'1.5'}).textContent||'1.5');
 
+  // ══════════════════════════════════════
+  // 거시 게이트 (VIX + 주봉 MA + 어닝)
+  // ══════════════════════════════════════
+
+  // ── VIX 게이트 ──
+  var vix = G.vixLevel;
+  var vixRegime = G.vixRegime || 'UNKNOWN';
+  if(vixRegime === 'FEAR'){
+    r.action='BLOCK';
+    r.blockers.push('[VIX] '+vix+' — 공포 국면 (35+), 스윙 진입 전면 중단');
+    return r;
+  }
+  if(vixRegime === 'STRESS'){
+    r.warnings.push('[VIX] '+vix+' — 스트레스 국면 (25~35): 포지션 최소화, 손절 엄수');
+  } else if(vixRegime === 'CAUTION'){
+    r.warnings.push('[VIX] '+vix+' — 주의 국면 (20~25): 포지션 축소 권고');
+  } else if(vix !== null){
+    r.signals.push('VIX '+vix+' — 안정 국면');
+  }
+
+  // ── 주봉 MA 필터 (일봉 100일 ≈ 주봉 MA20) ──
+  if(swingData.ma100 && price){
+    if(price > swingData.ma100){
+      r.signals.push('주봉 MA20(100일) 위 — 중기 상승 구조');
+      if(swingData.weeklySlope!==null&&swingData.weeklySlope>0)
+        r.signals.push('주봉 MA20 기울기 상승 ('+swingData.weeklySlope+'%)');
+    } else {
+      r.warnings.push('[주봉] MA20(100일) 아래 — 중기 추세 약세, 진입 신중');
+      if(r.conditions_met < 5) r.score = (r.score||0) - 10;
+    }
+  }
+
+  // ── 어닝 발표일 필터 ──
+  var earnDays = ydata.earningsDaysAway;
+  if(earnDays !== null && earnDays !== undefined){
+    if(earnDays >= 0 && earnDays <= 7){
+      r.action='BLOCK';
+      r.blockers.push('[어닝] '+earnDays+'일 후 실적 발표 — 이벤트 리스크 BLOCK');
+      return r;
+    } else if(earnDays > 7 && earnDays <= 14){
+      r.warnings.push('[어닝] '+earnDays+'일 후 실적 발표 — 포지션 50% 이하 권고');
+    }
+  }
+
   // ── 진입각 계산 ──
   if(price){
     var sEntry;
-    if(ma20&&swingData.pullback_to_ma20)         sEntry=parseFloat((ma20*1.005).toFixed(2));
+    if(ma20&&swingData.pullback_to_ma20)             sEntry=parseFloat((ma20*1.005).toFixed(2));
     else if(ma60&&Math.abs((price-ma60)/ma60)<=0.03) sEntry=parseFloat((ma60*1.005).toFixed(2));
-    else if(ma20&&price>ma20*1.05)               sEntry=parseFloat(price.toFixed(2));
-    else if(ma20)                                sEntry=parseFloat((ma20*1.01).toFixed(2));
-    else                                         sEntry=parseFloat(price.toFixed(2));
+    else if(ma20&&price>ma20*1.05)                   sEntry=parseFloat((ma20*1.005).toFixed(2));
+    else if(ma20)                                    sEntry=parseFloat((ma20*1.01).toFixed(2));
+    else                                             sEntry=parseFloat(price.toFixed(2));
 
+    // ── 손절 현실화: -3% → -5%(눌림목형) / -7%(이격형) ──
+    var isPullback = swingData.pullback_to_ma20;
+    var stopMult   = isPullback ? 0.95 : 0.93; // -5% or -7%
     var sStop = Math.min(
-      parseFloat((sEntry*0.97).toFixed(2)),
-      ma20 ? parseFloat((ma20*0.98).toFixed(2)) : Infinity,
-      ma60 ? parseFloat((ma60*0.98).toFixed(2)) : Infinity
+      parseFloat((sEntry * stopMult).toFixed(2)),
+      ma20 ? parseFloat((ma20*0.97).toFixed(2)) : Infinity,
+      ma60 ? parseFloat((ma60*0.97).toFixed(2)) : Infinity
     );
-    var sRisk = sEntry-sStop;
+    var sRisk = sEntry - sStop;
     var sT1 = swingData.high10&&swingData.high10>sEntry*1.02
       ? parseFloat((swingData.high10*0.985).toFixed(2))
       : parseFloat((sEntry+sRisk*2).toFixed(2));
@@ -2965,13 +3048,16 @@ function swingEngine(ydata, swingData){
     var sRR  = sRisk>0 ? parseFloat(((sT1-sEntry)/sRisk).toFixed(1)) : null;
     var sRR2 = sRisk>0 ? parseFloat(((sT2-sEntry)/sRisk).toFixed(1)) : null;
     r.entry=sEntry; r.stop=sStop; r.target1=sT1; r.target2=sT2; r.rr=sRR; r.rr2=sRR2;
+    r.stop_type = isPullback ? '눌림목(-5%)' : '이격(-7%)';
   }
 
   // ── 점수 계산 ──
-  var score = Math.round(r.conditions_met/8*60); // conditions 기본 60점
+  var score = Math.round(r.conditions_met/8*60);
   if(swingData.pullback_to_ma20&&swingData.bullish_candle){score+=15; r.signals.push('MA20 눌림목 + 양봉 확인');}
-  if(swingData.ma20_slope!==null&&swingData.ma20_slope>=0.2){score+=8; r.signals.push('MA20 기울기 상승');}
+  if(swingData.ma20_slope!==null&&swingData.ma20_slope>=0.2){score+=8; r.signals.push('MA20 기울기 '+swingData.ma20_slope+'%');}
   if(swingData.vol_ratio&&swingData.vol_ratio>=1.5){score+=8; r.signals.push('거래량 '+swingData.vol_ratio+'x');}
+  if(swingData.weeklyUptrend){score+=8; }
+  else if(swingData.ma100&&price){ score-=8; }
   if(G.spyAboveMA200===true) score+=5;
   else if(G.spyAboveMA200===false){score-=10; r.warnings.push('SPY MA200 아래 — 약세 구조');}
   if(r.rr&&r.rr<swingMinRR) score-=20;
@@ -3009,28 +3095,46 @@ function swingEngine(ydata, swingData){
   if(r.conditions_met>=6&&coreCondOk&&!(swingData.ma20_gap_pct>15)&&!(swingData.vol_ratio<0.8)){
     r.action='ENTER'; r.position_size='half(50%)';
   } else if(r.conditions_met>=4&&(
-      (swingData.pullback_to_ma20&&swingData.bullish_candle)||
-      (swingData.vol_ratio>=2.0)||
-      (swingData.ma20_slope!==null&&swingData.ma20_slope>0.2)
+      (swingData.pullback_to_ma20&&swingData.bullish_candle)  ||
+      (swingData.vol_ratio>=2.0)                              ||
+      (swingData.ma20_slope!==null&&swingData.ma20_slope>0.2) ||
+      (swingData.rsi14&&swingData.rsi14>=65&&swingData.rsi14<=72)||
+      (swingData.ma20_slope!==null&&swingData.ma20_slope>0&&swingData.ma20_slope<0.2)
     )){
+    var bReason =
+      (swingData.pullback_to_ma20&&swingData.bullish_candle) ? '눌림목+양봉' :
+      (swingData.vol_ratio>=2.0)                             ? '거래량 '+swingData.vol_ratio+'x' :
+      (swingData.ma20_slope>0.2)                             ? 'MA20 기울기 '+swingData.ma20_slope+'%' :
+      (swingData.rsi14&&swingData.rsi14>=65)                 ? 'RSI '+swingData.rsi14 :
+                                                               'MA20 기울기 회복 초입';
     r.action='ENTER'; r.position_size='quarter(25%)';
-    r.signals.push('⭐ B안: '+r.conditions_met+'/8 핵심패턴 ENTER 승격');
-  } else if(r.conditions_met===4){
-    // B안 조건 체크 (기존 코드 호환)
-    var bVol   = swingData.vol_ratio&&swingData.vol_ratio>=2.0;
-    var bRsi   = swingData.rsi14&&swingData.rsi14>=65&&swingData.rsi14<=72;
-    var bSlope = swingData.ma20_slope!==null&&swingData.ma20_slope>0&&swingData.ma20_slope<0.2;
-    if(bVol||bRsi||bSlope){
-      r.action='ENTER'; r.position_size='quarter(25%)';
-      var bReason=bVol?'거래량 '+swingData.vol_ratio+'x':bRsi?'RSI '+swingData.rsi14:'MA20 기울기 반등';
-      r.signals.push('⭐ B안('+bReason+') — 4/8 ENTER 승격');
-    } else {
-      r.action='WATCH';
-    }
+    r.signals.push('⭐ B안('+bReason+') — '+r.conditions_met+'/8 ENTER 승격');
   } else if(r.conditions_met>=2){
     r.action='WATCH';
   } else {
     r.action='BLOCK'; r.blockers.push('[SWING] 조건 '+r.conditions_met+'/8 — 부족');
+  }
+
+  // ── VIX 국면별 포지션 크기 조정 ──
+  if(r.action === 'ENTER'){
+    if(vixRegime === 'STRESS'){
+      // STRESS: ENTER → WATCH 강등 또는 포지션 최소화
+      if(r.conditions_met < 6){
+        r.action='WATCH';
+        r.warnings.push('[VIX STRESS] 조건 미충분 — WATCH 강등');
+      } else {
+        r.position_size='small(15%)';
+        r.warnings.push('[VIX STRESS] 포지션 최소화 (15%)');
+      }
+    } else if(vixRegime === 'CAUTION'){
+      // CAUTION: 한 단계 축소
+      if(r.position_size==='half(50%)')     r.position_size='quarter(25%)';
+      else if(r.position_size==='quarter(25%)') r.position_size='small(15%)';
+    } else if(earnDays !== null && earnDays > 7 && earnDays <= 14){
+      // 어닝 2주 이내: 한 단계 축소
+      if(r.position_size==='half(50%)')     r.position_size='quarter(25%)';
+      else if(r.position_size==='quarter(25%)') r.position_size='small(15%)';
+    }
   }
 
   // ── 시가총액 / 유동성 필터 (레버리지 ETF 스킵) ──
@@ -3056,7 +3160,6 @@ function swingEngine(ydata, swingData){
       r.warnings.push('[SWING] 일평균 거래량 '+(avgVol/10000).toFixed(0)+'만주 — 유동성 부족');
     r.marketCap_b = capB;
   } else {
-    // 레버리지 ETF
     var mult=levInfo.mult; var absM=Math.abs(mult);
     var swingHoldDays=parseInt((document.getElementById('swingHoldDays')||{textContent:'10'}).textContent||'10');
     var maxSafeDays=absM>=3?5:7;
@@ -5228,11 +5331,13 @@ async function checkMarketRegime(){
     var spyStr   = G.spyIntraday ? ' · SPY '+(G.spyIntraday.change_pct>=0?'+':'')+G.spyIntraday.change_pct+'%' : '';
     var phaseStr = {'PRE':'프리마켓','ORB':'ORB형성중','EARLY':'골든윈도우','PRIME':'2차모멘텀','LATE':'페이드주의','CLOSED':'장마감'}[G.marketPhase]||'';
     var aboveStr = G.spyAboveMA200===true?'SPY MA200 위':G.spyAboveMA200===false?'SPY MA200 아래':'';
-    el.textContent = (aboveStr?aboveStr+spyStr:'--')+(phaseStr?' · '+phaseStr:'');
+    var vixStr   = G.vixLevel ? ' · VIX '+G.vixLevel+'('+G.vixRegime+')' : '';
+    el.textContent = (aboveStr?aboveStr+spyStr:'--')+(phaseStr?' · '+phaseStr:'')+vixStr;
     var trendColor = G.spyIntraday?.trend==='crash'?'var(--r)':
                      G.spyIntraday?.trend==='down' ?'var(--r)':
                      G.spyIntraday?.trend==='up'   ?'var(--g)':'var(--t2)';
-    el.style.color = G.spyAboveMA200===false ? 'var(--r)' : trendColor;
+    var vixColor   = {'FEAR':'var(--r)','STRESS':'var(--r)','CAUTION':'var(--a)','CALM':'inherit'}[G.vixRegime]||'inherit';
+    el.style.color = G.spyAboveMA200===false ? 'var(--r)' : G.vixRegime==='FEAR'||G.vixRegime==='STRESS' ? 'var(--r)' : trendColor;
   }
 }
 
