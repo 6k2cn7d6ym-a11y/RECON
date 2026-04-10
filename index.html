@@ -1333,7 +1333,27 @@ async function fetchYahooData(ticker){
     var qt0 = d1?.chart?.result?.[0];
     var qtMeta = qt0?.meta || null;
     if(qtMeta){
-      result.prevClose   = qtMeta.regularMarketPreviousClose || qtMeta.chartPreviousClose || qtMeta.previousClose || null;
+      // prevClose 우선순위:
+      // 1순위: 5d 캔들 closes 배열 (오늘 제외 마지막 종가) — 가장 신뢰
+      // 2순위: 1분봉 메타 (아래 1m 파싱 후 세팅)
+      // 3순위: 5d 메타 필드 (Yahoo가 프리마켓 중 오염값 리턴하는 케이스 있어 최후)
+      var closes5 = qt0?.indicators?.quote?.[0]?.close || [];
+      var ts5c    = qt0?.timestamp || [];
+      var todayET5 = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+      var todayStr5 = todayET5.getFullYear()+'-'+(todayET5.getMonth()+1)+'-'+todayET5.getDate();
+      var prevCloseFromCandle = null;
+      for(var i = closes5.length-1; i >= 0; i--){
+        if(!closes5[i] || closes5[i] <= 0) continue;
+        if(ts5c[i]){
+          var d5c = new Date(new Date(ts5c[i]*1000).toLocaleString('en-US',{timeZone:'America/New_York'}));
+          var ds5c = d5c.getFullYear()+'-'+(d5c.getMonth()+1)+'-'+d5c.getDate();
+          if(ds5c === todayStr5) continue;
+        }
+        prevCloseFromCandle = closes5[i];
+        break;
+      }
+      result.prevClose = prevCloseFromCandle || null; // 2순위(1m메타)는 아래에서 세팅
+      result._prevClose5dMeta = qtMeta.regularMarketPreviousClose || qtMeta.chartPreviousClose || qtMeta.previousClose || null; // 3순위 보관
       result.exchange    = qtMeta.exchangeName || null;
       result.longName    = qtMeta.longName || qtMeta.shortName || null;
       result.quoteType   = qtMeta.instrumentType || null;
@@ -1347,11 +1367,26 @@ async function fetchYahooData(ticker){
       } else {
         result.earningsDaysAway = null;
       }
-      // averageVolume from v8
+      // averageVolume from v8 — 오늘 미완성 캔들 제외
       var vols5 = qt0?.indicators?.quote?.[0]?.volume || [];
-      vols5 = vols5.filter(function(v){ return v && v > 0; });
-      if(vols5.length > 0){
-        result.avgVolume = Math.round(vols5.reduce(function(a,b){ return a+b; }, 0) / vols5.length);
+      var ts5   = qt0?.timestamp || [];
+      var todayET = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+      var todayStr = todayET.getFullYear()+'-'+(todayET.getMonth()+1)+'-'+todayET.getDate();
+      var vols5Filtered = vols5.filter(function(v,i){
+        if(!v || v<=0) return false;
+        if(ts5[i]){
+          var d = new Date(new Date(ts5[i]*1000).toLocaleString('en-US',{timeZone:'America/New_York'}));
+          var ds = d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();
+          if(ds === todayStr) return false;
+        }
+        return true;
+      });
+      if(vols5Filtered.length > 0){
+        result.avgVolume = Math.round(vols5Filtered.reduce(function(a,b){ return a+b; }, 0) / vols5Filtered.length);
+      } else {
+        var vols5raw = vols5.filter(function(v){ return v && v > 0; });
+        if(vols5raw.length > 0)
+          result.avgVolume = Math.round(vols5raw.reduce(function(a,b){ return a+b; }, 0) / vols5raw.length);
       }
     }
 
@@ -1369,8 +1404,19 @@ async function fetchYahooData(ticker){
       var closes = q.close  || [];
       var vols   = q.volume || [];
 
-      if(!result.prevClose) result.prevClose = meta.regularMarketPreviousClose || meta.chartPreviousClose || meta.previousClose || null;
-      result.volume = meta.regularMarketVolume || null;
+      // prevClose: 5d 캔들이 없으면 1분봉 메타(2순위) → 5d 메타(3순위) 순으로 fallback
+      if(!result.prevClose){
+        result.prevClose = meta.regularMarketPreviousClose || meta.chartPreviousClose || meta.previousClose
+          || result._prevClose5dMeta || null;
+      }
+      // 프리마켓 중 regularMarketVolume은 전날 정규장 볼륨을 리턴하는 Yahoo 버그
+      // IS_PRE 일 때는 1분봉 캔들 볼륨 합산으로 실제 프리마켓 누적 거래량 계산
+      if(IS_PRE){
+        var pmVolSum = vols.reduce(function(a,v){ return a + (v||0); }, 0);
+        result.volume = pmVolSum > 0 ? pmVolSum : (meta.regularMarketVolume || null);
+      } else {
+        result.volume = meta.regularMarketVolume || null;
+      }
 
       var latestClose = null;
       for(var i=closes.length-1;i>=0;i--){ if(closes[i]&&closes[i]>0){ latestClose=closes[i]; break; } }
@@ -1382,7 +1428,7 @@ async function fetchYahooData(ticker){
         result.gap_pct = (result.price - result.prevClose) / result.prevClose * 100;
 
       if(result.volume && result.avgVolume && result.avgVolume > 0)
-        result.rvol = result.volume / result.avgVolume;
+        result.rvol = parseFloat((result.volume / result.avgVolume).toFixed(2));
 
       // ── RVol 시간대 보정 (장중에만) ──
       // 장중 시간대별 누적 거래 비중으로 하루 예상 거래량 추정 후 RVol 재계산
@@ -1994,8 +2040,47 @@ async function fetchSwingData(ticker){
     sw.above_ma20       = sw.ma20 && price > sw.ma20;
     sw.pullback_to_ma20 = c3;
     sw.bullish_candle   = c4;
-    // MA20 이격률 (swingEngine 경고 조건에서 사용)
-    sw.ma20_gap_pct     = sw.ma20 ? parseFloat(((price - sw.ma20) / sw.ma20 * 100).toFixed(1)) : null;
+    // MA20 이격률
+    sw.ma20_gap_pct = sw.ma20 ? parseFloat(((price - sw.ma20) / sw.ma20 * 100).toFixed(1)) : null;
+
+    // ── 스윙 타입 판별용 추가 지표 ──
+
+    // 베이스 감지 (최근 15거래일 레인지 폭)
+    var last15 = closes.slice(-15).filter(function(v){return v>0;});
+    if(last15.length >= 12){
+      var max15 = Math.max.apply(null, last15);
+      var min15 = Math.min.apply(null, last15);
+      sw.base_range_pct = min15>0 ? parseFloat(((max15-min15)/min15*100).toFixed(1)) : null;
+      sw.base_weeks = sw.base_range_pct!==null
+        ? (sw.base_range_pct<12?4 : sw.base_range_pct<18?3 : sw.base_range_pct<25?2 : 1) : 1;
+    }
+
+    // 20일 신고가 근접 (돌파형 감지 — 현재가가 20일 최고가의 95%+)
+    sw.near_high20 = !!(sw.high20 && price && price/sw.high20 >= 0.95);
+
+    // MA200 최근 돌파 (20거래일 이내 — 반전형 감지)
+    sw.ma200_recently_crossed = !!(sw.ma200 && price > sw.ma200
+      && closes.length >= 21 && closes[closes.length-21] < sw.ma200);
+
+    // 하락일 거래량 고갈 (상승일 평균 대비 하락일 평균 < 75% — 반전형 신호)
+    var upVolSum=0, upVolCnt=0, downVolSum=0, downVolCnt=0;
+    for(var vi=Math.max(1,closes.length-20); vi<closes.length; vi++){
+      if(!vols[vi]||vols[vi]<=0) continue;
+      if(closes[vi]>(closes[vi-1]||closes[vi])){ upVolSum+=vols[vi]; upVolCnt++; }
+      else { downVolSum+=vols[vi]; downVolCnt++; }
+    }
+    var avgUpVol   = upVolCnt>0   ? upVolSum/upVolCnt   : 0;
+    var avgDownVol = downVolCnt>0 ? downVolSum/downVolCnt : 0;
+    sw.vol_dry_on_down = avgUpVol>0 && avgDownVol>0 && avgDownVol < avgUpVol*0.75;
+
+    // ── 스윙 타입 분류 ──
+    // A: 눌림목형  — 정배열 + MA200 위 + MA20 ±3% + 반등 양봉
+    // B: 돌파형    — MA200 위 + 20일 신고가 근접 + 베이스 3주+ + 거래량
+    // C: 반전형    — MA200 최근 돌파 + MACD 플러스 전환 + 하락일 거래량 고갈
+    var isTypeA = !!(c1 && c2 && c3 && c4);
+    var isTypeB = !!(sw.near_high20 && sw.base_weeks>=3 && c2 && (sw.vol_ratio||0)>=1.5);
+    var isTypeC = !!(sw.ma200_recently_crossed && sw.macd_hist!==null && sw.macd_hist>0 && sw.vol_dry_on_down);
+    sw.swing_type = isTypeA ? 'A' : isTypeB ? 'B' : isTypeC ? 'C' : null;
 
   }catch(e){ console.warn('[SwingData]',ticker,e.message); }
   return sw;
@@ -2342,7 +2427,7 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
   var newsStr = ydata.newsText   || '뉴스 없음';
   var exch    = ydata.exchange   || '알수없음';
   var vwapStr = ydata.vwap ? '$'+ydata.vwap+(ydata.vwap_pct!==null?' (현재가 '+(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%)':'') : '알수없음';
-  var pmCons  = ydata.pm_range_pct!==null ? (ydata.pm_consolidation?'응집 (레인지 '+ydata.pm_range_pct+'%)':'분산 (레인지 '+ydata.pm_range_pct+'%)') : '알수없음';
+  var pmCons  = ydata.pm_range_pct!=null ? (ydata.pm_consolidation?'응집 (레인지 '+ydata.pm_range_pct+'%)':'분산 (레인지 '+ydata.pm_range_pct+'%)') : '알수없음';
 
   // 뉴스 품질 힌트 (출처 기반 사전 판단)
   var newsHint = ydata.newsQualityHint ? '\n뉴스 출처 기반 사전 판단: '+ydata.newsQualityHint+' (제목과 함께 최종 판단할 것)' : '';
@@ -3135,6 +3220,29 @@ function swingEngine(ydata, swingData){
       if(r.position_size==='half(50%)')     r.position_size='quarter(25%)';
       else if(r.position_size==='quarter(25%)') r.position_size='small(15%)';
     }
+  }
+
+  // ── 스윙 타입별 손절/포지션 조정 ──
+  r.swing_type = swingData.swing_type || null;
+  if(r.swing_type === 'A'){
+    r.signals.unshift('📌 Type A — 눌림목형 (반복성 높음, 손절 -5%)');
+    // 손절 -5%는 이미 적용됨 (isPullback = true)
+  } else if(r.swing_type === 'B'){
+    r.signals.unshift('🚀 Type B — 돌파형 (큰 수익 가능, 손절 -7%)');
+    if(r.entry){ r.stop=parseFloat((r.entry*0.93).toFixed(2)); r.stop_type='돌파(-7%)'; }
+    // B타입: ENTER 시 포지션 최대 25% (타이밍 어렵고 가짜 돌파 리스크)
+    if(r.action==='ENTER'&&r.position_size==='half(50%)') r.position_size='quarter(25%)';
+  } else if(r.swing_type === 'C'){
+    r.signals.unshift('🔄 Type C — 반전형 (리스크 높음, 손절 -8%)');
+    if(r.entry){ r.stop=parseFloat((r.entry*0.92).toFixed(2)); r.stop_type='반전(-8%)'; }
+    // C타입: 포지션 최소화 + WATCH 이상만 15% 진입
+    if(r.action==='ENTER') r.position_size='small(15%)';
+    r.warnings.push('Type C — 분할 진입 권고 (5% 먼저, 확인 후 추가)');
+  }
+  // R:R 재계산 (타입별 손절 조정 후)
+  if(r.entry && r.stop && r.target1){
+    var typeRisk = r.entry - r.stop;
+    if(typeRisk>0) r.rr = parseFloat(((r.target1-r.entry)/typeRisk).toFixed(1));
   }
 
   // ── 시가총액 / 유동성 필터 (레버리지 ETF 스킵) ──
@@ -3985,6 +4093,8 @@ function cardHTML(r, mode){
     var sc=r.conditions_met, scPct=Math.round(sc/8*100);
     var scColor=sc>=5?'var(--bl)':sc>=3?'var(--a)':'var(--t3)';
     var scLabel=sc>=5?'진입 가능':sc>=3?'관찰 구간':'진입 불가';
+    var typeLabels={'A':'Type A 눌림목','B':'Type B 돌파','C':'Type C 반전'};
+    var typeStr = r.swing_type ? ' · <span style="color:var(--bl)">'+(typeLabels[r.swing_type]||'')+'</span>' : '';
     var rows=r.swing_detail.map(function(d){
       var ok=d.startsWith('✓');
       return '<div style="display:flex;align-items:baseline;gap:5px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)">'+
@@ -3996,7 +4106,7 @@ function cardHTML(r, mode){
       '<div style="margin:10px 0 6px;padding:10px 12px;background:var(--bg2);border:1px solid var(--b);border-radius:10px">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
           '<span style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.08em">진입 조건 체크리스트</span>'+
-          '<span style="font-family:var(--mono);font-size:11px;color:'+scColor+'">'+sc+'/8 — '+scLabel+'</span>'+
+          '<span style="font-family:var(--mono);font-size:11px;color:'+scColor+'">'+sc+'/8 — '+scLabel+'</span>'+typeStr+
         '</div>'+
         '<div style="height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-bottom:8px">'+
           '<div style="height:100%;width:'+scPct+'%;background:'+scColor+';border-radius:2px;transition:width .5s"></div>'+
@@ -4011,11 +4121,18 @@ function cardHTML(r, mode){
   if(r._mode){
     var mc={'momo':'var(--a)','swing':'var(--bl)','core':'var(--pu)'}[r._mode]||'var(--t2)';
     modeBadge='<span style="font-family:var(--mono);font-size:9px;color:'+mc+';background:rgba(255,255,255,.04);border:1px solid '+mc+';border-radius:4px;padding:1px 5px;margin-left:4px">'+(r._mode||'').toUpperCase()+'</span>';
-    // v4: MOMO 타입 배지
+    // MOMO 타입 배지
     if(r._mode==='momo' && r.momo_type){
       var typeColors={'A':'var(--a)','B':'var(--bl)','C':'var(--r)'};
       var typeC = typeColors[r.momo_type]||'var(--t2)';
       modeBadge += '<span style="font-family:var(--mono);font-size:9px;color:'+typeC+';background:rgba(255,255,255,.04);border:1px solid '+typeC+';border-radius:4px;padding:1px 5px;margin-left:3px">Type '+r.momo_type+'</span>';
+    }
+    // SWING 타입 배지
+    if(r._mode==='swing' && r.swing_type){
+      var swTypeColors={'A':'var(--bl)','B':'var(--g)','C':'var(--pu)'};
+      var swTypeLabels={'A':'눌림목','B':'돌파','C':'반전'};
+      var swTypeC = swTypeColors[r.swing_type]||'var(--t2)';
+      modeBadge += '<span style="font-family:var(--mono);font-size:9px;color:'+swTypeC+';background:rgba(255,255,255,.04);border:1px solid '+swTypeC+';border-radius:4px;padding:1px 5px;margin-left:3px">Type '+r.swing_type+' '+swTypeLabels[r.swing_type]+'</span>';
     }
   }
 
@@ -4313,7 +4430,7 @@ function cardHTML(r, mode){
       (r.pm_high?'<span>PM↑ $'+r.pm_high.toFixed(2)+'</span>':'')+
       (r.pm_low?'<span>PM↓ $'+r.pm_low.toFixed(2)+'</span>':'')+
       (r.orb_high?'<span style="color:var(--bl)">ORB $'+r.orb_high.toFixed(2)+'</span>':'')+
-      (r.pm_range_pct!==null?'<span>레인지 '+r.pm_range_pct+'%'+(r.pm_consolidation?' 🟢':'')+'</span>':'')+
+      (r.pm_range_pct!=null?'<span>레인지 '+r.pm_range_pct+'%'+(r.pm_consolidation?' 🟢':'')+'</span>':'')+
     '</div>'+
     (r._dumpScore>0?'<div style="font-family:var(--mono);font-size:10px;margin-top:3px;color:'+(r._dumpScore>=40?'var(--r)':r._dumpScore>=20?'var(--a)':'var(--t3)')+'">덤프위험 '+r._dumpScore+'pt'+(r._hardBlocked?' · 차단':'')+'</div>':'')+
 
