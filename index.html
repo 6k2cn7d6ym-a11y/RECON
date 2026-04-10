@@ -1833,7 +1833,7 @@ async function fetchYahooData(ticker){
           if(fNum>0) result.float_m = parseFloat(fNum.toFixed(2));
         }
         var rvolMatch = fvHtml.match(/Rel Volume<\/td><td[^>]*><b>([^<]+)<\/b>/);
-        if(rvolMatch&&!result.rvol){ var rv=parseFloat(rvolMatch[1]); if(rv>0) result.rvol=parseFloat(rv.toFixed(2)); }
+        if(rvolMatch&&!result.rvol){ var rv=parseFloat(rvolMatch[1]); if(rv>0) result.rvol=rv; }
       }catch(e){}
     }
     // ── 슬리피지 추정 (Float × RVol 연동 동적 모델) ──
@@ -2857,11 +2857,12 @@ function momoEngine(ydata){
     else if(floatM <= 10 && rvol >= 8)   momoType = 'B';
     else                                  momoType = 'A';
   }
-  // PM volume 필터 (150K 미만 PRE 타임 BLOCK)
+  // PM volume 필터 (타입별 임계값: C=150K, B=100K, A=75K)
   var pmVol = ydata.volume || 0;
-  if(G.marketPhase === 'PRE' && pmVol > 0 && pmVol < 150000){
+  var pmVolThreshold = momoType === 'C' ? 150000 : momoType === 'B' ? 100000 : 75000;
+  if(G.marketPhase === 'PRE' && pmVol > 0 && pmVol < pmVolThreshold){
     r.action='BLOCK';
-    r.blockers.push('[PM필터] PM 거래량 '+pmVol.toLocaleString()+'주 미만 — 노이즈 제거');
+    r.blockers.push('[PM필터] PM 거래량 '+pmVol.toLocaleString()+'주 미만 ('+momoType+'타입 기준 '+(pmVolThreshold/1000)+'K) — 노이즈 제거');
     r.momo_type = momoType;
     return r;
   }
@@ -3481,7 +3482,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   // 하드 프리필터 (MOMO만)
   if(mode === 'momo'){
     var earlyBlock=[];
-    var validExchanges = ['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS'];
+    var validExchanges = ['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS','BTS','BATS','ARCA','PCX'];
     if(ydata.exchange && !validExchanges.includes((ydata.exchange||'').toUpperCase()))
       earlyBlock.push('OTC/비상장 ('+ydata.exchange+')');
     if(ydata.price && ydata.price<0.5)
