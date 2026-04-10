@@ -2166,6 +2166,130 @@ async function fetchCoreData(ticker){
 // ═══════════════════════════════════════
 // 프롬프트 생성 (모드별)
 // ═══════════════════════════════════════
+
+// ── 보유 포지션 관리 전용 프롬프트 (makePrompt에서 분리) ──
+function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
+  var entryP  = openTrade.entry;
+  var curP    = ydata.price || entryP;
+  var pnlPct  = entryP ? ((curP - entryP)/entryP*100).toFixed(2) : '알수없음';
+  var pnlAmt  = (openTrade.shares && entryP) ? ((curP-entryP)*openTrade.shares).toFixed(2) : null;
+
+  var posInfo =
+    '=== 현재 보유 포지션 ===\n' +
+    '진입가: $'+entryP+'\n' +
+    '현재가: $'+(curP||'알수없음')+'\n' +
+    '수익률: '+(pnlPct >= 0 ? '+':'')+pnlPct+'%' + (pnlAmt ? ' ($'+(pnlAmt >= 0?'+':'')+pnlAmt+')' : '') + '\n' +
+    (openTrade.shares ? '보유 수량: '+openTrade.shares+'주\n' : '') +
+    (openTrade.date   ? '진입일: '+openTrade.date+'\n'       : '') +
+    (openTrade.memo   ? '메모: '+openTrade.memo+'\n'         : '') + '\n';
+
+  var dataStr =
+    '현재가: $'+(curP||'알수없음')+'\n' +
+    'VWAP: '+(ydata.vwap?'$'+ydata.vwap+(ydata.vwap_pct!==null?' ('+(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%)':''):'알수없음')+'\n' +
+    'PM 고점: '+(ydata.pm_high?'$'+ydata.pm_high.toFixed(2):'알수없음')+'\n' +
+    'PM 저점: '+(ydata.pm_low?'$'+ydata.pm_low.toFixed(2):'알수없음')+'\n' +
+    'ORB 고점: '+(ydata.orb_high?'$'+ydata.orb_high.toFixed(2):'알수없음')+'\n' +
+    'RVol: '+(ydata.rvol?ydata.rvol.toFixed(1)+'x':'알수없음')+'\n' +
+    '52주 고가: '+(ydata.fiftyTwoWeekHigh?'$'+ydata.fiftyTwoWeekHigh.toFixed(2):'알수없음')+'\n' +
+    '최근 뉴스: '+(ydata.newsText||'없음')+'\n\n';
+
+  if(mode === 'momo'){
+    var sellHistStr = '';
+    if(openTrade.sells && openTrade.sells.length){
+      sellHistStr = '\n분할매도 내역:\n'+openTrade.sells.map(function(s){
+        return '  '+s.date+' '+s.shares+'주 @ $'+s.price+' (손익 $'+(s.pnl>=0?'+':'')+s.pnl+')';
+      }).join('\n')+'\n잔여수량: '+(openTrade.remaining||0)+'주\n';
+    }
+    var buyHistStr = '';
+    if(openTrade.buys && openTrade.buys.length > 1){
+      buyHistStr = '\n추가매수 내역:\n'+openTrade.buys.map(function(b){
+        return '  '+b.date+' '+b.shares+'주 @ $'+b.price;
+      }).join('\n')+'\n평균단가: $'+entryP+'\n';
+    }
+    var chartLevels =
+      '=== 현재 차트 레벨 ===\n' +
+      '1분봉 지지선: '+(ydata.nearest_support?'$'+ydata.nearest_support.toFixed(2):'없음')+(ydata.second_support?' / 2차 $'+ydata.second_support.toFixed(2):'')+' \n' +
+      '1분봉 저항선: '+(ydata.nearest_resistance?'$'+ydata.nearest_resistance.toFixed(2):'없음')+(ydata.second_resistance?' / 2차 $'+ydata.second_resistance.toFixed(2):'')+' \n' +
+      '장중 응축 박스: '+(ydata.intraday_consolidation?'$'+ydata.intraday_range_low+'~$'+ydata.intraday_range_high+' ('+ydata.intraday_range_pct+'%)':'없음')+' \n' +
+      'PM 고점 대비: '+(ydata.pm_high?((curP/ydata.pm_high-1)*100).toFixed(1)+'% (PM고점 $'+ydata.pm_high.toFixed(2)+')'  :'알수없음')+' \n' +
+      'VWAP 대비: '+(ydata.vwap_pct!==null?(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%':'알수없음')+' \n\n';
+    var phaseNow = {'PRE':'프리마켓','ORB':'ORB형성중(진입금지)','EARLY':'골든윈도우(최적매도구간)','PRIME':'2차모멘텀','LATE':'페이드구간(익절우선)','CLOSED':'장마감'}[G.marketPhase||'']||'시간미확인';
+    return '당신은 MOMO 당일 트레이딩 전문 AI입니다. 지금 이 순간 이 포지션을 어떻게 해야 하는지 구체적으로 알려주세요.\n\n' +
+      posInfo + sellHistStr + buyHistStr + dataStr + chartLevels +
+      '현재 시장 시간대: '+phaseNow+'\n\n' +
+      '판단 기준 (엄격하게 적용):\n' +
+      '- HOLD: 거래량 RVol 3x+ 유지 중이면 기본값. 진입가 아래 -7% 이내 눌림은 회복 가능 구간\n' +
+      '- HOLD (회복 중): 진입가 아래라도 아래 조건 중 2개 이상이면 HOLD\n' +
+      '  1) 거래량 RVol 3x+ 유지\n' +
+      '  2) VWAP 위로 재탈환 또는 근접\n' +
+      '  3) 지지선에서 반등 캔들 확인\n' +
+      '  4) 연속 양봉 2개+ (회복 추세)\n' +
+      '- ADD: 아래 조건 모두 충족 시 추가매수 적극 고려\n' +
+      '  1) 지지선에서 반등 확인 (종가 기준)\n' +
+      '  2) RVol 3x+ 유지\n' +
+      '  3) VWAP 위 또는 재탈환\n' +
+      '  4) 시간대 EARLY/PRIME (LATE는 추매 금지)\n' +
+      '  5) 진입가 대비 -10% 이내 (너무 깊이 빠진 경우 추매 금지)\n' +
+      '- SELL_HALF: T1 레벨 도달 / PM고점 근접 / 지지선 깨지기 직전\n' +
+      '- SELL_ALL: 아래 2개 이상 동시 충족 시만\n' +
+      '  1) 지지선 완전 이탈 (종가 기준)\n' +
+      '  2) 거래량 급감 (RVol 2x 이하)\n' +
+      '  3) 연속 음봉 3개+\n' +
+      '  4) VWAP 아래 + 반등 없음\n' +
+      '- STOP_LOSS: 진입가 -7%+ 이탈 AND 거래량 소멸 AND 반등 시도 없음 — 셋 동시\n' +
+      '- trailing_stop: 수익 중일 때 고점 대비 -8% 레벨로 손절 올리기\n\n' +
+      '⚠️ 중요: 진입가 아래 단순 눌림만으로는 절대 SELL_ALL 하지 말 것. 거래량 강하면 HOLD.\n' +
+      '⚠️ 중요: 현재가가 진입가 위(수익 중)이면 이전 손절 이탈 이력 무관하게 현재 상태 기준으로 재판단.\n' +
+      '⚠️ 중요: 손절 찍힌 후 회복 중이면 거래량/VWAP/지지선 기준으로 HOLD 또는 ADD 적극 고려. 이미 판 게 아니면 지금 상태로 판단.\n\n' +
+      'reason과 summary는 반드시 한국어로, 구체적 가격($X.XX)을 포함해서 작성.\n' +
+      '예: "$1.86 지지 반등 + RVol 4.9x 회복 중 — 홀드, 추매 고려 $1.90"\'\n\n' +
+      '{"hold_action":"SELL_ALL"|"SELL_HALF"|"HOLD"|"STOP_LOSS"|"ADD",'+
+      '"urgency":"immediate"|"today"|"monitor",'+
+      '"t1":1차익절가(실제저항레벨),'+
+      '"t2":2차익절가(다음저항레벨),'+
+      '"stop":현재손절가(VWAP아래or지지선아래),'+
+      '"trailing_stop":트레일링손절가(고점대비-8%),'+
+      '"add_price":추매권장가(null이면미해당),'+
+      '"add_reason":추매근거(null가능),'+
+      '"current_pnl_pct":현재수익률,'+
+      '"reason":"구체적가격포함 판단근거 두줄이내",'+
+      '"signals":["긍정신호"],'+
+      '"warnings":["위험신호"],'+
+      '"summary":"지금 당장 해야할 행동 한줄"}\n\n' +
+      '알수없음 항목은 알고 있는 정보로 최대한 분석';
+  }
+
+  if(mode === 'swing'){
+    var swStr2 = '';
+    if(swingData){
+      swStr2 = '=== 기술적 지표 (실제 계산) ===\n' +
+        'RSI(14): '+(swingData.rsi14||'?')+'\n' +
+        'MA20 기울기: '+(swingData.ma20_slope!==null?swingData.ma20_slope+'%':'?')+'\n' +
+        '거래량 비율: '+(swingData.vol_ratio?swingData.vol_ratio+'x':'?')+'\n' +
+        'MA5/MA20: '+(swingData.ma5&&swingData.ma20?'$'+swingData.ma5.toFixed(2)+' / $'+swingData.ma20.toFixed(2):'?')+'\n' +
+        '10일 최고가: '+(swingData.high10?'$'+swingData.high10:'?')+'\n\n';
+    }
+    return '당신은 스윙 트레이딩 전문 AI입니다. 아래는 현재 보유 중인 스윙 포지션입니다.\n\n' +
+      posInfo + dataStr + swStr2 +
+      '이 포지션을 스윙 관점에서 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
+      'SWING 포지션 관리 기준:\n' +
+      '- 추가매수(피라미딩): 수익 +2% 이상 필수 + MA20 눌림목 + 거래량 지지 + RSI 55 이하\n' +
+      '- 1차 익절(50%): 10일 최고가(저항) 근접 또는 +1R 도달\n' +
+      '- 최종 익절: 52주 고가 근접 또는 추세 꺾임\n' +
+      '- 손절: MA5 종가 2일 연속 이탈 / RSI 72이상+음봉 / 진입가 -3%\n' +
+      '- 홀드: 정배열 유지 + VWAP/MA20 위 + 거래량 정상\n\n' +
+      '{"hold_action":"ADD"|"SELL_HALF"|"SELL_ALL"|"HOLD"|"STOP_LOSS",'+
+      '"urgency":"immediate"|"this_week"|"monitor",'+
+      '"add_price":추가매수가(숫자,없으면null),'+
+      '"t1":1차익절가(숫자),"t2":최종익절가(숫자),"stop":손절가(숫자),'+
+      '"current_pnl_pct":현재수익률,'+
+      '"reason":"행동 근거 두 줄 이내",'+
+      '"signals":["긍정신호들"],"warnings":["위험신호들"],'+
+      '"summary":"한줄 행동 지침"}\n\n' +
+      '알수없음 항목은 알고 있는 정보로 최대한 분석';
+  }
+}
+
 function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
   var minGap   = parseInt(document.getElementById('minGap').textContent)||20;
   var maxFloat = parseInt(document.getElementById('maxFloat').textContent)||20;
@@ -2188,136 +2312,7 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
   var newsHint = ydata.newsQualityHint ? '\n뉴스 출처 기반 사전 판단: '+ydata.newsQualityHint+' (제목과 함께 최종 판단할 것)' : '';
 
   // ── 보유 중 포지션 관리 프롬프트 ──
-  if(openTrade){
-    var entryP  = openTrade.entry;
-    var curP    = ydata.price || entryP;
-    var pnlPct  = entryP ? ((curP - entryP)/entryP*100).toFixed(2) : '알수없음';
-    var pnlAmt  = (openTrade.shares && entryP) ? ((curP-entryP)*openTrade.shares).toFixed(2) : null;
-    var heldStr = openTrade.date ? '진입일: '+openTrade.date : '';
-
-    var posInfo =
-      '=== 현재 보유 포지션 ===\n' +
-      '진입가: $'+entryP+'\n' +
-      '현재가: $'+(curP||'알수없음')+'\n' +
-      '수익률: '+(pnlPct >= 0 ? '+':'')+pnlPct+'%' + (pnlAmt ? ' ($'+(pnlAmt >= 0?'+':'')+pnlAmt+')' : '') + '\n' +
-      (openTrade.shares ? '보유 수량: '+openTrade.shares+'주\n' : '') +
-      heldStr + '\n' +
-      (openTrade.memo ? '메모: '+openTrade.memo+'\n' : '') + '\n';
-
-    var dataStr =
-      '현재가: $'+(curP||'알수없음')+'\n' +
-      'VWAP: '+(ydata.vwap?'$'+ydata.vwap+(ydata.vwap_pct!==null?' ('+(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%)':''):'알수없음')+'\n' +
-      'PM 고점: '+(ydata.pm_high?'$'+ydata.pm_high.toFixed(2):'알수없음')+'\n' +
-      'PM 저점: '+(ydata.pm_low?'$'+ydata.pm_low.toFixed(2):'알수없음')+'\n' +
-      'ORB 고점: '+(ydata.orb_high?'$'+ydata.orb_high.toFixed(2):'알수없음')+'\n' +
-      'RVol: '+(ydata.rvol?ydata.rvol.toFixed(1)+'x':'알수없음')+'\n' +
-      '52주 고가: '+(ydata.fiftyTwoWeekHigh?'$'+ydata.fiftyTwoWeekHigh.toFixed(2):'알수없음')+'\n' +
-      '최근 뉴스: '+(ydata.newsText||'없음')+'\n\n';
-
-    if(mode === 'momo'){
-      // 분할매도/추가매수 내역
-      var sellHistStr = '';
-      if(openTrade.sells&&openTrade.sells.length){
-        sellHistStr = '\n분할매도 내역:\n'+openTrade.sells.map(function(s){
-          return '  '+s.date+' '+s.shares+'주 @ $'+s.price+' (손익 $'+(s.pnl>=0?'+':'')+s.pnl+')';
-        }).join('\n')+
-        '\n잔여수량: '+(openTrade.remaining||0)+'주\n';
-      }
-      var buyHistStr = '';
-      if(openTrade.buys&&openTrade.buys.length>1){
-        buyHistStr = '\n추가매수 내역:\n'+openTrade.buys.map(function(b){
-          return '  '+b.date+' '+b.shares+'주 @ $'+b.price;
-        }).join('\n')+'\n평균단가: $'+entryP+'\n';
-      }
-      // 차트 레벨
-      var chartLevels =
-        '=== 현재 차트 레벨 ===\n' +
-        '1분봉 지지선: '+(ydata.nearest_support?'$'+ydata.nearest_support.toFixed(2):'없음')+(ydata.second_support?' / 2차 $'+ydata.second_support.toFixed(2):'')+' \n' +
-        '1분봉 저항선: '+(ydata.nearest_resistance?'$'+ydata.nearest_resistance.toFixed(2):'없음')+(ydata.second_resistance?' / 2차 $'+ydata.second_resistance.toFixed(2):'')+' \n' +
-        '장중 응축 박스: '+(ydata.intraday_consolidation?'$'+ydata.intraday_range_low+'~$'+ydata.intraday_range_high+' ('+ydata.intraday_range_pct+'%)':'없음')+' \n' +
-        'PM 고점 대비: '+(ydata.pm_high?((curP/ydata.pm_high-1)*100).toFixed(1)+'% (PM고점 $'+ydata.pm_high.toFixed(2)+')'  :'알수없음')+' \n' +
-        'VWAP 대비: '+(ydata.vwap_pct!==null?(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%':'알수없음')+' \n\n';
-      var phaseNow = {'PRE':'프리마켓','ORB':'ORB형성중(진입금지)','EARLY':'골든윈도우(최적매도구간)','PRIME':'2차모멘텀','LATE':'페이드구간(익절우선)','CLOSED':'장마감'}[G.marketPhase||'']||'시간미확인';
-      return '당신은 MOMO 당일 트레이딩 전문 AI입니다. 지금 이 순간 이 포지션을 어떻게 해야 하는지 구체적으로 알려주세요.\n\n' +
-        posInfo + sellHistStr + buyHistStr + dataStr + chartLevels +
-        '현재 시장 시간대: '+phaseNow+'\n\n' +
-        '판단 기준 (엄격하게 적용):\n' +
-        '- HOLD: 거래량 RVol 3x+ 유지 중이면 기본값. 진입가 아래 -7% 이내 눌림은 회복 가능 구간\n' +
-        '- HOLD (회복 중): 진입가 아래라도 아래 조건 중 2개 이상이면 HOLD\n' +
-        '  1) 거래량 RVol 3x+ 유지\n' +
-        '  2) VWAP 위로 재탈환 또는 근접\n' +
-        '  3) 지지선에서 반등 캔들 확인\n' +
-        '  4) 연속 양봉 2개+ (회복 추세)\n' +
-        '- ADD: 아래 조건 모두 충족 시 추가매수 적극 고려\n' +
-        '  1) 지지선에서 반등 확인 (종가 기준)\n' +
-        '  2) RVol 3x+ 유지\n' +
-        '  3) VWAP 위 또는 재탈환\n' +
-        '  4) 시간대 EARLY/PRIME (LATE는 추매 금지)\n' +
-        '  5) 진입가 대비 -10% 이내 (너무 깊이 빠진 경우 추매 금지)\n' +
-        '- SELL_HALF: T1 레벨 도달 / PM고점 근접 / 지지선 깨지기 직전\n' +
-        '- SELL_ALL: 아래 2개 이상 동시 충족 시만\n' +
-        '  1) 지지선 완전 이탈 (종가 기준)\n' +
-        '  2) 거래량 급감 (RVol 2x 이하)\n' +
-        '  3) 연속 음봉 3개+\n' +
-        '  4) VWAP 아래 + 반등 없음\n' +
-        '- STOP_LOSS: 진입가 -7%+ 이탈 AND 거래량 소멸 AND 반등 시도 없음 — 셋 동시\n' +
-        '- trailing_stop: 수익 중일 때 고점 대비 -8% 레벨로 손절 올리기\n\n' +
-        '⚠️ 중요: 진입가 아래 단순 눌림만으로는 절대 SELL_ALL 하지 말 것. 거래량 강하면 HOLD.\n' +
-        '⚠️ 중요: 현재가가 진입가 위(수익 중)이면 이전 손절 이탈 이력 무관하게 현재 상태 기준으로 재판단.\n' +
-        '⚠️ 중요: 손절 찍힌 후 회복 중이면 거래량/VWAP/지지선 기준으로 HOLD 또는 ADD 적극 고려. 이미 판 게 아니면 지금 상태로 판단.\n\n' +
-        'reason과 summary는 반드시 한국어로, 구체적 가격($X.XX)을 포함해서 작성.\n' +
-        '예: "$1.86 지지 반등 + RVol 4.9x 회복 중 — 홀드, 추매 고려 $1.90"\'\n\n' +
-        '{"hold_action":"SELL_ALL"|"SELL_HALF"|"HOLD"|"STOP_LOSS"|"ADD",'+
-        '"urgency":"immediate"|"today"|"monitor",'+
-        '"t1":1차익절가(실제저항레벨),'+
-        '"t2":2차익절가(다음저항레벨),'+
-        '"stop":현재손절가(VWAP아래or지지선아래),'+
-        '"trailing_stop":트레일링손절가(고점대비-8%),'+
-        '"add_price":추매권장가(null이면미해당),'+
-        '"add_reason":추매근거(null가능),'+
-        '"current_pnl_pct":현재수익률,'+
-        '"reason":"구체적가격포함 판단근거 두줄이내",'+
-        '"signals":["긍정신호"],'+
-        '"warnings":["위험신호"],'+
-        '"summary":"지금 당장 해야할 행동 한줄"}\n\n' +
-        '알수없음 항목은 알고 있는 정보로 최대한 분석';
-    }
-
-    if(mode === 'swing'){
-      var swStr2 = '';
-      if(swingData){
-        swStr2 = '=== 기술적 지표 (실제 계산) ===\n' +
-          'RSI(14): '+(swingData.rsi14||'?')+'\n' +
-          'MA20 기울기: '+(swingData.ma20_slope!==null?swingData.ma20_slope+'%':'?')+'\n' +
-          '거래량 비율: '+(swingData.vol_ratio?swingData.vol_ratio+'x':'?')+'\n' +
-          'MA5/MA20: '+(swingData.ma5&&swingData.ma20?'$'+swingData.ma5.toFixed(2)+' / $'+swingData.ma20.toFixed(2):'?')+'\n' +
-          '10일 최고가: '+(swingData.high10?'$'+swingData.high10:'?')+'\n\n';
-      }
-      return '당신은 스윙 트레이딩 전문 AI입니다. 아래는 현재 보유 중인 스윙 포지션입니다.\n\n' +
-        posInfo + dataStr + swStr2 +
-        '이 포지션을 스윙 관점에서 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
-        'SWING 포지션 관리 기준:\n' +
-        '- 추가매수(피라미딩): 수익 +2% 이상 필수 + MA20 눌림목 + 거래량 지지 + RSI 55 이하\n' +
-        '- 1차 익절(50%): 10일 최고가(저항) 근접 또는 +1R 도달\n' +
-        '- 최종 익절: 52주 고가 근접 또는 추세 꺾임\n' +
-        '- 손절: MA5 종가 2일 연속 이탈 / RSI 72이상+음봉 / 진입가 -3%\n' +
-        '- 홀드: 정배열 유지 + VWAP/MA20 위 + 거래량 정상\n\n' +
-        '{'+
-        '"hold_action": "ADD"|"SELL_HALF"|"SELL_ALL"|"HOLD"|"STOP_LOSS",'+
-        '"urgency": "immediate"|"this_week"|"monitor",'+
-        '"add_price": 추가매수가(숫자,없으면null),'+
-        '"t1": 1차익절가(숫자),'+
-        '"t2": 최종익절가(숫자),'+
-        '"stop": 손절가(숫자),'+
-        '"current_pnl_pct": 현재수익률,'+
-        '"reason": "행동 근거 두 줄 이내",'+
-        '"signals": ["긍정신호들"],'+
-        '"warnings": ["위험신호들"],'+
-        '"summary": "한줄 행동 지침"'+
-        '}\n\n' +
-        '알수없음 항목은 알고 있는 정보로 최대한 분석';
-    }
-  }
+  if(openTrade) return _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade);
 
   var phaseLabel = {'PRE':'프리마켓(4~9:30)','ORB':'ORB형성중(9:30~9:35)','EARLY':'골든윈도우(9:35~10:30)','PRIME':'2차모멘텀(10:30~11:30)','LATE':'페이드구간(11:30+)','CLOSED':'장마감'}[G.marketPhase||'']||'시간미확인';
   var spyStatus = G.spyIntraday ? 'SPY '+G.spyIntraday.change_pct+'% ('+G.spyIntraday.trend+')'+
@@ -2353,35 +2348,8 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
     (ydata.slippage_risk==='high'?'⚠ 로우 플롯 체결 주의 — 지정가만, 포지션 절반 이하 권장\n':'')+
     '\n';
 
+  // ── MOMO 신규 진입 프롬프트 (openTrade 보유 케이스는 함수 상단에서 처리됨) ──
   if(mode === 'momo'){
-    // 보유 포지션 관리 모드
-    if(openTrade){
-      var entryP = openTrade.entry;
-      var shares = openTrade.shares || 0;
-      var curP   = ydata.price || entryP;
-      var pnlPct = ((curP - entryP)/entryP*100).toFixed(1);
-      var pnlDol = ((curP - entryP)*shares).toFixed(2);
-      var holdStr = '=== 보유 포지션 정보 ===\n진입가: $'+entryP+'\n현재가: $'+(curP||'알수없음')+'\n수익률: '+pnlPct+'%'+(shares?'  손익: $'+pnlDol:'')+'\n진입일: '+openTrade.date+'\n\n';
-      return '당신은 MOMO 트레이딩 포지션 관리 AI입니다.\n\n' + base + holdStr +
-        '위 데이터를 바탕으로 현재 보유 중인 포지션의 매도 전략을 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
-        '{"ticker":"'+ticker+'","mode":"hold","action":"SELL_NOW"|"HOLD_T1"|"HOLD_T2"|"ADD",' +
-        '"score":0-100,' +
-        '"stop":즉시손절가(진입가×0.97),' +
-        '"t1":1차매도목표가,' +
-        '"t2":2차매도목표가,' +
-        '"add_price":추가매수가격(null이면미해당),' +
-        '"urgency":"high"|"medium"|"low",' +
-        '"action_reason":"지금 당장 해야 할 행동 한 줄",' +
-        '"sell_signals":["매도 근거들"],' +
-        '"hold_signals":["홀드 근거들"],' +
-        '"risk_factors":["리스크 요인들"],' +
-        '"summary":"포지션 관리 한줄 판단"}\n\n' +
-        'SELL_NOW: VWAP 이탈/거래량 소멸/Lower High/손절선 근접/파라볼릭 과확장\n' +
-        'HOLD_T1: T1 미도달, 구조 건전, VWAP 위\n' +
-        'HOLD_T2: T1 달성 후 잔량 홀드, 추세 강함\n' +
-        'ADD: 눌림목 추가매수 적합 (MOMO는 드물게만)\n' +
-        '알수없음 항목은 알고 있는 정보로 최대한 분석';
-    }
     return '당신은 프리마켓 급등주 전문 MOMO 트레이딩 AI입니다.\n\n' + base +
       '=== 시장 국면 ===\n'+
       '시간대: '+(G.marketPhase||'알수없음')+' | SPY 당일: '+(G.spyIntraday?G.spyIntraday.change_pct+'% ('+G.spyIntraday.trend+')':'알수없음')+'\n'+
@@ -2410,43 +2378,8 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
       '알수없음 항목은 알고 있는 정보로 최대한 분석하되 null 반환 가능';
   }
 
+  // ── SWING 신규 진입 프롬프트 (openTrade 보유 케이스는 함수 상단에서 처리됨) ──
   if(mode === 'swing'){
-    // 보유 포지션 관리 모드
-    if(openTrade){
-      var entryP = openTrade.entry;
-      var shares = openTrade.shares || 0;
-      var curP   = ydata.price || entryP;
-      var pnlPct = ((curP - entryP)/entryP*100).toFixed(1);
-      var pnlDol = ((curP - entryP)*shares).toFixed(2);
-      var holdStr = '=== 보유 포지션 정보 ===\n진입가: $'+entryP+'\n현재가: $'+(curP||'알수없음')+'\n수익률: '+pnlPct+'%'+(shares?'  손익: $'+pnlDol:'')+'\n진입일: '+openTrade.date+'\n\n';
-      var swStr2 = '';
-      if(swingData){
-        swStr2 = '=== 현재 기술적 지표 ===\n조건 충족: '+swingData.conditions_met+'/8\n'+
-          'RSI: '+(swingData.rsi14||'?')+'\nMA20 기울기: '+(swingData.ma20_slope!==null?swingData.ma20_slope+'%':'?')+'\n'+
-          '거래량 비율: '+(swingData.vol_ratio||'?')+'x\n10일 최고가: $'+(swingData.high10||'?')+'\n\n';
-      }
-      return '당신은 스윙 트레이딩 포지션 관리 AI입니다.\n\n' + base + holdStr + swStr2 +
-        '위 데이터를 바탕으로 현재 보유 중인 스윙 포지션을 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
-        '{"ticker":"'+ticker+'","mode":"hold","action":"SELL_NOW"|"SELL_PARTIAL"|"HOLD"|"ADD",' +
-        '"score":0-100,' +
-        '"stop":손절가(진입가×0.97또는MA20이탈),' +
-        '"t1":1차익절목표가,' +
-        '"t2":최종목표가,' +
-        '"add_price":추가매수가격(null이면미해당),' +
-        '"add_reason":추가매수근거(null가능),' +
-        '"urgency":"high"|"medium"|"low",' +
-        '"action_reason":"지금 당장 해야 할 행동 한 줄",' +
-        '"sell_signals":["매도/축소 근거"],' +
-        '"hold_signals":["홀드/추가 근거"],' +
-        '"risk_factors":["리스크 요인"],' +
-        '"summary":"포지션 관리 한줄 판단"}\n\n' +
-        'SELL_NOW: MA5 2일 연속 이탈/RSI 72이상+음봉/10일 경과 무움직임/지지선 붕괴\n' +
-        'SELL_PARTIAL: T1 도달 시 50% 매도 후 잔량 홀드\n' +
-        'HOLD: 추세 건전, 목표가 미도달, 조건 유지\n' +
-        'ADD: 수익 +2% 이상 필수 + MA20 눌림목 + 조건 3~4개 충족 + 추세 유지 → 추가매수\n' +
-        '추가매수 조건: 현재 수익률 +2% 이상 필수 + 현재가가 MA20 ±3% + 정배열 유지 + 거래량 지지\n' +
-        '알수없음 항목은 알고 있는 정보로 최대한 분석';
-    }
     // 실제 계산된 지표 문자열 구성
     var swStr = '';
     if(swingData){
@@ -2583,10 +2516,7 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
 }
 
 // ═══════════════════════════════════════
-// 하드 필터 (MOMO 전용 — SWING/CORE는 완화)
-// ═══════════════════════════════════════
-// ═══════════════════════════════════════
-// P&D 스코어 + 하드 필터 (MOMO 전용)
+// P&D 스코어 + 하드 필터 (MOMO 전용 — SWING/CORE 완화 적용)
 // ═══════════════════════════════════════
 function getDumpScore(r){
   var score=0;
@@ -3268,6 +3198,58 @@ async function runModeScan(mode){
   scanBtn.disabled = false;
 }
 
+// ── ydata 공통 필드를 result 객체에 주입 (openTrade/신규 공통) ──
+function _hydrateResult(result, ydata){
+  result.price          = ydata.price          || result.price || null;
+  result.gap_pct        = ydata.gap_pct        !== null ? ydata.gap_pct        : (result.gap_pct        || null);
+  result.float_m        = ydata.float_m        !== null ? ydata.float_m        : (result.float_m        || null);
+  result.short_pct      = ydata.short_pct      !== null ? ydata.short_pct      : (result.short_pct      || null);
+  result.rvol           = ydata.rvol           !== null ? ydata.rvol           : (result.rvol           || null);
+  result.rvol_raw       = ydata.rvol_raw       || null;
+  result.rvol_corrected = ydata.rvol_corrected || false;
+  result.rvol_elapsed   = ydata.rvol_elapsed   || null;
+  result.spread_pct     = ydata.spread_pct     || null;
+  result.news           = ydata.newsText        || result.news || '';
+  result.pm_high        = ydata.pm_high        || null;
+  result.pm_low         = ydata.pm_low         || null;
+  result.orb_high       = ydata.orb_high       || null;
+  result.orb_low        = ydata.orb_low        || null;
+  result.vwap           = ydata.vwap           || null;
+  result.vwap_pct       = ydata.vwap_pct       !== undefined ? ydata.vwap_pct : null;
+  result.fiftyTwoWeekHigh = ydata.fiftyTwoWeekHigh || null;
+  return result;
+}
+
+// ── 거래 기록용 카드 스냅샷 빌더 ──
+function _buildSnapshot(result, mode){
+  return {
+    score:       result.score        || null,
+    action:      result.action       || null,
+    entry:       result.entry        || null,
+    stop:        result.stop         || null,
+    target1:     result.target1      || null,
+    target2:     result.target2      || null,
+    rr:          result.rr           || null,
+    summary:     result.summary      || result.action_reason || null,
+    news:        (result.news||'').substring(0,120) || null,
+    news_quality: result.news_quality || null,
+    signals:     (result.signals||[]).slice(0,3),
+    warnings:    (result.warnings||[]).slice(0,3),
+    marketPhase: result._marketPhase || G.marketPhase || null,
+    spyChg:      result._spyChg     ?? (G.spyIntraday?.change_pct ?? null),
+    conditions_met:         result.conditions_met         ?? null,
+    slippage_pct:           result.slippage_pct           || null,
+    float_turns:            result.float_turns            || null,
+    breakout_wick_strength: result.breakout_wick_strength || null,
+    news_one_line:          result.news_one_line          || null,
+    risk_note:              result.risk_note              || null,
+    trade_note:             result.trade_note             || null,
+    catalyst:               result.catalyst               || null,
+    momo_type:              result.momo_type              || null,
+    _ts: Date.now()
+  };
+}
+
 async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   var minGap   = parseInt(document.getElementById('minGap').textContent)||20;
   var maxFloat = parseInt(document.getElementById('maxFloat').textContent)||20;
@@ -3397,46 +3379,18 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     if(openTrade){
       // ── 보유 포지션: Claude 전체 판단 (기존 방식) ──
       result = JSON.parse(rawText);
-      result.ticker     = ticker;
-      result.price      = ydata.price      || result.price;
-      result.gap_pct    = ydata.gap_pct    !==null ? ydata.gap_pct    : result.gap_pct;
-      result.float_m    = ydata.float_m    !==null ? ydata.float_m    : result.float_m;
-      result.short_pct  = ydata.short_pct  !==null ? ydata.short_pct  : result.short_pct;
-      result.rvol       = ydata.rvol       !==null ? ydata.rvol       : result.rvol;
-      result.rvol_raw       = ydata.rvol_raw       || null;
-      result.rvol_corrected = ydata.rvol_corrected || false;
-      result.rvol_elapsed   = ydata.rvol_elapsed   || null;
-      result.spread_pct = ydata.spread_pct;
-      result.news       = ydata.newsText   || result.news || '';
-      result.pm_high    = ydata.pm_high; result.pm_low = ydata.pm_low;
-      result.orb_high   = ydata.orb_high;  result.orb_low = ydata.orb_low;
-      result.vwap       = ydata.vwap       || null;
-      result.vwap_pct   = ydata.vwap_pct   !==undefined ? ydata.vwap_pct : null;
-      result.fiftyTwoWeekHigh = ydata.fiftyTwoWeekHigh || null;
+      result.ticker = ticker;
+      _hydrateResult(result, ydata);
     } else {
       // ── 신규 진입: 엔진 결정 + Claude 설명 병합 ──
       var explain = {};
       try{ explain = JSON.parse(rawText); }catch(e){}
 
       result = Object.assign({}, decision);
-      result.ticker     = ticker;
-      result.price      = ydata.price      || null;
-      result.gap_pct    = ydata.gap_pct    !== null ? ydata.gap_pct   : null;
-      result.float_m    = ydata.float_m    !== null ? ydata.float_m   : null;
-      result.short_pct  = ydata.short_pct  !== null ? ydata.short_pct : null;
-      result.rvol       = ydata.rvol       !== null ? ydata.rvol      : null;
-      result.rvol_raw       = ydata.rvol_raw       || null;
-      result.rvol_corrected = ydata.rvol_corrected || false;
-      result.rvol_elapsed   = ydata.rvol_elapsed   || null;
-      result.spread_pct = ydata.spread_pct;
-      result.news       = ydata.newsText   || '';
-      result.pm_high    = ydata.pm_high;  result.pm_low = ydata.pm_low;
-      result.orb_high   = ydata.orb_high; result.orb_low = ydata.orb_low;
-      result.vwap       = ydata.vwap       || null;
-      result.vwap_pct   = ydata.vwap_pct  !==undefined ? ydata.vwap_pct : null;
+      result.ticker = ticker;
+      _hydrateResult(result, ydata);
       result.pm_consolidation = ydata.pm_consolidation || false;
       result.pm_range_pct     = ydata.pm_range_pct     || null;
-      result.fiftyTwoWeekHigh = ydata.fiftyTwoWeekHigh || null;
       // Claude 설명 필드 병합
       result.momo_type     = decision.momo_type    || 'A';
       result.news_quality  = explain.news_quality  || 'none';
@@ -3517,32 +3471,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       localStorage.setItem('momoTodayCards', JSON.stringify(G_momoTodayCards));
     }
     // 거래 기록용 스냅샷 저장 (진입 시 카드 상황 보존)
-    G_cardSnapshots[mode+'_'+ticker] = {
-      score:      result.score       || null,
-      action:     result.action      || null,
-      entry:      result.entry       || null,
-      stop:       result.stop        || null,
-      target1:    result.target1     || null,
-      target2:    result.target2     || null,
-      rr:         result.rr          || null,
-      summary:    result.summary     || result.action_reason || null,
-      news:       (result.news||'').substring(0,120) || null,
-      news_quality: result.news_quality || null,
-      signals:    (result.signals||[]).slice(0,3),
-      warnings:   (result.warnings||[]).slice(0,3),
-      marketPhase: result._marketPhase || G.marketPhase || null,
-      spyChg:     result._spyChg     ?? (G.spyIntraday?.change_pct ?? null),
-      conditions_met: result.conditions_met ?? null,
-      slippage_pct:   result.slippage_pct   || null,
-      float_turns:    result.float_turns    || null,
-      breakout_wick_strength: result.breakout_wick_strength || null,
-      news_one_line: result.news_one_line || null,
-      risk_note:     result.risk_note     || null,
-      trade_note:    result.trade_note    || null,
-      catalyst:      result.catalyst      || null,
-      momo_type:     result.momo_type     || null,
-      _ts: Date.now()
-    };
+    G_cardSnapshots[mode+'_'+ticker] = _buildSnapshot(result, mode);
     analyzeEl.innerHTML = '';
     resultEl.innerHTML = openTrade ? holdCardHTML(result, mode, openTrade) : cardHTML(result, mode);
     // MOMO: 오늘 분석 카드 목록 갱신
@@ -4467,13 +4396,15 @@ function saveTradeLog(ticker){
       price: entry, shares: shares, memo: memo||'1차 진입'
     }],
     sells: [], exit: null, pnl: null, pnl_pct: null, memo: memo,
-    mode: G.currentMode || 'momo', status: 'open'
+    mode: G.currentMode || 'momo', status: 'open',
+    card_snapshot: G_cardSnapshots[(G.currentMode||'momo')+'_'+ticker] || null
   };
   G_journal.unshift(record);
   localStorage.setItem('reconJournal', JSON.stringify(G_journal));
   document.querySelector('div[style*=fixed]')?.remove();
   showToast(ticker+' 진입 기록 완료 · $'+entry+(shares?' · '+shares+'주':''));
   renderJournal(G.currentMode);
+  renderOpenPositions(G.currentMode);
 }
 
 // 분할 매도 모달
@@ -4702,55 +4633,6 @@ async function rerunCard(ticker, mode){
   await runModeScan(mode);
 }
 
-
-// ═══════════════════════════════════════
-// 거래 일지
-// ═══════════════════════════════════════
-function openTradeLog(ticker, price){
-  var modal = document.createElement('div');
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:flex-end;justify-content:center';
-  modal.innerHTML =
-    '<div style="background:var(--bg1);border:1px solid var(--b);border-radius:20px 20px 0 0;padding:20px;width:100%;max-width:480px;padding-bottom:max(20px,env(safe-area-inset-bottom))">'+
-    '<div style="font-family:var(--mono);font-size:16px;color:var(--t);margin-bottom:16px">'+ticker+' 거래 기록</div>'+
-    '<div style="display:flex;flex-direction:column;gap:10px">'+
-      '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">진입가</div>'+
-        '<input id="tl_entry" type="number" step="0.01" value="'+(price||'')+'" placeholder="0.00" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
-      '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">매도가</div>'+
-        '<input id="tl_exit" type="number" step="0.01" placeholder="0.00" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
-      '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">주수</div>'+
-        '<input id="tl_shares" type="number" placeholder="100" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
-      '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">메모</div>'+
-        '<input id="tl_memo" type="text" placeholder="예: 손절 늦게 함, 진입 타이밍 좋았음" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-size:13px;color:var(--t);outline:none"></div>'+
-    '</div>'+
-    '<div style="display:flex;gap:8px;margin-top:16px">'+
-      '<button onclick="this.closest(\'div[style*=fixed]\').remove()" style="flex:1;padding:12px;background:var(--bg2);border:1px solid var(--b);border-radius:10px;color:var(--t2);font-size:14px;cursor:pointer">취소</button>'+
-      '<button onclick="saveTradeLog(\''+ticker+'\')" style="flex:2;padding:12px;background:var(--g);border:none;border-radius:10px;color:#000;font-size:14px;font-weight:700;cursor:pointer">저장</button>'+
-    '</div></div>';
-  document.body.appendChild(modal);
-  modal.addEventListener('click',function(e){ if(e.target===modal) modal.remove(); });
-}
-
-function saveTradeLog(ticker){
-  var entry=parseFloat(document.getElementById('tl_entry').value);
-  var exit =parseFloat(document.getElementById('tl_exit').value);
-  var shares=parseInt(document.getElementById('tl_shares').value)||0;
-  var memo=document.getElementById('tl_memo').value.trim();
-  if(!entry){ showToast('진입가를 입력하세요'); return; }
-  var pnl=exit?(exit-entry)*shares:null;
-  var pnl_pct=exit?(exit-entry)/entry*100:null;
-  var record={id:Date.now(),date:new Date().toLocaleDateString('ko-KR'),ticker,entry,exit:exit||null,shares,
-    pnl:pnl?parseFloat(pnl.toFixed(2)):null,pnl_pct:pnl_pct?parseFloat(pnl_pct.toFixed(2)):null,memo,
-    mode: G.currentMode || 'momo',
-    status:exit?(pnl>=0?'win':'loss'):'open',
-    card_snapshot: G_cardSnapshots[(G.currentMode||'momo')+'_'+ticker] || null
-  };
-  G_journal.unshift(record);
-  localStorage.setItem('reconJournal',JSON.stringify(G_journal));
-  document.querySelector('div[style*=fixed]')?.remove();
-  showToast(ticker+' 거래 기록 저장됨');
-  renderOpenPositions(G.currentMode);
-  renderJournal(G.currentMode);
-}
 
 // ═══════════════════════════════════════
 // 알림 시스템
