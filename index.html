@@ -1833,7 +1833,7 @@ async function fetchYahooData(ticker){
           if(fNum>0) result.float_m = parseFloat(fNum.toFixed(2));
         }
         var rvolMatch = fvHtml.match(/Rel Volume<\/td><td[^>]*><b>([^<]+)<\/b>/);
-        if(rvolMatch&&!result.rvol){ var rv=parseFloat(rvolMatch[1]); if(rv>0) result.rvol=rv; }
+        if(rvolMatch&&!result.rvol){ var rv=parseFloat(rvolMatch[1]); if(rv>0) result.rvol=parseFloat(rv.toFixed(2)); }
       }catch(e){}
     }
     // ── 슬리피지 추정 (Float × RVol 연동 동적 모델) ──
