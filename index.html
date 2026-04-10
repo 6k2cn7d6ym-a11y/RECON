@@ -2916,7 +2916,9 @@ function momoEngine(ydata){
     if(floatM<=2)       {score+=25; r.signals.push('Ultra Float '+floatM.toFixed(1)+'M');}
     else if(floatM<=5)  {score+=20; r.signals.push('Low Float '+floatM.toFixed(1)+'M');}
     else if(floatM<=10) {score+=12;}
-    else if(floatM<=20) {score+=5;}
+    else if(floatM<=15) {score+=7;}
+    else if(floatM<=20) {score+=4;}
+    else if(floatM<=25) {score+=2;}  // Type A 구간 (20~25M)
     else                {score-=5;}
   }
 
@@ -2931,7 +2933,8 @@ function momoEngine(ydata){
   if(gap>=50)      {score+=15; r.signals.push('갭 +'+gap.toFixed(0)+'%');}
   else if(gap>=30) {score+=12; r.signals.push('갭 +'+gap.toFixed(0)+'%');}
   else if(gap>=20) {score+=8;}
-  else             {score+=4;}  // minGap 이미 통과한 값
+  else if(gap>=15) {score+=5;}  // Type A 구간 (15~20%)
+  else             {score+=3;}  // 15% 미만은 이미 필터 통과한 케이스
 
   // Short Interest (최대 10점)
   if(siPct>=25)      {score+=10; r.signals.push('Short '+siPct.toFixed(0)+'% — 숏스퀴즈 잠재력');}
@@ -2970,10 +2973,12 @@ function momoEngine(ydata){
 
   r.score = Math.min(100, Math.max(0, score));
 
-  // ── 4. 액션 결정 ──
-  if(r.score<40){
-    r.action='BLOCK'; r.blockers.push('점수 '+r.score+'pt — 최소 기준 미달');
-  } else if(r.score<60){
+  // ── 4. 액션 결정 (타입별 점수 기준) ──
+  var enterThreshold = momoType==='C' ? 60 : momoType==='B' ? 55 : 50; // A=50, B=55, C=60
+  var blockThreshold = momoType==='C' ? 35 : momoType==='B' ? 35 : 30; // A는 30 이하만 BLOCK
+  if(r.score < blockThreshold){
+    r.action='BLOCK'; r.blockers.push('[Type '+momoType+'] 점수 '+r.score+'pt — 기준 '+blockThreshold+'pt 미달');
+  } else if(r.score < enterThreshold){
     r.action='WATCH';
   } else {
     // 점수 충족 → 트리거 체크
@@ -3022,12 +3027,18 @@ function momoEngine(ydata){
     r.pullback_rr     = ydata.pullback_rr     || null;
   }
 
-  // ── 6. 포지션 크기 ──
+  // ── 6. 포지션 크기 (타입별 상한 적용) ──
   if(r.action==='ENTER'){
-    if(floatM!==null&&floatM<=2)     r.position_size='quarter(25%)'; // 극소 Float = 슬리피지 위험
-    else if(r.score>=85)             r.position_size='half(50%)';
-    else if(r.score>=70)             r.position_size='quarter(25%)';
-    else                             r.position_size='small(15%)';
+    // 타입별 기본 포지션 상한
+    var posMax = momoType==='C' ? 'half(50%)' : momoType==='B' ? 'quarter(25%)' : 'small(15%)';
+    if(floatM!==null&&floatM<=2)      r.position_size='quarter(25%)'; // 극소 Float = 슬리피지 위험
+    else if(r.score>=85)              r.position_size='half(50%)';
+    else if(r.score>=70)              r.position_size='quarter(25%)';
+    else                              r.position_size='small(15%)';
+    // 타입 상한 적용 (Type A는 아무리 점수 높아도 최대 25%)
+    var posRank = {'small(15%)':1,'quarter(25%)':2,'half(50%)':3};
+    var maxRank = posRank[posMax]||3;
+    if((posRank[r.position_size]||1) > maxRank) r.position_size = posMax;
     if(spyVwapBelow&&r.position_size==='half(50%)') r.position_size='quarter(25%)';
   }
 
@@ -3483,24 +3494,42 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   if(mode === 'momo'){
     var earlyBlock=[];
     var validExchanges = ['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS','BTS','BATS','ARCA','PCX','NGM','NGE'];
+
+    // ── 예비 타입 판단 (gap + float 기반 — 엔진 진입 전 빠른 분류) ──
+    var preGap   = ydata.gap_pct  || 0;
+    var preFloat = ydata.float_m;
+    var preRvol  = ydata.rvol     || 0;
+    var preType;
+    if(preGap >= 25 && preFloat !== null && preFloat <= 8)       preType = 'C';
+    else if(preGap >= 20 && preFloat !== null && preFloat <= 15) preType = 'B';
+    else                                                         preType = 'A';
+
+    // ── 타입별 임계값 ──
+    var gapMin   = preType === 'C' ? 25 : preType === 'B' ? 20 : 15;
+    var floatMax = preType === 'C' ? 8  : preType === 'B' ? 15 : 25;
+    var rvolMin  = preType === 'C' ? 10 : preType === 'B' ? 5  : 3;
+
     if(ydata.exchange && !validExchanges.includes((ydata.exchange||'').toUpperCase()))
       earlyBlock.push('OTC/비상장 ('+ydata.exchange+')');
-    if(ydata.price && ydata.price<0.5)
+    if(ydata.price && ydata.price < 0.5)
       earlyBlock.push('주가 범위 외 ($'+(ydata.price||0).toFixed(2)+') — $0.5 미만 페니스탁');
-    if(ydata.gap_pct!==null && ydata.gap_pct<minGap)
-      earlyBlock.push('갭업 부족 (+'+( ydata.gap_pct||0).toFixed(1)+'%)');
-    if(ydata.float_m!==null && ydata.float_m>maxFloat)
-      earlyBlock.push('Float 과다 ('+(ydata.float_m||0).toFixed(1)+'M) — 설정에서 최대 Float 올리면 분석 가능 (현재 '+maxFloat+'M)');
-    if(ydata.spread_pct!==null && ydata.spread_pct>2.0)
+    if(ydata.gap_pct !== null && ydata.gap_pct < gapMin)
+      earlyBlock.push('[Type '+preType+'] 갭업 부족 (+'+(ydata.gap_pct||0).toFixed(1)+'% — 기준 '+gapMin+'%+)');
+    if(preFloat !== null && preFloat > floatMax)
+      earlyBlock.push('[Type '+preType+'] Float 과다 ('+preFloat.toFixed(1)+'M — 기준 '+floatMax+'M 이하)');
+    if(preRvol > 0 && preRvol < rvolMin)
+      earlyBlock.push('[Type '+preType+'] RVol 부족 ('+preRvol.toFixed(1)+'x — 기준 '+rvolMin+'x+)');
+    if(ydata.spread_pct !== null && ydata.spread_pct > 2.0)
       earlyBlock.push('스프레드 과다 ('+(ydata.spread_pct||0).toFixed(1)+'%)');
 
-    if(earlyBlock.length>0){
-      var rb = {ticker,price:ydata.price,gap_pct:ydata.gap_pct,float_m:ydata.float_m,
-        short_pct:ydata.short_pct,rvol:ydata.rvol,spread_pct:ydata.spread_pct,
-        action:'BLOCK',score:0,blockers:earlyBlock.map(function(b){return '[하드필터] '+b;}),
-        signals:[],warnings:[],summary:'조건 미충족',news:ydata.newsText||'',news_quality:'none',
-        entry:null,stop:null,target1:null,rr:null,_hardBlocked:true,_dumpScore:99,
-        _date:new Date().toLocaleDateString('ko-KR'),_ts:Date.now(),_mode:mode};
+    if(earlyBlock.length > 0){
+      var rb = {ticker, price:ydata.price, gap_pct:ydata.gap_pct, float_m:ydata.float_m,
+        short_pct:ydata.short_pct, rvol:ydata.rvol, spread_pct:ydata.spread_pct,
+        momo_type: preType,
+        action:'BLOCK', score:0, blockers:earlyBlock.map(function(b){return '[하드필터] '+b;}),
+        signals:[], warnings:[], summary:'조건 미충족', news:ydata.newsText||'', news_quality:'none',
+        entry:null, stop:null, target1:null, rr:null, _hardBlocked:true, _dumpScore:99,
+        _date:new Date().toLocaleDateString('ko-KR'), _ts:Date.now(), _mode:mode};
       analyzeEl.innerHTML='';
       saveToHistory(mode, rb);
       resultEl.innerHTML = cardHTML(rb, mode);
