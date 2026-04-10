@@ -3589,15 +3589,47 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
 
   try{
     var apiKey = localStorage.getItem('apexKey')||'';
-    var res = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':apiKey,
-        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',
-        max_tokens: openTrade ? 600 : 250,
-        messages:[{role:'user',content:prompt}]})
-    });
-    var data = await res.json();
+
+    // ── 자동 재시도 (Overloaded 대응 — 최대 3회, 지수 딜레이) ──
+    var data = null;
+    var lastErr = null;
+    var retryDelays = [0, 3000, 7000]; // 즉시 → 3초 → 7초
+    for(var _attempt = 0; _attempt < retryDelays.length; _attempt++){
+      if(retryDelays[_attempt] > 0){
+        analyzeEl.innerHTML =
+          '<div class="analyzing-card">'+
+          '<div class="analyzing-spinner"></div>'+
+          '<div><div class="analyzing-ticker">'+ticker+'</div>'+
+          '<div class="analyzing-text" style="color:var(--a)">API 과부하 — '+(_attempt)+'회 재시도 중 ('+retryDelays[_attempt]/1000+'초 대기)...</div></div></div>';
+        await new Promise(function(res){ setTimeout(res, retryDelays[_attempt]); });
+      }
+      try{
+        var res = await fetch('https://api.anthropic.com/v1/messages',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','x-api-key':apiKey,
+            'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+          body:JSON.stringify({model:'claude-sonnet-4-20250514',
+            max_tokens: openTrade ? 600 : 250,
+            messages:[{role:'user',content:prompt}]})
+        });
+        var _d = await res.json();
+        if(_d.error){
+          var errType = _d.error.type || '';
+          // Overloaded/rate_limit → 재시도, 나머지 → 즉시 throw
+          if(errType === 'overloaded_error' || errType === 'rate_limit_error' || res.status === 529 || res.status === 529){
+            lastErr = new Error(_d.error.message);
+            continue; // 재시도
+          }
+          throw new Error(_d.error.message);
+        }
+        data = _d;
+        break; // 성공 → 루프 종료
+      }catch(fetchErr){
+        lastErr = fetchErr;
+        if(_attempt < retryDelays.length - 1) continue;
+      }
+    }
+    if(!data) throw lastErr || new Error('API 요청 실패');
     if(data.error) throw new Error(data.error.message);
 
     // 사용량 추적
@@ -3720,10 +3752,53 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
 
   }catch(e){
     analyzeEl.innerHTML='';
-    resultEl.innerHTML='<div class="alert-card" style="margin:4px 0 10px"><div class="alert-msg" style="color:var(--r)">'+ticker+' 오류: '+e.message+'</div></div>';
+    var isOverload = e.message && (
+      e.message.toLowerCase().includes('overload') ||
+      e.message.toLowerCase().includes('rate_limit')
+    );
+
+    // ── 폴백: 신규 진입이고 엔진 결과 있으면 → Claude 없이 카드 표시 ──
+    if(!openTrade && decision){
+      var fb = Object.assign({}, decision);
+      fb.ticker   = ticker;  fb._ts = Date.now();  fb._mode = mode;
+      fb.news     = ydata.newsText || '';
+      fb.price    = ydata.price    || null;
+      fb.gap_pct  = ydata.gap_pct  || null;
+      fb.float_m  = ydata.float_m  || null;
+      fb.rvol     = ydata.rvol     || null;
+      fb.vwap     = ydata.vwap     || null;
+      fb.vwap_pct = ydata.vwap_pct !== undefined ? ydata.vwap_pct : null;
+      fb.pm_high  = ydata.pm_high  || null;
+      fb.pm_low   = ydata.pm_low   || null;
+      fb.pm_consolidation = ydata.pm_consolidation || false;
+      fb.fiftyTwoWeekHigh = ydata.fiftyTwoWeekHigh || null;
+      fb.news_quality  = 'none';
+      fb.news_one_line = null;
+      fb.warnings = (fb.warnings||[]).concat(['⚠ Claude API '+(isOverload?'과부하':'오류')+' — 뉴스 해석 생략됨 (재시도 가능)']);
+      if(mode==='momo'){ fb._marketPhase=G.marketPhase||null; fb._spyTrend=G.spyIntraday?.trend||null; fb._spyChg=G.spyIntraday?.change_pct??null; }
+      if(mode==='momo' && !openTrade) fb._dumpScore = getDumpScore(fb);
+      applyHistory(fb);
+      saveToHistory(mode, fb);
+      if(mode==='momo' && fb.action !== 'BLOCK'){
+        G_momoTodayCards = G_momoTodayCards.filter(function(c){ return c.ticker !== fb.ticker; });
+        G_momoTodayCards.unshift(fb);
+        localStorage.setItem('momoTodayCards', JSON.stringify(G_momoTodayCards));
+      }
+      G_cardSnapshots[mode+'_'+ticker] = _buildSnapshot(fb, mode);
+      resultEl.innerHTML = cardHTML(fb, mode);
+      if(mode === 'momo') renderMomoTodayCards();
+      return;
+    }
+
+    // 폴백 불가 (보유 포지션) → 에러만 표시
+    resultEl.innerHTML='<div class="alert-card" style="margin:4px 0 10px">'+
+      '<div class="alert-msg" style="color:'+(isOverload?'var(--a)':'var(--r)')+'">'+
+        (isOverload ? ticker+' — API 과부하, 재시도해 주세요' : ticker+' 오류: '+e.message)+
+      '</div>'+
+      (isOverload?'<div style="font-size:10px;color:var(--t3);margin-top:4px;font-family:var(--mono)">잠시 후 다시 시도해 주세요</div>':'')+
+      '</div>';
   }
 }
-
 // ═══════════════════════════════════════
 // 히스토리 관리
 // ═══════════════════════════════════════
