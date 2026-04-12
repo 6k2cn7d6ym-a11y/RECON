@@ -4187,12 +4187,18 @@ function coreEngine(ydata, coreData, fundData, sectorData){
     }
     // 목표가: 52주 고가 우선
     var fw=ydata.fiftyTwoWeekHigh;
-    if(fw&&fw>cEntry*1.12){
+    // CORE 목표가: 폭발적 성장 홀드 철학
+    // 익절1 (25%) — 첫 번째 의미 있는 부분 수익 실현
+    // 익절2 (25%) — 두 번째 부분 수익 실현
+    // 잔량 (50%) — 펀더멘털 무너질 때까지 홀드
+    if(fw&&fw>cEntry*1.40){
+      // 52주 고가가 40%+ 위 → 고가가 자연 첫 저항
       cTarget1=parseFloat(fw.toFixed(2));
-      cTarget2=parseFloat((fw*1.15).toFixed(2));
+      cTarget2=parseFloat((fw*1.50).toFixed(2));       // 고가 돌파 후 +50% 연장
     } else {
-      cTarget1=parseFloat((cEntry*1.25).toFixed(2));
-      cTarget2=parseFloat((cEntry*1.50).toFixed(2));
+      // 이미 고가 근처 or 돌파 — 진짜 성장 목표
+      cTarget1=parseFloat((cEntry*1.50).toFixed(2));  // +50% (익절1)
+      cTarget2=parseFloat((cEntry*2.50).toFixed(2));  // +150% (익절2)
     }
     var cRisk=cEntry-cStop;
     r.entry=cEntry; r.stop=cStop; r.target1=cTarget1; r.target2=cTarget2;
@@ -5561,7 +5567,7 @@ function cardHTML(r, mode){
         (plan.note?'<div style="font-size:9px;color:var(--t3);margin-bottom:7px;font-style:italic">'+plan.note+'</div>':'')+
         stepsHtml+
         '<div style="margin-top:6px;padding-top:5px;font-size:9px;color:var(--t3)">'+
-          '총 '+total+'% 진입 계획 · 잔여 현금 보유 · 손절 히트 시 전량 청산'+
+          (r._mode==='core'?'총 '+total+'% 진입 · 잔량은 펀더멘털 청산 시까지 홀드 — 10배를 목표':'총 '+total+'% 진입 계획 · 잔여 현금 보유 · 손절 히트 시 전량 청산')+
         '</div>'+
       '</div>';
     })()+
@@ -5579,15 +5585,32 @@ function cardHTML(r, mode){
       '</div>'+
       '<div class="levels" style="'+(r._mode!=='core'&&r.slippage_risk==='high'?'opacity:.7':'')+'">'+
         '<div class="lv lv-entry"><div class="lv-label">진입</div><div class="lv-val">'+(r.entry?'$'+r.entry:'--')+'</div></div>'+
-        '<div class="lv lv-stop"><div class="lv-label">'+(r._mode==='core'?'손절(-7%)':r.momo_type==='C'?'손절(-15%)':r.momo_type==='B'?'손절(-10%)':'손절(-7%)')+'</div><div class="lv-val">'+(r.stop?'$'+r.stop:'--')+'</div></div>'+
-        '<div class="lv lv-t1"><div class="lv-label">'+(r._mode==='core'?'T1(30%)':'T1(50%)')+'</div><div class="lv-val">'+(st?'$'+st.t1:r.target1?'$'+r.target1:'--')+'</div></div>'+
-        '<div class="lv lv-rr"><div class="lv-label">손익비</div><div class="lv-val">'+(r.rr?r.rr+'R':'--')+'</div></div>'+
+        '<div class="lv lv-stop"><div class="lv-label">'+(r._mode==='core'?(r.entry&&r.stop?'손절('+((r.stop-r.entry)/r.entry*100).toFixed(0)+'%)':'손절'):r.momo_type==='C'?'손절(-15%)':r.momo_type==='B'?'손절(-10%)':'손절(-7%)')+'</div><div class="lv-val">'+(r.stop?'$'+r.stop:'--')+'</div></div>'+
+        '<div class="lv lv-t1"><div class="lv-label">'+(r._mode==='core'?'익절1 (25%)':'T1(50%)')+'</div><div class="lv-val">'+(st?'$'+st.t1:r.target1?'$'+r.target1:'--')+'</div></div>'+
+        '<div class="lv lv-rr"><div class="lv-label">'+(r._mode==='core'?'익절1 R:R':'손익비')+'</div><div class="lv-val">'+(r.rr?r.rr+'R':'--')+'</div></div>'+
       '</div>'+
-      ((r._mode==='swing'||r._mode==='core')&&r.target2?
+      ((r._mode==='swing')&&r.target2?
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:5px;padding:6px 10px;background:rgba(43,159,255,.06);border:1px solid rgba(43,159,255,.15);border-radius:8px">'+
-          '<span style="font-family:var(--mono);font-size:9px;color:'+(r._mode==='core'?'var(--pu)':'var(--bl)')+';letter-spacing:.08em">T2 최종목표 (잔량)</span>'+
+          '<span style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.08em">T2 최종목표 (잔량)</span>'+
           '<span style="font-family:var(--mono);font-size:13px;color:var(--bl)">$'+r.target2+'</span>'+
           (r.rr2?'<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">'+r.rr2+'R</span>':'')+
+        '</div>'
+      :'')+
+      (r._mode==='core'&&r.target2&&ac!=='BLOCK'?
+        '<div style="margin-top:5px;padding:8px 10px;background:rgba(159,122,255,.06);border:1px solid rgba(159,122,255,.2);border-radius:8px">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+            '<span style="font-family:var(--mono);font-size:9px;color:var(--pu);letter-spacing:.08em">익절2 (25%)</span>'+
+            '<span style="font-family:var(--mono);font-size:13px;color:var(--pu);font-weight:700">$'+r.target2+'</span>'+
+          '</div>'+
+          '<div style="padding-top:5px;border-top:1px solid rgba(159,122,255,.15)">'+
+            '<div style="font-family:var(--mono);font-size:9px;color:var(--pu);margin-bottom:3px">잔량 (50%) 홀드 청산 조건</div>'+
+            '<div style="font-size:9px;color:var(--t2);line-height:1.6">'+
+              '• Stage 3 전환 (기관 분배 감지)<br>'+
+              '• RS + A/D 동시 하락 지속<br>'+
+              '• 매출 성장 2분기 연속 둔화<br>'+
+              '• 주봉 MA50 아래 2주 연속 종가'+
+            '</div>'+
+          '</div>'+
         '</div>'
       :'')+
       (r._mode==='momo'&&r.slippage_pct&&r.slippage_pct>0.5&&r.entry?
