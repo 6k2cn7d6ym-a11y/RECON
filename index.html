@@ -34,6 +34,30 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 .phase-AH{background:rgba(43,159,255,.12);color:var(--bl);border:1px solid rgba(43,159,255,.25)}
 .phase-CLOSED{background:rgba(45,74,96,.2);color:var(--t3);border:1px solid var(--b)}
 
+/* ─── 시장 국면 스테이지 ─── */
+.stage-card{margin:0 16px 10px;padding:12px 14px;border-radius:12px;border-left:3px solid var(--g);background:var(--bg1);border-top:1px solid var(--b);border-right:1px solid var(--b);border-bottom:1px solid var(--b)}
+.stage-row1{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.stage-name{font-family:var(--mono);font-size:16px;font-weight:700;letter-spacing:.04em}
+.stage-badge{font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:5px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1)}
+.stage-desc{font-family:var(--mono);font-size:10px;color:var(--t2);margin-bottom:5px}
+.stage-note{font-size:11px;color:var(--t);line-height:1.5;padding:6px 8px;background:rgba(255,255,255,.04);border-radius:7px}
+
+/* ─── 섹터 리더십 ─── */
+.sector-row{display:flex;align-items:center;padding:7px 10px;border-radius:8px;margin-bottom:4px;background:var(--bg1);border:1px solid var(--b)}
+.sector-rank{font-family:var(--mono);font-size:10px;color:var(--t3);width:18px;flex-shrink:0}
+.sector-name{font-size:11px;color:var(--t);flex:1;font-weight:600}
+.sector-etf{font-family:var(--mono);font-size:9px;color:var(--t3);margin-right:8px}
+.sector-ret{font-family:var(--mono);font-size:12px;font-weight:700;min-width:52px;text-align:right}
+.sector-note{font-size:9px;color:var(--t2);margin-top:3px;line-height:1.4}
+
+/* ─── 매크로 3종 ─── */
+.macro-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:4px}
+.macro-card{background:var(--bg1);border:1px solid var(--b);border-radius:10px;padding:10px 10px 8px}
+.macro-label{font-family:var(--mono);font-size:8px;color:var(--t2);letter-spacing:.1em;margin-bottom:3px}
+.macro-val{font-family:var(--mono);font-size:15px;font-weight:700;margin-bottom:2px}
+.macro-dir{font-size:9px;margin-bottom:4px}
+.macro-interp{font-size:9px;color:var(--t2);line-height:1.4}
+
 /* ─── 모드 Pills ─── */
 .mode-pills{display:flex;gap:6px;align-items:center}
 .mode-pill{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.06em;padding:4px 9px;border-radius:6px;border:1px solid transparent;background:none;color:var(--t3);cursor:pointer;transition:all .2s}
@@ -356,6 +380,31 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
       </div>
     </div>
     <div id="readinessSummary" style="margin:0 0 4px;font-family:var(--mono);font-size:10px;color:var(--t2);line-height:1.6;padding:8px 12px;background:var(--bg1);border:1px solid var(--b);border-radius:10px;display:none"></div>
+  </div>
+
+  <!-- 시장 국면 스테이지 -->
+  <div id="marketStageCard" class="stage-card" style="border-left-color:var(--t3)">
+    <div class="stage-row1">
+      <span class="stage-name" style="color:var(--t3)">시장 국면 분석 중...</span>
+    </div>
+  </div>
+
+  <!-- 섹터 리더십 -->
+  <div class="mkt-section" style="margin-top:0">
+    <div class="mkt-label">섹터 리더십 (20일)</div>
+    <div id="sectorLeaderEl" style="padding:0 0 4px">
+      <div style="text-align:center;padding:14px;color:var(--t3);font-family:var(--mono);font-size:11px">로딩 중...</div>
+    </div>
+  </div>
+
+  <!-- 매크로 3종 -->
+  <div class="mkt-section" style="margin-top:0">
+    <div class="mkt-label">매크로</div>
+    <div class="macro-grid" id="macroEl">
+      <div class="macro-card"><div class="macro-label">10Y 금리</div><div class="macro-val" style="color:var(--t3)">--</div></div>
+      <div class="macro-card"><div class="macro-label">달러 (DXY)</div><div class="macro-val" style="color:var(--t3)">--</div></div>
+      <div class="macro-card"><div class="macro-label">하이일드 (HYG)</div><div class="macro-val" style="color:var(--t3)">--</div></div>
+    </div>
   </div>
 
   <div style="height:10px"></div>
@@ -6740,11 +6789,149 @@ function renderModeReadiness(){
   }
 }
 
+
+// ── 시장 국면 스테이지 렌더링 ──
+function renderMarketStage(){
+  var el=document.getElementById('marketStageCard');
+  if(!el||!G.marketStageData) return;
+  var d=G.marketStageData;
+  var vixStr=G.vixLevel?' · VIX '+G.vixLevel+' ('+G.vixRegime+')':'';
+  el.style.borderLeftColor=d.color;
+  el.innerHTML=
+    '<div class="stage-row1">'+
+      '<span class="stage-name" style="color:'+d.color+'">'+d.emoji+' '+
+        ({'BEAR':'Bear Market','TRANSITION':'전환 구간','EARLY_BULL':'Early Bull','MID_BULL':'Mid Bull','LATE_BULL':'Late Bull'}[d.stage]||d.stage)+
+      '</span>'+
+      '<span class="stage-badge" style="color:'+d.color+';border-color:'+d.color.replace(')',', .3)').replace('var(','rgba(')+'">'+d.stage+'</span>'+
+    '</div>'+
+    '<div class="stage-desc">'+d.desc+vixStr+'</div>'+
+    '<div class="stage-note">'+d.note+'</div>';
+}
+
+// ── 섹터 리더십 (20일 수익률 랭킹) ──
+var SECTOR_INFO_MAP={
+  'XLK':{name:'테크·IT',    bull:'AI·클라우드 파도 강세 → CORE 후보 탐색 적기',    bear:'테크 매도 → 성장주 전반 주의'},
+  'XLF':{name:'금융',       bull:'경기 확장 확인 → 위험자산 전반 우호',             bear:'신용 우려 → 리스크오프 경계'},
+  'XLE':{name:'에너지',     bull:'원자재 강세 → 인플레 가속, 성장주 역풍 가능',    bear:'경기 둔화 선반영 → 인플레 완화'},
+  'XLV':{name:'헬스케어',   bull:'방어주 순환 → 시장 불안, 리스크오프 신호',       bear:'헬스케어 약세 → 경기 확장 신호'},
+  'XLI':{name:'산업재',     bull:'경기 확장 기대 → 리스크온, 성장주 우호',          bear:'경기 둔화 선반영 → 주의'},
+  'XLY':{name:'소비재',     bull:'소비 심리 강세 → 성장 환경 양호',                bear:'소비 위축 우려 → 경기 둔화 경계'},
+  'XLP':{name:'필수소비재', bull:'방어 순환 → 불확실성 회피 중, MOMO 주의',        bear:'방어주 약세 → 위험선호 확인'},
+  'XLC':{name:'커뮤니케이션',bull:'광고·미디어 성장 → 소비 심리 강세',             bear:'광고 수요 위축 → 경기 둔화 반영'},
+};
+
+async function loadSectorLeadership(){
+  var el=document.getElementById('sectorLeaderEl');
+  if(!el) return;
+  try{
+    var etfs=Object.keys(SECTOR_INFO_MAP);
+    var results=await Promise.all(etfs.map(function(etf){
+      return fetchWithProxy('https://query1.finance.yahoo.com/v8/finance/chart/'+etf+'?interval=1d&range=1mo')
+        .then(function(d){
+          var c=(d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close||[]).filter(Boolean);
+          return {etf:etf,ret:c.length>=21?(c[c.length-1]-c[c.length-21])/c[c.length-21]*100:null};
+        }).catch(function(){return {etf:etf,ret:null};});
+    }));
+    results=results.filter(function(r){return r.ret!==null;});
+    results.sort(function(a,b){return b.ret-a.ret;});
+    var n=results.length;
+    var html=results.map(function(r,i){
+      var info=SECTOR_INFO_MAP[r.etf]||{name:r.etf,bull:'',bear:''};
+      var isTop=i<2, isBot=i>=n-2;
+      var color=r.ret>0?'var(--g)':'var(--r)';
+      var retStr=(r.ret>=0?'+':'')+r.ret.toFixed(1)+'%';
+      var note=isTop&&info.bull?info.bull:isBot&&info.bear?info.bear:'';
+      var noteColor=isTop?'var(--g)':'var(--r)';
+      return '<div class="sector-row" style="border-color:'+(isTop?'rgba(0,240,122,.2)':isBot?'rgba(255,45,78,.2)':'var(--b)')+'">'+
+        '<div class="sector-rank">'+(i+1)+'</div>'+
+        '<div style="flex:1">'+
+          '<div style="display:flex;align-items:center;gap:6px">'+
+            '<span class="sector-name">'+info.name+'</span>'+
+            '<span class="sector-etf">'+r.etf+'</span>'+
+          '</div>'+
+          (note?'<div class="sector-note" style="color:'+noteColor+'">'+note+'</div>':'')+
+        '</div>'+
+        '<div class="sector-ret" style="color:'+color+'">'+retStr+'</div>'+
+      '</div>';
+    }).join('');
+    el.innerHTML=html;
+  }catch(e){
+    el.innerHTML='<div style="padding:12px;text-align:center;color:var(--t3);font-size:11px">섹터 데이터 로드 실패</div>';
+  }
+}
+
+// ── 매크로 3종: 금리·달러·크레딧 ──
+async function loadMacro(){
+  var el=document.getElementById('macroEl');
+  if(!el) return;
+  try{
+    var symbols=['^TNX','DX-Y.NYB','HYG'];
+    var results=await Promise.all(symbols.map(function(sym){
+      return fetchWithProxy('https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(sym)+'?interval=1d&range=1mo')
+        .then(function(d){
+          var c=(d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close||[]).filter(Boolean);
+          return {sym:sym,price:c.length?c[c.length-1]:null,ret20:c.length>=21?(c[c.length-1]-c[c.length-21])/c[c.length-21]*100:null};
+        }).catch(function(){return {sym:sym,price:null,ret20:null};});
+    }));
+
+    function macroCard(label,sym,priceStr,ret20,interpFn){
+      var dir=ret20===null?'':ret20>1?'↑ 상승 중':ret20<-1?'↓ 하락 중':'→ 보합';
+      var dirColor=ret20===null?'var(--t3)':ret20>1?'var(--r)':ret20<-1?'var(--g)':'var(--t2)';
+      var interp=interpFn(ret20);
+      return '<div class="macro-card">'+
+        '<div class="macro-label">'+label+'</div>'+
+        '<div class="macro-val" style="color:'+(priceStr?'var(--t)':'var(--t3)')+'">'+
+          (priceStr||'--')+
+        '</div>'+
+        '<div class="macro-dir" style="color:'+dirColor+'">'+dir+'</div>'+
+        '<div class="macro-interp">'+interp+'</div>'+
+      '</div>';
+    }
+
+    var tnx=results[0], dxy=results[1], hyg=results[2];
+
+    var tnxStr=tnx.price?tnx.price.toFixed(2)+'%':null;
+    var tnxInterp=function(ret){
+      if(tnx.price===null) return '--';
+      var lvl=tnx.price>5?'고금리 압박 강함 — 성장주 밸류에이션 부담':
+              tnx.price>4?'중립 금리 — 개별 종목 판단':
+                          '저금리 우호 — 성장주 순풍';
+      var dir=ret!==null?(ret>2?' · 추가 상승 주의':ret<-2?' · 완화 기대 ↑':''):'';
+      return lvl+dir;
+    };
+
+    var dxyStr=dxy.price?dxy.price.toFixed(1):null;
+    var dxyInterp=function(ret){
+      if(ret===null) return '--';
+      return ret>2?'달러 강세 — 신흥국·원자재 압박, 글로벌 성장주 역풍':
+             ret<-2?'달러 약세 — 위험자산 우호, 글로벌 성장주 순풍':
+                    '달러 중립 — 환율 영향 제한적';
+    };
+
+    var hygStr=hyg.price?'$'+hyg.price.toFixed(2):null;
+    var hygInterp=function(ret){
+      if(ret===null) return '--';
+      return ret>1?'크레딧 스프레드 축소 — 리스크온, 진입 우호':
+             ret<-1?'크레딧 스프레드 확대 — 리스크오프, 진입 경계':
+                    '크레딧 안정 — 시장 리스크 중립';
+    };
+
+    el.innerHTML=
+      macroCard('10Y 금리 (TNX)','^TNX',tnxStr,tnx.ret20,tnxInterp)+
+      macroCard('달러 (DXY)','DX-Y.NYB',dxyStr,dxy.ret20,dxyInterp)+
+      macroCard('하이일드 (HYG)','HYG',hygStr,hyg.ret20,hygInterp);
+  }catch(e){
+    if(el) el.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:12px;color:var(--t3);font-size:11px">매크로 데이터 로드 실패</div>';
+  }
+}
+
 function loadAllMarket(){
   loadMarketData();
   loadFearGreed();
   loadMovers();
   checkMarketRegime();
+  loadSectorLeadership();
+  loadMacro();
 }
 
 // SPY MA200 + 당일 방향 + 시장 국면 통합 판단
@@ -6758,7 +6945,45 @@ async function checkMarketRegime(){
     closes = closes.filter(function(v){return v&&v>0;});
     if(closes.length >= 200){
       var ma200 = closes.slice(-200).reduce(function(a,b){return a+b;},0)/200;
-      G.spyAboveMA200 = closes[closes.length-1] > ma200;
+      var spyPrice = closes[closes.length-1];
+      G.spyAboveMA200 = spyPrice > ma200;
+
+      // ── 시장 국면 스테이지 계산 ──
+      var pctVsMa200 = parseFloat(((spyPrice-ma200)/ma200*100).toFixed(1));
+      var ma200Slope = null;
+      if(closes.length>=220){
+        var ma200old=closes.slice(-220,-20).reduce(function(a,b){return a+b;},0)/200;
+        ma200Slope=parseFloat(((ma200-ma200old)/ma200old*100).toFixed(2));
+      }
+      var stage,stageColor,stageEmoji,stageDesc,stageNote;
+      if(!G.spyAboveMA200){
+        if(ma200Slope!==null&&ma200Slope<-0.5){
+          stage='BEAR'; stageColor='var(--r)'; stageEmoji='🐻';
+          stageDesc='SPY MA200 아래 · MA200 기울기 하락 ('+ma200Slope+'%)';
+          stageNote='MOMO 극도 선별 필수 · CORE 장기 저점 분할 매집 구간 · SWING 쇼트 위주';
+        } else {
+          stage='TRANSITION'; stageColor='#ff7744'; stageEmoji='⚠️';
+          stageDesc='SPY MA200 아래 · MA200 기울기 전환 중 — 반등 시도';
+          stageNote='MOMO 매우 주의 · CORE 조심스러운 분할 시작 가능 · 추세 확인 필요';
+        }
+      } else {
+        if(pctVsMa200<5){
+          stage='EARLY_BULL'; stageColor='#88dd44'; stageEmoji='🌱';
+          stageDesc='SPY MA200 최근 돌파 (+'+pctVsMa200+'%) — 초기 강세';
+          stageNote='CORE 진입 최적기 · SWING Type A/B 강세 · MOMO 선별적 진입';
+        } else if(pctVsMa200<15){
+          stage='MID_BULL'; stageColor='var(--g)'; stageEmoji='🐂';
+          stageDesc='SPY MA200 +'+pctVsMa200+'% · 추세 건재 — 중반 강세';
+          stageNote='MOMO/SWING/CORE 모두 우호 · 조정 시 매수 기회로 활용';
+        } else {
+          stage='LATE_BULL'; stageColor='var(--a)'; stageEmoji='🔥';
+          stageDesc='SPY MA200 +'+pctVsMa200+'% — 과열 구간 주의';
+          stageNote='MOMO T1 빠르게 · SWING 신규 진입 신중 · CORE 신규 제한 · 수익 보호 우선';
+        }
+      }
+      G.marketStage = stage;
+      G.marketStageData = {stage:stage,color:stageColor,emoji:stageEmoji,desc:stageDesc,note:stageNote};
+      renderMarketStage();
     }
   }catch(e){ /* MA200 실패는 조용히 무시 */ }
 
