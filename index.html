@@ -1297,8 +1297,9 @@ function updateClock(){
 var WORKER_URL = 'https://recon.miinonnnn.workers.dev';
 
 async function fetchWithProxy(url){
-  var bust = '&_t='+Date.now(); // 캐시 버스팅
-  var fetchP = fetch(WORKER_URL + '?url=' + encodeURIComponent(url) + bust, {cache:'no-store'})
+  // 캐시 버스팅 — Yahoo Finance URL 안에 포함해야 Worker/CF 캐시 우회 가능
+  var bustUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+  var fetchP = fetch(WORKER_URL + '?url=' + encodeURIComponent(bustUrl), {cache:'no-store'})
     .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
     .then(function(t){ return JSON.parse(t); });
   var timeoutP = new Promise(function(_,reject){
@@ -1985,6 +1986,23 @@ async function fetchYahooData(ticker){
 
       if(result.volume && result.avgVolume && result.avgVolume > 0)
         result.rvol = parseFloat((result.volume / result.avgVolume).toFixed(2));
+
+      // ── RVol 시간대 보정 (프리마켓) ──
+      // 프리마켓(4:00~9:30) 누적 거래량 → 하루 전체 예상 거래량 추정
+      // 프리마켓 거래량은 하루 평균의 약 10% → elapsed 보정으로 실질 RVol 산출
+      if(IS_PRE && result.volume && result.avgVolume > 0){
+        var etNowPre = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+        var preMinutes = (etNowPre.getHours()*60 + etNowPre.getMinutes()) - (4*60); // 4:00부터 경과 분
+        var preElapsed = Math.min(1, Math.max(0, preMinutes / 330)); // 0~1 (330분=4:00~9:30)
+        var fullDayElapsed = preElapsed * 0.10; // 프리마켓 ≈ 하루 거래량의 10%
+        if(fullDayElapsed > 0.005){
+          var projectedVolPre = result.volume / fullDayElapsed;
+          result.rvol_raw       = parseFloat((result.volume / result.avgVolume).toFixed(1));
+          result.rvol           = parseFloat((projectedVolPre / result.avgVolume).toFixed(1));
+          result.rvol_corrected = true;
+          result.rvol_elapsed   = Math.round(preElapsed * 100);
+        }
+      }
 
       // ── RVol 시간대 보정 (장중에만) ──
       // 장중 시간대별 누적 거래 비중으로 하루 예상 거래량 추정 후 RVol 재계산
@@ -3996,15 +4014,18 @@ function swingEngine(ydata, swingData){
     else if(ma20)                                    sEntry=parseFloat((ma20*1.01).toFixed(2));
     else                                             sEntry=parseFloat(price.toFixed(2));
 
-    // ── 손절 현실화: -3% → -5%(눌림목형) / -7%(이격형) ──
+    // ── 손절 계산: 진입가 기준 퍼센트 하한선 + MA20 보조 ──
+    // ⚠ MA60은 손절 기준에서 제외 — 진입가(sEntry)와 너무 멀어 손익비 왜곡
     var isPullback = swingData.pullback_to_ma20;
-    var stopMult   = isPullback ? 0.95 : 0.93; // -5% or -7%
-    var sStop = Math.min(
-      parseFloat((sEntry * stopMult).toFixed(2)),
-      ma20 ? parseFloat((ma20*0.97).toFixed(2)) : Infinity,
-      ma60 ? parseFloat((ma60*0.97).toFixed(2)) : Infinity
-    );
+    var stopMult   = isPullback ? 0.95 : 0.93; // -5%(눌림목형) / -7%(이격형)
+    // MA20 기반 손절: MA20*0.97 (단, sEntry의 stopMult보다 낮으면 stopMult가 하한선)
+    var ma20Stop = ma20 ? parseFloat((ma20*0.97).toFixed(2)) : null;
+    var sStop = parseFloat(Math.max(
+      sEntry * stopMult,                        // 하한선: 진입가 기준 퍼센트
+      ma20Stop !== null ? ma20Stop : 0          // MA20 아래 (더 타이트하면 우선)
+    ).toFixed(2));
     var sRisk = sEntry - sStop;
+    var stopPctActual = sRisk > 0 ? ((sStop - sEntry) / sEntry * 100).toFixed(0) : '-7';
     var sT1 = swingData.high10&&swingData.high10>sEntry*1.02
       ? parseFloat((swingData.high10*0.985).toFixed(2))
       : parseFloat((sEntry+sRisk*2).toFixed(2));
@@ -4016,7 +4037,7 @@ function swingEngine(ydata, swingData){
     var sRR  = sRisk>0 ? parseFloat(((sT1-sEntry)/sRisk).toFixed(1)) : null;
     var sRR2 = sRisk>0 ? parseFloat(((sT2-sEntry)/sRisk).toFixed(1)) : null;
     r.entry=sEntry; r.stop=sStop; r.target1=sT1; r.target2=sT2; r.rr=sRR; r.rr2=sRR2;
-    r.stop_type = isPullback ? '눌림목(-5%)' : '이격(-7%)';
+    r.stop_type = '손절('+stopPctActual+'%)';
   }
 
   // ── 점수 계산 ──
@@ -5585,7 +5606,7 @@ function cardHTML(r, mode){
       '</div>'+
       '<div class="levels" style="'+(r._mode!=='core'&&r.slippage_risk==='high'?'opacity:.7':'')+'">'+
         '<div class="lv lv-entry"><div class="lv-label">진입</div><div class="lv-val">'+(r.entry?'$'+r.entry:'--')+'</div></div>'+
-        '<div class="lv lv-stop"><div class="lv-label">'+(r._mode==='core'?(r.entry&&r.stop?'손절('+((r.stop-r.entry)/r.entry*100).toFixed(0)+'%)':'손절'):r.momo_type==='C'?'손절(-15%)':r.momo_type==='B'?'손절(-10%)':'손절(-7%)')+'</div><div class="lv-val">'+(r.stop?'$'+r.stop:'--')+'</div></div>'+
+        '<div class="lv lv-stop"><div class="lv-label">'+(r._mode==='core'?(r.entry&&r.stop?'손절('+((r.stop-r.entry)/r.entry*100).toFixed(0)+'%)':'손절'):r._mode==='swing'?(r.stop_type||'손절'):r.momo_type==='C'?'손절(-15%)':r.momo_type==='B'?'손절(-10%)':'손절(-7%)')+'</div><div class="lv-val">'+(r.stop?'$'+r.stop:'--')+'</div></div>'+
         '<div class="lv lv-t1"><div class="lv-label">'+(r._mode==='core'?'익절1 (25%)':'T1(50%)')+'</div><div class="lv-val">'+(st?'$'+st.t1:r.target1?'$'+r.target1:'--')+'</div></div>'+
         '<div class="lv lv-rr"><div class="lv-label">'+(r._mode==='core'?'익절1 R:R':'손익비')+'</div><div class="lv-val">'+(r.rr?r.rr+'R':'--')+'</div></div>'+
       '</div>'+
