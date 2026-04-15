@@ -1805,32 +1805,73 @@ async function loadMovers(){
   moversList.innerHTML =
     '<div style="text-align:center;padding:20px;color:var(--t3);font-size:12px;font-family:var(--mono)">로딩 중...</div>';
 
+  // 프리마켓 여부 판단
+  var _etNow = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+  var _etHM  = _etNow.getHours()*100 + _etNow.getMinutes();
+  var _isPre = _etHM >= 400 && _etHM < 930;
+
   try{
-    var d = await fetchWithProxy(
-      'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=15&formatted=false'
-    );
-    var quotes = d?.finance?.result?.[0]?.quotes || [];
-    if(!quotes.length){
-      // fallback to most_actives
-      var d2 = await fetchWithProxy(
-        'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=15&formatted=false'
+    var quotes = [];
+
+    if(_isPre){
+      // ── 프리마켓: day_gainers + most_actives 에서 preMarketChangePercent 기준 필터/정렬
+      var allPre = [];
+      try{
+        var dp1 = await fetchWithProxy(
+          'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&formatted=false'
+        );
+        allPre = allPre.concat(dp1?.finance?.result?.[0]?.quotes || []);
+      }catch(e1){}
+      try{
+        var dp2 = await fetchWithProxy(
+          'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=25&formatted=false'
+        );
+        allPre = allPre.concat(dp2?.finance?.result?.[0]?.quotes || []);
+      }catch(e2){}
+      // 중복 제거 + preMarket 3%+ 필터 + 정렬
+      var seen = {};
+      allPre = allPre.filter(function(q){
+        if(seen[q.symbol]) return false;
+        seen[q.symbol] = true;
+        return q.preMarketChangePercent && q.preMarketChangePercent > 3;
+      });
+      allPre.sort(function(a,b){ return (b.preMarketChangePercent||0)-(a.preMarketChangePercent||0); });
+      quotes = allPre;
+    } else {
+      // ── 정규장: 기존 day_gainers
+      var d = await fetchWithProxy(
+        'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=15&formatted=false'
       );
-      quotes = d2?.finance?.result?.[0]?.quotes || [];
+      quotes = d?.finance?.result?.[0]?.quotes || [];
+      if(!quotes.length){
+        var d2 = await fetchWithProxy(
+          'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=15&formatted=false'
+        );
+        quotes = d2?.finance?.result?.[0]?.quotes || [];
+      }
     }
 
     var _ml = document.getElementById('moversList');
     if(!quotes.length){
       if(_ml) _ml.innerHTML =
-        '<div class="empty-state"><div class="es-icon">◎</div>데이터 없음<br>장 마감 후에는 데이터가 제한될 수 있습니다</div>';
+        '<div class="empty-state"><div class="es-icon">◎</div>'+
+        (_isPre?'프리마켓 급등 후보 없음 (3%+ 기준)':'데이터 없음')+
+        '<br>'+(_isPre?'잠시 후 새로고침 해보세요':'장 마감 후에는 데이터가 제한될 수 있습니다')+'</div>';
       if(btn) btn.textContent = '↺ 새로고침';
       return;
     }
 
     var html = quotes.slice(0,12).map(function(q){
-      var chg = q.regularMarketChangePercent || 0;
+      var chg, price;
+      if(_isPre && q.preMarketChangePercent){
+        chg   = q.preMarketChangePercent;
+        price = (q.preMarketPrice || q.regularMarketPrice || 0).toFixed(2);
+      } else {
+        chg   = q.regularMarketChangePercent || 0;
+        price = (q.regularMarketPrice||0).toFixed(2);
+      }
       var chgStr = (chg>=0?'+':'')+chg.toFixed(1)+'%';
       var chgCls = chg>0?'var(--g)':chg<0?'var(--r)':'var(--t2)';
-      var price = (q.regularMarketPrice||0).toFixed(2);
       var name = (q.shortName||q.longName||q.symbol||'').substring(0,28);
       return '<div class="mover-row" onclick="quickScanToMomo(\''+q.symbol+'\')">' +
         '<div>'+
@@ -1838,7 +1879,7 @@ async function loadMovers(){
           '<div class="mover-name">'+name+'</div>'+
         '</div>'+
         '<div class="mover-right">'+
-          '<div class="mover-price">$'+price+'</div>'+
+          '<div class="mover-price">$'+price+(_isPre?'<span style="font-size:8px;color:var(--a);margin-left:3px">PRE</span>':'')+'</div>'+
           '<div class="mover-chg" style="color:'+chgCls+'">'+chgStr+'</div>'+
         '</div>'+
       '</div>';
@@ -4523,7 +4564,19 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     // ── 타입별 임계값 ──
     var gapMin   = preType === 'C' ? 25 : preType === 'B' ? 20 : 15;
     var floatMax = preType === 'C' ? 8  : preType === 'B' ? 15 : 25;
-    var rvolMin  = preType === 'C' ? 10 : preType === 'B' ? 5  : 3;
+    // rvolMin: 프리마켓이면 보정 여부로 분기
+    //  - 보정 성공(rvol_corrected): 0 (보정 자체가 필터 역할)
+    //  - 보정 실패(PRE + 미보정): 1.5x 안전망
+    //  - 정규장: 기존 기준 유지
+    var _etNowR = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+    var _etHMR  = _etNowR.getHours()*100 + _etNowR.getMinutes();
+    var _isPre  = _etHMR >= 400 && _etHMR < 930;
+    var rvolMin;
+    if(_isPre){
+      rvolMin = ydata.rvol_corrected ? 0 : 1.5;
+    } else {
+      rvolMin = preType === 'C' ? 10 : preType === 'B' ? 5 : 3;
+    }
 
     if(ydata.exchange && !validExchanges.includes((ydata.exchange||'').toUpperCase()))
       earlyBlock.push('OTC/비상장 ('+ydata.exchange+')');
