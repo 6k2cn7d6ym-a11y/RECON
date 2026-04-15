@@ -4006,23 +4006,34 @@ function swingEngine(ydata, swingData){
   }
 
   // ── 진입각 계산 ──
+  // 케이스 분류:
+  //  A) 눌림목형: price가 MA20 ±3% 이내 (pullback_to_ma20) → MA20*1.005
+  //  B) MA60 근접: price가 MA60 ±3% 이내 → MA60*1.005
+  //  C) 소이격형: MA20 +3~15% → 약간 눌림 기다리기 (price*0.99 = -1%)
+  //  D) 대이격형: MA20 +15% 초과 (갭업/브레이크아웃) → 현재가 기준 진입
+  //  E) MA20 없음 → 현재가 그대로
   if(price){
     var sEntry;
-    if(ma20&&swingData.pullback_to_ma20)             sEntry=parseFloat((ma20*1.005).toFixed(2));
-    else if(ma60&&Math.abs((price-ma60)/ma60)<=0.03) sEntry=parseFloat((ma60*1.005).toFixed(2));
-    else if(ma20&&price>ma20*1.05)                   sEntry=parseFloat((ma20*1.005).toFixed(2));
-    else if(ma20)                                    sEntry=parseFloat((ma20*1.01).toFixed(2));
-    else                                             sEntry=parseFloat(price.toFixed(2));
+    var ma20Gap = ma20 ? (price - ma20) / ma20 * 100 : null; // MA20 이격 %
+    if(ma20&&swingData.pullback_to_ma20)              sEntry=parseFloat((ma20*1.005).toFixed(2));  // A) 눌림목
+    else if(ma60&&Math.abs((price-ma60)/ma60)<=0.03)  sEntry=parseFloat((ma60*1.005).toFixed(2));  // B) MA60 근접
+    else if(ma20Gap!==null&&ma20Gap>15)               sEntry=parseFloat(price.toFixed(2));          // D) 대이격 → 현재가
+    else if(ma20Gap!==null&&ma20Gap>3)                sEntry=parseFloat((price*0.99).toFixed(2));   // C) 소이격 → -1% 눌림
+    else if(ma20)                                     sEntry=parseFloat((ma20*1.01).toFixed(2));    // E) MA20 근처
+    else                                              sEntry=parseFloat(price.toFixed(2));           // F) fallback
 
-    // ── 손절 계산: 진입가 기준 퍼센트 하한선 + MA20 보조 ──
-    // ⚠ MA60은 손절 기준에서 제외 — 진입가(sEntry)와 너무 멀어 손익비 왜곡
+    // ── 손절 계산: 케이스별 분기 ──
+    // A/B 눌림목형: -5% (타이트, MA20 바로 위에서 진입)
+    // C 소이격형:   -5% (진입가 기준)
+    // D 대이격형:   -7% (진입가 = 현재가 기준, MA20은 너무 멀어 무관)
     var isPullback = swingData.pullback_to_ma20;
-    var stopMult   = isPullback ? 0.95 : 0.93; // -5%(눌림목형) / -7%(이격형)
-    // MA20 기반 손절: MA20*0.97 (단, sEntry의 stopMult보다 낮으면 stopMult가 하한선)
-    var ma20Stop = ma20 ? parseFloat((ma20*0.97).toFixed(2)) : null;
+    var isLargeGap = ma20Gap !== null && ma20Gap > 15; // 대이격형 여부
+    var stopMult   = isPullback ? 0.95 : isLargeGap ? 0.93 : 0.95; // 눌림목-5% / 대이격-7% / 소이격-5%
+    // 눌림목/소이격: MA20*0.97도 참조 (단 진입가 기준보다 낮으면 진입가 기준 하한 적용)
+    var ma20Stop = (!isLargeGap && ma20) ? parseFloat((ma20*0.97).toFixed(2)) : null;
     var sStop = parseFloat(Math.max(
-      sEntry * stopMult,                        // 하한선: 진입가 기준 퍼센트
-      ma20Stop !== null ? ma20Stop : 0          // MA20 아래 (더 타이트하면 우선)
+      sEntry * stopMult,                          // 하한선: 항상 진입가 기준
+      ma20Stop !== null ? ma20Stop : 0            // 눌림목/소이격만 MA20 참조
     ).toFixed(2));
     var sRisk = sEntry - sStop;
     var stopPctActual = sRisk > 0 ? ((sStop - sEntry) / sEntry * 100).toFixed(0) : '-7';
