@@ -457,6 +457,30 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   <div class="cards-area"><div id="momoHistoryList"></div></div>
 </div>
 
+<!-- MOMO 스캐너 -->
+<div class="scroll" id="page-momo-screener" style="display:none">
+  <div style="padding:14px 16px 8px;display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--a);letter-spacing:.1em;margin-bottom:2px">MOMO 일괄 스캔</div>
+      <div style="font-size:11px;color:var(--t2)">프리마켓 급등 후보 → 엔진 필터 · Claude 0토큰</div>
+    </div>
+    <button onclick="runMomoScreener()" id="momoScreenerBtn"
+      style="background:var(--a);color:#000;border:none;border-radius:8px;padding:8px 14px;font-family:var(--sans);font-size:12px;font-weight:700;cursor:pointer">
+      스캔
+    </button>
+  </div>
+  <div id="momoScreenerStatus" style="display:none;margin:0 16px 8px;padding:10px 14px;background:var(--bg1);border:1px solid var(--b);border-radius:10px;font-family:var(--mono);font-size:11px;color:var(--t2)">
+    대기 중...
+  </div>
+  <div id="momoScreenerResults" style="padding:0 16px">
+    <div style="text-align:center;padding:30px 20px;color:var(--t3);font-size:12px;line-height:2">
+      <div style="font-size:24px;margin-bottom:8px;opacity:.3">◎</div>
+      스캔 버튼을 눌러 후보를 발굴하세요<br>
+      <span style="font-size:10px">프리마켓 급등 후보 → MOMO 엔진 필터 → ENTER/WATCH 표시</span>
+    </div>
+  </div>
+</div>
+
 
 <!-- MOMO 일지 -->
 <div class="scroll" id="page-momo-journal" style="display:none">
@@ -1223,13 +1247,13 @@ function switchSubTab(sub){
 
   G.activeSubTab = sub;
 
-  // 스크리너 탭: SWING 모드에서만 표시
+  // 스크리너 탭: SWING + MOMO 모드에서 표시
   var scrTab = document.getElementById('btabScreener');
-  if(scrTab) scrTab.style.display = G.currentMode === 'swing' ? '' : 'none';
+  if(scrTab) scrTab.style.display = (G.currentMode === 'swing' || G.currentMode === 'momo') ? '' : 'none';
 
   if(sub === 'history') renderHistory(G.currentMode);
   if(sub === 'journal') renderJournal(G.currentMode);
-  if(sub === 'screener') renderSwingAutoList();
+  if(sub === 'screener' && G.currentMode === 'swing') renderSwingAutoList();
   if(sub === 'search'){
     renderOpenPositions(G.currentMode);
     if(G.currentMode === 'momo') renderMomoTodayCards();
@@ -1605,6 +1629,188 @@ function goSwingSearch(ticker){
   switchSubTab('search');
   document.getElementById('swingInput').value = ticker;
   runModeScan('swing');
+}
+
+// ── MOMO 스캐너: 프리마켓 급등 후보 일괄 분석 ──
+async function runMomoScreener(){
+  var btn = document.getElementById('momoScreenerBtn');
+  var statusEl = document.getElementById('momoScreenerStatus');
+  var resultsEl = document.getElementById('momoScreenerResults');
+  if(btn){ btn.disabled = true; btn.textContent = '스캔 중...'; }
+  statusEl.style.display = 'block';
+  statusEl.textContent = '1/3 종목 리스트 수집 중...';
+  resultsEl.innerHTML = '';
+
+  try{
+    // ── 1단계: 종목 리스트 수집 ──
+    // kisGapList에 있는 ticker들 먼저 수집
+    var tickers = [];
+    var seen = {};
+
+    // kisGapList DOM에서 ticker 추출
+    var kisItems = document.querySelectorAll('#kisGapList [onclick*="quickScanToMomo"]');
+    kisItems.forEach(function(el){
+      var m = el.getAttribute('onclick').match(/quickScanToMomo\('([^']+)'\)/);
+      if(m && m[1] && !seen[m[1]]){ seen[m[1]] = true; tickers.push(m[1]); }
+    });
+
+    // kisGapList 비어있으면 Yahoo 프리마켓 데이터 직접 수집
+    if(!tickers.length){
+      statusEl.textContent = '1/3 Yahoo 프리마켓 데이터 수집 중...';
+      var _fbSources = ['day_gainers','most_actives'];
+      for(var _fi=0; _fi<_fbSources.length; _fi++){
+        try{
+          var _fd = await fetchWithProxy(
+            'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds='+_fbSources[_fi]+'&count=25&formatted=false'
+          );
+          var _qs = _fd?.finance?.result?.[0]?.quotes || [];
+          _qs.forEach(function(q){
+            if(q.symbol && !seen[q.symbol] && q.preMarketChangePercent && q.preMarketChangePercent > 3){
+              seen[q.symbol] = true; tickers.push(q.symbol);
+            }
+          });
+        }catch(e){}
+      }
+    }
+
+    if(!tickers.length){
+      statusEl.textContent = '프리마켓 급등 후보가 없습니다. 먼저 급등 후보를 새로고침해주세요.';
+      statusEl.style.display = 'block';
+      if(btn){ btn.disabled = false; btn.textContent = '스캔'; }
+      return;
+    }
+
+    statusEl.textContent = '2/3 '+tickers.length+'개 종목 MOMO 분석 중...';
+
+    // ── 2단계: 배치 분석 (5개씩, Claude API 호출 없이 엔진만) ──
+    var results = [];
+    var batchSize = 5;
+    for(var i = 0; i < tickers.length; i += batchSize){
+      var batch = tickers.slice(i, i + batchSize);
+      var pct = Math.round((i / tickers.length) * 100);
+      statusEl.textContent = '2/3 MOMO 분석 중... '+pct+'% ('+i+'/'+tickers.length+')';
+
+      var batchResults = await Promise.all(batch.map(async function(ticker){
+        try{
+          var ydata = await fetchYahooData(ticker);
+          if(!ydata || !ydata.price) return null;
+
+          // 하드 프리필터
+          var earlyBlock = [];
+          var validExchanges = ['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS','BTS','BATS','ARCA','PCX','NGM','NGE'];
+          var preGap   = ydata.gap_pct  || 0;
+          var preFloat = ydata.float_m;
+          var preRvol  = ydata.rvol     || 0;
+          var preType  = (preGap>=25 && preFloat!==null && preFloat<=8) ? 'C'
+                       : (preGap>=20 && preFloat!==null && preFloat<=15) ? 'B' : 'A';
+          var gapMin   = preType==='C'?25:preType==='B'?20:15;
+          var floatMax = preType==='C'?8 :preType==='B'?15:25;
+          var _etS = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+          var _hmS = _etS.getHours()*100+_etS.getMinutes();
+          var _isPreS = _hmS>=400&&_hmS<930;
+          var rvolMin = _isPreS ? (ydata.rvol_corrected?0:1.5) : (preType==='C'?10:preType==='B'?5:3);
+
+          if(ydata.exchange && !validExchanges.includes((ydata.exchange||'').toUpperCase()))
+            earlyBlock.push('OTC/비상장');
+          if(ydata.price && ydata.price < 0.5) earlyBlock.push('페니스탁');
+          if(ydata.gap_pct !== null && ydata.gap_pct < gapMin)
+            earlyBlock.push('갭업 부족 (+'+preGap.toFixed(1)+'%)');
+          if(preFloat !== null && preFloat > floatMax)
+            earlyBlock.push('Float 과다 ('+preFloat.toFixed(1)+'M)');
+          if(rvolMin > 0 && preRvol > 0 && preRvol < rvolMin)
+            earlyBlock.push('RVol 부족 ('+preRvol.toFixed(1)+'x)');
+          if(earlyBlock.length) return null; // BLOCK → 결과에서 제외
+
+          // MOMO 엔진 실행
+          var decision = momoEngine(ydata);
+          if(decision.action === 'BLOCK') return null;
+
+          return {
+            ticker:    ticker,
+            action:    decision.action,
+            score:     decision.score || 0,
+            price:     ydata.price,
+            gap_pct:   ydata.gap_pct,
+            rvol:      ydata.rvol,
+            float_m:   ydata.float_m,
+            momo_type: decision.momo_type || preType,
+            entry:     decision.entry,
+            stop:      decision.stop,
+            target1:   decision.target1,
+            rr:        decision.rr,
+            signals:   decision.signals || [],
+            warnings:  decision.warnings || [],
+            news:      ydata.newsText ? ydata.newsText.substring(0,80) : '',
+          };
+        }catch(e){ return null; }
+      }));
+
+      batchResults.forEach(function(r){ if(r) results.push(r); });
+      if(i + batchSize < tickers.length)
+        await new Promise(function(res){ setTimeout(res, 600); });
+    }
+
+    // ── 3단계: 정렬 및 렌더링 ──
+    statusEl.textContent = '3/3 결과 정리 중...';
+    results.sort(function(a,b){
+      if(a.action==='ENTER' && b.action!=='ENTER') return -1;
+      if(a.action!=='ENTER' && b.action==='ENTER') return 1;
+      return b.score - a.score;
+    });
+
+    statusEl.style.display = 'none';
+
+    if(!results.length){
+      resultsEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--t3);font-size:12px">ENTER/WATCH 조건 충족 종목 없음<br><span style="font-size:10px">전체 BLOCK — 시장 상황 또는 조건 확인 필요</span></div>';
+      if(btn){ btn.disabled=false; btn.textContent='스캔'; }
+      return;
+    }
+
+    var html = '<div style="margin-bottom:8px;font-family:var(--mono);font-size:10px;color:var(--t3)">'+
+      results.length+'개 통과 / '+tickers.length+'개 스캔</div>';
+
+    html += results.map(function(r){
+      var ac = r.action;
+      var acColor = ac==='ENTER'?'var(--g)':'var(--a)';
+      var acBg    = ac==='ENTER'?'rgba(0,240,122,.08)':'rgba(255,170,0,.08)';
+      var acBorder= ac==='ENTER'?'rgba(0,240,122,.25)':'rgba(255,170,0,.25)';
+      var gapStr  = r.gap_pct!==null?(r.gap_pct>=0?'+':'')+r.gap_pct.toFixed(1)+'%':'--';
+      var rvolStr = r.rvol ? r.rvol.toFixed(1)+'x' : '--';
+      var floatStr= r.float_m!==null ? r.float_m.toFixed(1)+'M' : '--';
+      return '<div onclick="quickScanToMomo(''+r.ticker+'')" style="'+
+        'padding:12px 14px;background:'+acBg+';border:1px solid '+acBorder+';'+
+        'border-radius:12px;margin-bottom:8px;cursor:pointer;transition:opacity .15s" '+
+        'onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+          '<div style="display:flex;align-items:center;gap:8px">'+
+            '<span style="font-family:var(--mono);font-size:16px;color:var(--t);letter-spacing:.06em">'+r.ticker+'</span>'+
+            '<span style="font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:4px;background:'+acBg+';color:'+acColor+';border:1px solid '+acBorder+'">'+ac+'</span>'+
+            '<span style="font-family:var(--mono);font-size:9px;color:var(--t3)">Type '+r.momo_type+'</span>'+
+          '</div>'+
+          '<span style="font-family:var(--mono);font-size:13px;color:var(--t)">$'+(r.price?r.price.toFixed(2):'--')+'</span>'+
+        '</div>'+
+        '<div style="display:flex;gap:10px;font-family:var(--mono);font-size:11px;margin-bottom:6px">'+
+          '<span style="color:var(--g)">'+gapStr+'</span>'+
+          '<span style="color:var(--t2)">RVol '+rvolStr+'</span>'+
+          '<span style="color:var(--t2)">Float '+floatStr+'</span>'+
+          '<span style="color:var(--pu)">'+r.score+'pt</span>'+
+        '</div>'+
+        (r.entry?'<div style="display:flex;gap:12px;font-family:var(--mono);font-size:11px;margin-bottom:5px">'+
+          '<span style="color:var(--bl)">진입 $'+r.entry+'</span>'+
+          '<span style="color:var(--r)">손절 $'+r.stop+'</span>'+
+          (r.rr?'<span style="color:var(--pu)">'+r.rr+'R</span>':'')+
+        '</div>':'')+
+        (r.signals.length?'<div style="font-size:10px;color:var(--t2);line-height:1.5">'+r.signals.slice(0,2).join(' · ')+'</div>':'')+
+        '<div style="font-size:9px;color:var(--t3);margin-top:3px">탭하여 상세 분석 →</div>'+
+      '</div>';
+    }).join('');
+
+    resultsEl.innerHTML = html;
+  }catch(e){
+    statusEl.textContent = '오류: ' + e.message;
+  }
+
+  if(btn){ btn.disabled=false; btn.textContent='스캔'; }
 }
 
 // ── Yahoo 스크리너 → swingEngine 파이프라인 ──
@@ -2133,7 +2339,7 @@ async function fetchYahooData(ticker){
         var hm  = etD.getHours()*100 + etD.getMinutes();
         var h=highs[idx], l=lows[idx];
         if(!h||!l) return;
-        if(hm>=400 && hm<930)  { pmH.push(h); pmL.push(l); }
+        if(hm>=430 && hm<930)  { pmH.push(h); pmL.push(l); }  // 4:30+ 부터만 집계 (4:00~4:30 초반 스파이크 제외)
         if(hm>=930 && hm<=935) { orbH.push(h); orbL.push(l); }
       });
       if(pmH.length){ result.pm_high=Math.max.apply(null,pmH); result.pm_low=Math.min.apply(null,pmL); }
@@ -2449,11 +2655,22 @@ async function fetchYahooData(ticker){
       }
     }
 
-    // 3. 뉴스 + 출처 기반 품질 판단
-    var d2 = await fetchWithProxy(
-      'https://query2.finance.yahoo.com/v1/finance/search?q='+ticker+'&newsCount=8&enableFuzzyQuery=false'
-    );
-    var newsArr = d2?.news || [];
+    // 3. 뉴스 + 출처 기반 품질 판단 (query1/query2 폴백)
+    var newsArr = [];
+    try{
+      var d2 = await fetchWithProxy(
+        'https://query1.finance.yahoo.com/v1/finance/search?q='+ticker+'&newsCount=8&enableFuzzyQuery=false'
+      );
+      newsArr = d2?.news || [];
+    }catch(e1){}
+    if(!newsArr.length){
+      try{
+        var d2b = await fetchWithProxy(
+          'https://query2.finance.yahoo.com/v1/finance/search?q='+ticker+'&newsCount=8&enableFuzzyQuery=false'
+        );
+        newsArr = d2b?.news || [];
+      }catch(e2){}
+    }
     // 신뢰 출처: Reuters, AP, Bloomberg, WSJ, CNBC, MarketWatch, Barron's, FT, SEC
     var trustedSources = ['reuters','associated press','bloomberg','wall street journal','wsj','cnbc','marketwatch','barron','financial times','ft.com','sec.gov','businesswire' /* 공식 IR */];
     // 노이즈 출처: PRNewswire, GlobeNewswire (보도자료), 소셜 기반
@@ -3565,6 +3782,7 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
       '"entry_timing":"pullback_entry"|"breakout_entry"|"reversal_entry"|"wait_pullback"|"avoid",'+
       '"entry_reason":"타입+핵심근거 한 줄",'+
       '"news_quality":"factual"|"vague"|"none",'+
+      '"news_one_line":"카탈리스트 핵심 한 줄 (없으면 null)",'+
       '"signals":["충족된 조건들"],"warnings":["주의사항"],"blockers":["차단이유"],"summary":"스윙 관점 한줄판단"}\n\n'+
       '알수없음 항목은 null 반환 가능. 레버리지 ETF는 Float/시총 기준 무시하고 기초자산 추세로만 판단.';
   }
@@ -3742,6 +3960,17 @@ function hardFilter(r, mode){
   }
 
   // 2. 시간대 필터
+  // ── 프리마켓 초반 (4:00~4:30) 경고 ──
+  // 유동성 극빈 + 감정적 과대반응 구간 — 진입각 신뢰도 낮음
+  if(G.marketPhase==='PRE'){
+    var _etW = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+    var _hmW = _etW.getHours()*100 + _etW.getMinutes();
+    if(_hmW >= 400 && _hmW < 430 && r.action==='ENTER'){
+      r.warnings=(r.warnings||[]);
+      r.warnings.push('[시간필터] 프리마켓 초반 (4:00~4:30) — 유동성 극빈, 감정적 과대반응 구간. 4:30 이후 재확인 권고');
+      return 'WATCH';
+    }
+  }
   if(G.marketPhase==='ORB' && r.action==='ENTER'){
     r.warnings=(r.warnings||[]);
     r.warnings.push('[시간필터] 9:30~9:35 ORB 형성 중 — 캔들 확정 후 재진입');
@@ -4828,6 +5057,8 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
         result.marketCap_b    = ydata.marketCap_b       || null;
         result.is_lev_etf     = decision.is_lev_etf     || false;
         result.lev_info       = decision.lev_info       || null;
+        // news_one_line: Claude JSON에서 이미 파싱됨, 없으면 null
+        result.news_one_line  = result.news_one_line    || null;
         // 엔진 warnings 추가 (VIX, 어닝 등)
         result.warnings = (result.warnings||[]).concat(
           (decision.warnings||[]).filter(function(w){
@@ -5655,7 +5886,13 @@ function cardHTML(r, mode){
 
     vwapHtml+
     (tags?'<div class="card-tags">'+tags+'</div>':'')+
-    (r.news?'<div class="news-line">'+r.news+'</div>':'')+
+    // 뉴스: news_one_line(Claude 요약) 우선, 없으면 raw 제목 표시
+    (r.news_one_line?
+      '<div class="news-line" style="background:rgba(255,255,255,.04);border-radius:7px;padding:7px 10px">'+
+        '<span style="font-size:9px;color:var(--t3);letter-spacing:.06em;margin-right:5px">카탈리스트</span>'+
+        r.news_one_line+
+      '</div>'
+    : r.news?'<div class="news-line">'+r.news+'</div>':'')+
 
     (function(){
       if(r._mode!=='core') return '';
