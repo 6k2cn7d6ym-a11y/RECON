@@ -1393,8 +1393,8 @@ async function kisAuthHeaders(trId){
 
 // ── 해외주식 등락률 순위 (프리마켓 갭업 스크리너) ──
 // tr_id: HHDFS76410000 — 미국 상승률 순위
+// excd: 정규장='NAS'/'NYS', 프리마켓(미국주간거래)='BAQ'/'BAY'
 async function fetchKisOverseasRanking(excd){
-  // excd: 'NAS'=나스닥, 'NYS'=뉴욕
   var headers = await kisAuthHeaders('HHDFS76410000');
   var data = await kisGet('/uapi/overseas-stock/v1/quotations/inquire-search', {
     AUTH:  '',
@@ -1403,16 +1403,16 @@ async function fetchKisOverseasRanking(excd){
   }, headers);
   if(data.rt_cd !== '0') throw new Error('KIS 해외 순위 오류: ' + (data.msg1||''));
   return (data.output2 || []).map(function(o){
-    var base  = parseFloat(o.base) || 0; // 전일 종가
-    var pric  = parseFloat(o.pric) || 0; // 현재가 (프리마켓 시간이면 프리마켓가)
-    var rate  = parseFloat(o.rate) || 0; // 등락률
-    var tvol  = parseFloat(o.tvol) || 0; // 거래량
+    var base  = parseFloat(o.base) || 0;
+    var pric  = parseFloat(o.pric) || 0;
+    var rate  = parseFloat(o.rate) || 0;
+    var tvol  = parseFloat(o.tvol) || 0;
     return {
       ticker:  (o.rsym||'').replace(/^[A-Z]\./, ''), // D.AAPL → AAPL
       name:    o.name || o.rsym || '',
       price:   pric,
       base:    base,
-      rate:    rate,   // % (전일종가 대비)
+      rate:    rate,
       volume:  tvol,
       excd:    excd,
     };
@@ -1446,8 +1446,64 @@ async function loadKisGappers(){
     var top = all.slice(0, 20);
 
     if(!top.length){
+      // ── KIS 빈 배열 → 프리마켓이면 Yahoo Finance 폴백 ──
+      var _etFb = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+      var _etHMFb = _etFb.getHours()*100 + _etFb.getMinutes();
+      var _isPreFb = _etHMFb >= 400 && _etHMFb < 930;
+      if(_isPreFb){
+        if(statusEl) statusEl.textContent = 'Yahoo 폴백';
+        try{
+          var _fbQuotes = [];
+          var _fbSources = ['day_gainers','most_actives'];
+          for(var _fi=0; _fi<_fbSources.length; _fi++){
+            try{
+              var _fd = await fetchWithProxy(
+                'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds='+_fbSources[_fi]+'&count=25&formatted=false'
+              );
+              _fbQuotes = _fbQuotes.concat(_fd?.finance?.result?.[0]?.quotes || []);
+            }catch(e){}
+          }
+          var _fbSeen = {};
+          _fbQuotes = _fbQuotes.filter(function(q){
+            if(_fbSeen[q.symbol]) return false;
+            _fbSeen[q.symbol] = true;
+            return q.preMarketChangePercent && q.preMarketChangePercent > 3;
+          });
+          _fbQuotes.sort(function(a,b){ return (b.preMarketChangePercent||0)-(a.preMarketChangePercent||0); });
+          if(_fbQuotes.length){
+            var _fbHtml = _fbQuotes.slice(0,15).map(function(q){
+              var chg = q.preMarketChangePercent;
+              var price = (q.preMarketPrice || q.regularMarketPrice || 0).toFixed(2);
+              var rateStr = (chg>=0?'+':'')+chg.toFixed(1)+'%';
+              var rateColor = chg>0?'var(--g)':chg<0?'var(--r)':'var(--t2)';
+              return '<div style="display:flex;align-items:center;justify-content:space-between;'+
+                'padding:9px 12px;background:var(--bg1);border:1px solid var(--b);border-radius:10px;cursor:pointer;transition:border-color .15s"'+
+                ' onclick="quickScanToMomo(''+q.symbol+'')"'+
+                ' onmouseenter="this.style.borderColor='rgba(255,170,0,.3)'"'+
+                ' onmouseleave="this.style.borderColor='var(--b)'"'+
+                '>'+
+                '<div>'+
+                  '<div style="font-family:var(--mono);font-size:14px;color:var(--t);letter-spacing:.06em">'+q.symbol+'</div>'+
+                  '<div style="font-size:10px;color:var(--t2);margin-top:1px">'+
+                    (q.shortName||q.longName||q.symbol||'').substring(0,22)+
+                    ' <span style="color:var(--a);font-size:8px">PRE</span>'+
+                  '</div>'+
+                '</div>'+
+                '<div style="text-align:right">'+
+                  '<div style="font-family:var(--mono);font-size:13px;color:var(--t)">$'+price+'</div>'+
+                  '<div style="font-family:var(--mono);font-size:12px;color:'+rateColor+';margin-top:1px">'+rateStr+'</div>'+
+                '</div>'+
+              '</div>';
+            }).join('');
+            document.getElementById('kisGapList').innerHTML = _fbHtml;
+            if(btn) btn.textContent = '↺ 새로고침';
+            return;
+          }
+        }catch(e3){}
+      }
       document.getElementById('kisGapList').innerHTML =
-        '<div style="text-align:center;padding:14px;color:var(--t3);font-size:11px;font-family:var(--mono)">데이터 없음 (장 전/후 또는 주말)</div>';
+        '<div style="text-align:center;padding:14px;color:var(--t3);font-size:11px;font-family:var(--mono)">'+
+        (_isPreFb ? '프리마켓 급등 후보 없음 (3%+ 기준)' : '데이터 없음 (장 전/후 또는 주말)')+'</div>';
       if(btn) btn.textContent = '↺ 새로고침';
       return;
     }
