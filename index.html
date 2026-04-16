@@ -1502,9 +1502,9 @@ async function loadKisGappers(){
               var rateColor = chg>0?'var(--g)':chg<0?'var(--r)':'var(--t2)';
               return '<div style="display:flex;align-items:center;justify-content:space-between;'+
                 'padding:9px 12px;background:var(--bg1);border:1px solid var(--b);border-radius:10px;cursor:pointer;transition:border-color .15s"'+
-                ' onclick="quickScanToMomo(''+q.symbol+'')"'+
-                ' onmouseenter="this.style.borderColor='rgba(255,170,0,.3)'"'+
-                ' onmouseleave="this.style.borderColor='var(--b)'"'+
+                ' onclick="quickScanToMomo(\''+q.symbol+'\')"'+
+                ' onmouseenter="this.style.borderColor=\'rgba(255,170,0,.3)\'"'+
+                ' onmouseleave="this.style.borderColor=\'var(--b)\'"'+
                 '>'+
                 '<div>'+
                   '<div style="font-family:var(--mono);font-size:14px;color:var(--t);letter-spacing:.06em">'+q.symbol+'</div>'+
@@ -1777,10 +1777,10 @@ async function runMomoScreener(){
       var gapStr  = r.gap_pct!==null?(r.gap_pct>=0?'+':'')+r.gap_pct.toFixed(1)+'%':'--';
       var rvolStr = r.rvol ? r.rvol.toFixed(1)+'x' : '--';
       var floatStr= r.float_m!==null ? r.float_m.toFixed(1)+'M' : '--';
-      return '<div onclick="quickScanToMomo(''+r.ticker+'')" style="'+
+      return '<div onclick="quickScanToMomo(\''+r.ticker+'\')" style="'+
         'padding:12px 14px;background:'+acBg+';border:1px solid '+acBorder+';'+
         'border-radius:12px;margin-bottom:8px;cursor:pointer;transition:opacity .15s" '+
-        'onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">' +
+        'onmouseenter="this.style.opacity=\'.8\'" onmouseleave="this.style.opacity=\'1\'">' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
           '<div style="display:flex;align-items:center;gap:8px">'+
             '<span style="font-family:var(--mono);font-size:16px;color:var(--t);letter-spacing:.06em">'+r.ticker+'</span>'+
@@ -5886,7 +5886,6 @@ function cardHTML(r, mode){
 
     vwapHtml+
     (tags?'<div class="card-tags">'+tags+'</div>':'')+
-    // 뉴스: news_one_line(Claude 요약) 우선, 없으면 raw 제목 표시
     (r.news_one_line?
       '<div class="news-line" style="background:rgba(255,255,255,.04);border-radius:7px;padding:7px 10px">'+
         '<span style="font-size:9px;color:var(--t3);letter-spacing:.06em;margin-right:5px">카탈리스트</span>'+
