@@ -264,10 +264,35 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 .key-input{background:var(--bg2);border:1px solid var(--b);border-radius:10px;padding:10px 12px;font-family:var(--mono);font-size:12px;color:var(--t);outline:none;width:100%;margin-top:6px;transition:border-color .2s}
 .key-input:focus{border-color:var(--bl)}
 .key-input::placeholder{color:var(--t3)}
-.ntfy-row{display:flex;gap:8px;margin-top:6px}
-.ntfy-input{flex:1;background:var(--bg2);border:1px solid var(--b);border-radius:10px;padding:10px 12px;font-family:var(--mono);font-size:12px;color:var(--t);outline:none;transition:border-color .2s}
-.ntfy-input:focus{border-color:var(--bl)}
-.ntfy-input::placeholder{color:var(--t3)}
+.btab.on.hold-tab{color:var(--gold)}
+.hold-panel-wrap{position:absolute;inset:0;background:var(--bg);z-index:50;display:flex;flex-direction:column;overflow:hidden}
+.hold-panel-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 20px}
+.hold-section-title{font-family:var(--mono);font-size:9px;color:var(--gold);letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.hold-section-title::after{content:'';flex:1;height:1px;background:var(--b)}
+.hold-input-row{display:flex;gap:6px;margin-bottom:8px}
+.hold-input{background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:9px 10px;font-family:var(--mono);font-size:13px;color:var(--t);outline:none;width:100%}
+.hold-input::placeholder{color:var(--t3)}
+.hold-input:focus{border-color:rgba(255,106,0,.4)}
+.hold-add-btn{width:100%;padding:10px;background:rgba(255,106,0,.08);border:1px solid rgba(255,106,0,.25);border-radius:10px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--gold);cursor:pointer;margin-bottom:14px}
+.hold-add-btn:active{background:rgba(255,106,0,.16)}
+.hold-list{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.hold-item{display:flex;align-items:center;justify-content:space-between;background:var(--bg1);border:1px solid var(--b);border-radius:10px;padding:10px 12px}
+.hold-item-left{display:flex;flex-direction:column;gap:2px}
+.hold-item-code{font-family:var(--mono);font-size:14px;color:var(--t)}
+.hold-item-name{font-size:10px;color:var(--t2)}
+.hold-item-right{display:flex;align-items:center;gap:10px}
+.hold-item-price{font-family:var(--mono);font-size:13px;color:var(--gold)}
+.hold-item-del{font-size:16px;color:var(--t3);cursor:pointer;padding:4px}
+.hold-item-del:active{color:var(--r)}
+.hold-empty{text-align:center;padding:30px;font-family:var(--mono);font-size:11px;color:var(--t3)}
+.hold-sync-row{display:flex;gap:8px;margin-bottom:8px}
+.hold-sync-btn{flex:1;padding:11px 6px;background:rgba(0,240,122,.06);border:1px solid rgba(0,240,122,.2);border-radius:10px;font-family:var(--mono);font-size:10px;color:var(--g);cursor:pointer;text-align:center}
+.hold-sync-btn:active{background:rgba(0,240,122,.12)}
+.hold-test-btn{flex:1;padding:11px 6px;background:rgba(255,106,0,.06);border:1px solid rgba(255,106,0,.2);border-radius:10px;font-family:var(--mono);font-size:10px;color:var(--gold);cursor:pointer;text-align:center}
+.hold-test-btn:active{background:rgba(255,106,0,.12)}
+.hold-status{font-family:var(--mono);font-size:10px;text-align:center;padding:8px;border-radius:8px;margin-top:6px}
+.hold-status.ok{color:var(--g);background:rgba(0,240,122,.06);border:1px solid rgba(0,240,122,.15)}
+.hold-status.err{color:var(--r);background:rgba(255,45,78,.06);border:1px solid rgba(255,45,78,.15)}
 .test-btn{background:var(--bl);color:#000;border:none;border-radius:10px;padding:10px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--sans);white-space:nowrap}
 
 /* ─── 빈 상태 ─── */
@@ -533,15 +558,8 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <input class="key-input" type="password" id="apiKeyInput" placeholder="sk-ant-..." oninput="save('apexKey',this.value)">
   </div>
 
-  <div class="sg-title">폰 알림 (ntfy)</div>
-  <div class="sg-row" style="flex-direction:column;align-items:flex-start">
-    <div><div class="sg-label">ntfy 채널</div><div class="sg-sub">앱에서 구독 후 입력</div></div>
-    <div class="ntfy-row">
-      <input class="ntfy-input" type="text" id="ntfyChInput" placeholder="내채널명-1234" oninput="save('ntfyCh',this.value)">
-      <button class="test-btn" onclick="testNtfy()">테스트</button>
-    </div>
-    <div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-top:6px" id="ntfyStatus"></div>
-  </div>
+  <div class="sg-title">알림 (텔레그램)</div>
+  <div class="sg-row"><div><div class="sg-label">텔레그램 알림</div><div class="sg-sub">보유 탭에서 설정</div></div><div style="font-family:var(--mono);font-size:11px;color:var(--t2)">보유 → 알림설정</div></div>
 
   <div class="sg-title">KIS API (프리마켓 스크리너)</div>
   <div class="sg-row" style="flex-direction:column;align-items:flex-start;gap:6px">
@@ -702,6 +720,35 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   </div>
 </div>
 
+
+<!-- ─── 보유 패널 ─── -->
+<div class="hold-panel-wrap" id="holdPanelWrap" style="display:none">
+  <div class="hold-panel-scroll">
+    <div class="hold-section-title">보유 종목 등록</div>
+    <div class="hold-input-row">
+      <input class="hold-input" id="holdTicker" placeholder="티커 (예: AAPL)" style="max-width:130px;text-transform:uppercase">
+      <input class="hold-input" id="holdName" placeholder="종목명">
+    </div>
+    <div class="hold-input-row">
+      <input class="hold-input" id="holdPrice" placeholder="진입가 ($)" inputmode="decimal">
+      <input class="hold-input" id="holdStop" placeholder="손절가" inputmode="decimal">
+    </div>
+    <div class="hold-input-row" style="margin-bottom:10px">
+      <input class="hold-input" id="holdT1" placeholder="T1 (절반매도)" inputmode="decimal">
+      <input class="hold-input" id="holdT2" placeholder="T2 (전량매도)" inputmode="decimal">
+    </div>
+    <button class="hold-add-btn" onclick="holdAdd()">+ 종목 추가</button>
+    <div class="hold-section-title">보유 중</div>
+    <div class="hold-list" id="holdList"><div class="hold-empty" id="holdEmpty">등록된 종목 없음</div></div>
+    <div class="hold-section-title">알림 설정</div>
+    <div class="hold-sync-row">
+      <button class="hold-sync-btn" onclick="holdSync()">☁️ 서버 저장<br><span style="font-size:9px;opacity:.7">5분마다 자동 감시</span></button>
+      <button class="hold-test-btn" onclick="holdTestTg()">📲 텔레그램<br><span style="font-size:9px;opacity:.7">연결 테스트</span></button>
+    </div>
+    <div id="holdStatus" style="display:none" class="hold-status"></div>
+  </div>
+</div>
+
 <!-- ─── 하단 탭 ─── -->
 <div class="bottom-tabs" id="bottomTabs">
   <button class="btab" id="btabSearch" onclick="switchSubTab('search')">
@@ -725,6 +772,10 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="3"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
     발굴
   </button>
+  <button class="btab hold-tab" id="btabHold" onclick="switchSubTab('hold')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+    보유
+  </button>
 </div>
 
 <script>
@@ -733,7 +784,6 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 // ═══════════════════════════════════════
 var G = {
   apiKey:   localStorage.getItem('apexKey') || '',
-  ntfy:     localStorage.getItem('ntfyCh') || '',
   alerts:   JSON.parse(localStorage.getItem('apexAlerts')||'[]'),
   unread:   0,
   history:  {},
@@ -1069,7 +1119,6 @@ function parseLeverageETF(longName, shortName){
 
 // 초기값 로드
 if(G.apiKey){ document.getElementById('apiKeyInput').value = G.apiKey; }
-if(G.ntfy)  { document.getElementById('ntfyChInput').value = G.ntfy; }
 
 // MOMO 오늘 카드 날짜 체크 — 날짜 바뀌면 히스토리로 이동
 (function(){
@@ -1093,7 +1142,7 @@ if(G.ntfy)  { document.getElementById('ntfyChInput').value = G.ntfy; }
 // 모드/탭 전환
 // ═══════════════════════════════════════
 var ALL_MODES = ['recon','momo','swing','core'];
-var ALL_SUBS  = ['search','history','journal','settings','screener'];
+var ALL_SUBS  = ['search','history','journal','settings','screener','hold'];
 
 function switchMode(mode){
   if(mode !== 'recon' && G.currentMode === mode){
@@ -1241,11 +1290,16 @@ function switchSubTab(sub){
   if(target) target.style.display = '';
 
   document.querySelectorAll('.btab').forEach(function(b){ b.classList.remove('on'); });
-  var map = { search:'btabSearch', history:'btabHistory', journal:'btabJournal', settings:'btabSettings', screener:'btabScreener' };
+  var map = { search:'btabSearch', history:'btabHistory', journal:'btabJournal', settings:'btabSettings', screener:'btabScreener', hold:'btabHold' };
   var btn = document.getElementById(map[sub]);
   if(btn) btn.classList.add('on');
 
   G.activeSubTab = sub;
+
+  // 보유 패널 표시/숨김
+  var holdPanel = document.getElementById('holdPanelWrap');
+  if(holdPanel) holdPanel.style.display = (sub === 'hold') ? '' : 'none';
+  if(sub === 'hold') holdRender();
 
   // 스크리너 탭: SWING + MOMO 모드에서 표시
   var scrTab = document.getElementById('btabScreener');
@@ -1475,25 +1529,18 @@ async function loadKisGappers(){
       var _etHMFb = _etFb.getHours()*100 + _etFb.getMinutes();
       var _isPreFb = _etHMFb >= 400 && _etHMFb < 930;
       if(_isPreFb){
-        if(statusEl) statusEl.textContent = 'Yahoo 폴백';
+        if(statusEl) statusEl.textContent = 'Webull 폴백';
         try{
-          var _fbQuotes = [];
-          var _fbSources = ['day_gainers','most_actives'];
-          for(var _fi=0; _fi<_fbSources.length; _fi++){
-            try{
-              var _fd = await fetchWithProxy(
-                'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds='+_fbSources[_fi]+'&count=25&formatted=false'
-              );
-              _fbQuotes = _fbQuotes.concat(_fd?.finance?.result?.[0]?.quotes || []);
-            }catch(e){}
-          }
+          var _wbResp = await fetch(WORKER_URL + '/us-premarket?pageSize=50');
+          var _wbData = await _wbResp.json();
+          var _fbQuotes = (_wbData.quotes || []).filter(function(q){ return q.preMarketChangePercent > 3; });
+          _fbQuotes.sort(function(a,b){ return (b.preMarketChangePercent||0)-(a.preMarketChangePercent||0); });
           var _fbSeen = {};
           _fbQuotes = _fbQuotes.filter(function(q){
             if(_fbSeen[q.symbol]) return false;
             _fbSeen[q.symbol] = true;
-            return q.preMarketChangePercent && q.preMarketChangePercent > 3;
+            return true;
           });
-          _fbQuotes.sort(function(a,b){ return (b.preMarketChangePercent||0)-(a.preMarketChangePercent||0); });
           if(_fbQuotes.length){
             var _fbHtml = _fbQuotes.slice(0,15).map(function(q){
               var chg = q.preMarketChangePercent;
@@ -1654,23 +1701,18 @@ async function runMomoScreener(){
       if(m && m[1] && !seen[m[1]]){ seen[m[1]] = true; tickers.push(m[1]); }
     });
 
-    // kisGapList 비어있으면 Yahoo 프리마켓 데이터 직접 수집
+    // kisGapList 비어있으면 Webull 프리마켓 데이터 수집
     if(!tickers.length){
-      statusEl.textContent = '1/3 Yahoo 프리마켓 데이터 수집 중...';
-      var _fbSources = ['day_gainers','most_actives'];
-      for(var _fi=0; _fi<_fbSources.length; _fi++){
-        try{
-          var _fd = await fetchWithProxy(
-            'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds='+_fbSources[_fi]+'&count=25&formatted=false'
-          );
-          var _qs = _fd?.finance?.result?.[0]?.quotes || [];
-          _qs.forEach(function(q){
-            if(q.symbol && !seen[q.symbol] && q.preMarketChangePercent && q.preMarketChangePercent > 3){
-              seen[q.symbol] = true; tickers.push(q.symbol);
-            }
-          });
-        }catch(e){}
-      }
+      statusEl.textContent = '1/3 Webull 프리마켓 데이터 수집 중...';
+      try{
+        var _wbResp = await fetch(WORKER_URL + '/us-premarket?pageSize=50');
+        var _wbData = await _wbResp.json();
+        (_wbData.quotes || []).forEach(function(q){
+          if(q.symbol && !seen[q.symbol] && q.preMarketChangePercent && q.preMarketChangePercent > 3){
+            seen[q.symbol] = true; tickers.push(q.symbol);
+          }
+        });
+      }catch(e){}
     }
 
     if(!tickers.length){
@@ -2076,41 +2118,23 @@ async function loadMovers(){
     var quotes = [];
 
     if(_isPre){
-      // ── 프리마켓: day_gainers + most_actives 에서 preMarketChangePercent 기준 필터/정렬
-      var allPre = [];
+      // ── 프리마켓: Webull 프리마켓 급등주 (Worker 프록시)
       try{
-        var dp1 = await fetchWithProxy(
-          'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&formatted=false'
-        );
-        allPre = allPre.concat(dp1?.finance?.result?.[0]?.quotes || []);
+        var wbResp = await fetch(WORKER_URL + '/us-premarket?pageSize=50');
+        var wbData = await wbResp.json();
+        var allPre = wbData.quotes || [];
+        // 3%+ 필터 + 정렬
+        allPre = allPre.filter(function(q){ return q.preMarketChangePercent && q.preMarketChangePercent > 3; });
+        allPre.sort(function(a,b){ return (b.preMarketChangePercent||0)-(a.preMarketChangePercent||0); });
+        quotes = allPre;
       }catch(e1){}
-      try{
-        var dp2 = await fetchWithProxy(
-          'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=25&formatted=false'
-        );
-        allPre = allPre.concat(dp2?.finance?.result?.[0]?.quotes || []);
-      }catch(e2){}
-      // 중복 제거 + preMarket 3%+ 필터 + 정렬
-      var seen = {};
-      allPre = allPre.filter(function(q){
-        if(seen[q.symbol]) return false;
-        seen[q.symbol] = true;
-        return q.preMarketChangePercent && q.preMarketChangePercent > 3;
-      });
-      allPre.sort(function(a,b){ return (b.preMarketChangePercent||0)-(a.preMarketChangePercent||0); });
-      quotes = allPre;
     } else {
-      // ── 정규장: 기존 day_gainers
-      var d = await fetchWithProxy(
-        'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=15&formatted=false'
-      );
-      quotes = d?.finance?.result?.[0]?.quotes || [];
-      if(!quotes.length){
-        var d2 = await fetchWithProxy(
-          'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=15&formatted=false'
-        );
-        quotes = d2?.finance?.result?.[0]?.quotes || [];
-      }
+      // ── 정규장: Webull 1일 급등주
+      try{
+        var wbResp2 = await fetch(WORKER_URL + '/us-premarket?pageSize=30');
+        var wbData2 = await wbResp2.json();
+        quotes = (wbData2.quotes || []).filter(function(q){ return q.regularMarketChangePercent > 3; });
+      }catch(e2){}
     }
 
     var _ml = document.getElementById('moversList');
@@ -6046,6 +6070,8 @@ function cardHTML(r, mode){
     '<div style="margin-top:10px;display:flex;gap:6px">'+
       '<button onclick="openTradeLog(\''+r.ticker+'\','+(r.price||0)+')" '+
         'style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">+ 거래 기록</button>'+
+      '<button onclick="holdAutoAdd(\''+r.ticker+'\',\''+((r.displayName||r.shortName||r.ticker||'').replace(/'/g,''))+'\','+(r.entry||0)+','+(r.stop||0)+','+(st?st.t1:0)+','+(st?st.t2:0)+')" '+
+        'style="flex:1;background:rgba(255,106,0,.08);border:1px solid rgba(255,106,0,.25);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--gold);cursor:pointer">📌 보유</button>'+
       (function(){ var _m=mode||r._mode; return _m&&_m!=='recon' ? '<button onclick="rerunCard(\''+r.ticker+'\',\''+_m+'\')" style="flex:1;background:none;border:1px solid var(--b);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--t2);cursor:pointer">↻ 재분석</button>' : ''; })()+
       (r._mode==='core'&&r.action!=='BLOCK'?
         '<button onclick="copyCoreClaude(event,\''+r.ticker+'\','+(r.accum_score||0)+','+(r.timing_score||0)+','+(r.fund_score||0)+',\''+r.fund_gate+'\',\''+encodeURIComponent(r.core_stage||'--')+'\',\''+encodeURIComponent(r.entry_trigger||'NONE')+'\')" '+
@@ -6527,8 +6553,7 @@ function fireAlert(r, type){
   updateBadge();
   if(typeof Notification!=='undefined'&&Notification.permission==='granted')
     new Notification('RECON '+r.ticker,{body:alert.msg+(alert.detail?'\n'+alert.detail:'')});
-  var ch=localStorage.getItem('ntfyCh')||'';
-  if(ch) sendNtfy(ch,r.ticker,type,alert.msg+(alert.detail?'\n'+alert.detail:''));
+  sendTelegram(r.ticker,type,alert.msg+(alert.detail?'\n'+alert.detail:''));
 }
 
 function toggleAlerts(){
@@ -6556,20 +6581,145 @@ function updateBadge(){ document.getElementById('notifDot').style.display=G.unre
 function clearAlerts(){ G.alerts=[]; G.unread=0; localStorage.removeItem('apexAlerts'); updateBadge(); renderAlerts(); }
 
 // ═══════════════════════════════════════
-// ntfy + 소리
+// 텔레그램 + 소리
 // ═══════════════════════════════════════
-async function testNtfy(){
-  var ch=document.getElementById('ntfyChInput').value.trim();
-  if(!ch){ document.getElementById('ntfyStatus').textContent='채널명을 입력하세요'; return; }
-  localStorage.setItem('ntfyCh',ch); G.ntfy=ch;
-  document.getElementById('ntfyStatus').textContent='전송 중...';
-  await sendNtfy(ch,'TEST','ENTER','RECON 연결 테스트 ✓');
-  document.getElementById('ntfyStatus').textContent='✓ 전송 완료 — ntfy.sh/'+ch;
+async function sendTelegram(ticker,type,msg){
+  try{ await fetch(WORKER_URL+'/recon/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker,type,msg})}); }catch(e){}
 }
-async function sendNtfy(ch,ticker,type,msg){
-  var prio=type==='ENTER'||type==='STOP'?'5':'3';
-  var tags=type==='ENTER'?'rocket':type==='BLOCK'?'no_entry':'bell';
-  try{ await fetch('https://ntfy.sh/'+ch,{method:'POST',headers:{'Title':'RECON '+ticker,'Priority':prio,'Tags':tags,'Content-Type':'text/plain; charset=utf-8'},body:msg}); }catch(e){}
+
+// ═══════════════════════════════════════
+// 보유 종목 관리
+// ═══════════════════════════════════════
+var holdPositions = [];
+
+function holdGetKey() {
+  return 'holdPositions_' + (G.currentMode || 'momo');
+}
+
+function holdLoad() {
+  holdPositions = JSON.parse(localStorage.getItem(holdGetKey()) || '[]');
+}
+
+function holdRender() {
+  holdLoad();
+  var list = document.getElementById('holdList');
+  if (!list) return;
+  if (!holdPositions.length) {
+    list.innerHTML = '<div class="hold-empty">등록된 종목 없음</div>';
+    return;
+  }
+  list.innerHTML = holdPositions.map(function(p, i) {
+    var levelsHtml = '';
+    if(p.stop || p.t1 || p.t2){
+      levelsHtml = '<div style="display:flex;gap:6px;margin-top:4px;font-family:var(--mono);font-size:9px">' +
+        (p.stop ? '<span style="color:var(--r)">S $'+Number(p.stop).toFixed(2)+'</span>' : '') +
+        (p.t1 ? '<span style="color:var(--g)">T1 $'+Number(p.t1).toFixed(2)+'</span>' : '') +
+        (p.t2 ? '<span style="color:var(--bl)">T2 $'+Number(p.t2).toFixed(2)+'</span>' : '') +
+      '</div>';
+    }
+    return '<div class="hold-item">' +
+      '<div class="hold-item-left">' +
+        '<span class="hold-item-code">' + p.ticker + '</span>' +
+        '<span class="hold-item-name">' + (p.name || '─') + '</span>' +
+        levelsHtml +
+      '</div>' +
+      '<div class="hold-item-right">' +
+        '<span class="hold-item-price">' + (p.entryPrice ? '$' + Number(p.entryPrice).toFixed(2) : '─') + '</span>' +
+        '<span class="hold-item-del" onclick="holdDelete(' + i + ')">✕</span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function holdAdd() {
+  var ticker = (document.getElementById('holdTicker') || {}).value || '';
+  var name   = (document.getElementById('holdName')   || {}).value || '';
+  var price  = (document.getElementById('holdPrice')  || {}).value || '';
+  ticker = ticker.trim().toUpperCase();
+  if (!ticker) { alert('티커를 입력하세요'); return; }
+  holdLoad();
+  var stop = (document.getElementById('holdStop') || {}).value || '';
+  var t1   = (document.getElementById('holdT1')   || {}).value || '';
+  var t2   = (document.getElementById('holdT2')   || {}).value || '';
+  holdPositions.push({
+    ticker: ticker, name: name.trim(), entryPrice: parseFloat(price) || 0,
+    stop: parseFloat(stop) || 0, t1: parseFloat(t1) || 0, t2: parseFloat(t2) || 0
+  });
+  localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
+  document.getElementById('holdTicker').value = '';
+  document.getElementById('holdName').value   = '';
+  document.getElementById('holdPrice').value  = '';
+  document.getElementById('holdStop').value   = '';
+  document.getElementById('holdT1').value     = '';
+  document.getElementById('holdT2').value     = '';
+  holdRender();
+}
+
+function holdAutoAdd(ticker, name, entry, stop, t1, t2) {
+  holdLoad();
+  // 이미 등록된 종목이면 업데이트
+  var idx = holdPositions.findIndex(function(p){ return p.ticker === ticker; });
+  var pos = { ticker: ticker, name: name, entryPrice: entry || 0, stop: stop || 0, t1: t1 || 0, t2: t2 || 0 };
+  if(idx >= 0) { holdPositions[idx] = pos; }
+  else { holdPositions.push(pos); }
+  localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
+  holdRender();
+  showToast(ticker + ' 보유 등록 완료');
+  // 자동 서버 동기화
+  holdSync();
+}
+
+function holdDelete(i) {
+  holdLoad();
+  holdPositions.splice(i, 1);
+  localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
+  holdRender();
+}
+
+function holdShowStatus(msg, type) {
+  var el = document.getElementById('holdStatus');
+  if (!el) return;
+  el.style.display = '';
+  el.className = 'hold-status ' + (type || '');
+  el.textContent = msg;
+}
+
+async function holdSync() {
+  holdLoad();
+  holdShowStatus('저장 중...', '');
+  try {
+    var resp = await fetch(WORKER_URL + '/recon/positions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode:      G.currentMode || 'momo',
+        positions: holdPositions,
+      })
+    });
+    var data = await resp.json();
+    if (data.ok) {
+      holdShowStatus('✅ 저장 완료 — 장 중 5분마다 자동 감시', 'ok');
+    } else {
+      throw new Error('저장 실패');
+    }
+  } catch(e) {
+    holdShowStatus('❌ 저장 실패: ' + e.message, 'err');
+  }
+}
+
+async function holdTestTg() {
+  holdShowStatus('전송 중...', '');
+  try {
+    var resp = await fetch(WORKER_URL + '/recon/test-telegram');
+    var data = await resp.json();
+    if (data.ok) {
+      holdShowStatus('✅ 텔레그램 전송 성공', 'ok');
+    } else {
+      throw new Error('전송 실패');
+    }
+  } catch(e) {
+    holdShowStatus('❌ 실패: ' + e.message, 'err');
+  }
 }
 
 function playBeep(success){
@@ -6589,7 +6739,7 @@ function playBeep(success){
 // ═══════════════════════════════════════
 // 설정 + 유틸
 // ═══════════════════════════════════════
-function save(k,v){ localStorage.setItem(k,v); if(k==='apexKey'){ G.apiKey=v; updateKeyStatus(); } if(k==='ntfyCh') G.ntfy=v; }
+function save(k,v){ localStorage.setItem(k,v); if(k==='apexKey'){ G.apiKey=v; updateKeyStatus(); } }
 
 function cycle(id,vals){
   var el=document.getElementById(id);
@@ -7452,6 +7602,7 @@ setInterval(checkMarketRegime, 3*60*1000);
 
 
 
+holdRender();
 </script>
 </body>
 </html>
