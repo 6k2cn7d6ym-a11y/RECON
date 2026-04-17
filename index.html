@@ -2182,7 +2182,8 @@ async function loadMovers(){
 }
 
 function quickScanToMomo(ticker){
-  switchMode('momo');
+  if(G.currentMode !== 'momo') switchMode('momo');
+  switchSubTab('search');
   document.getElementById('momoInput').value = ticker;
   runModeScan('momo');
 }
