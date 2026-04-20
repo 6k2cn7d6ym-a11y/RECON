@@ -265,7 +265,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 .key-input:focus{border-color:var(--bl)}
 .key-input::placeholder{color:var(--t3)}
 .btab.on.hold-tab{color:var(--gold)}
-.hold-panel-wrap{position:absolute;inset:0;background:var(--bg);z-index:50;display:flex;flex-direction:column;overflow:hidden}
+.hold-panel-wrap{position:absolute;top:0;left:0;right:0;bottom:56px;background:var(--bg);z-index:50;display:flex;flex-direction:column;overflow:hidden}
 .hold-panel-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 20px}
 .hold-section-title{font-family:var(--mono);font-size:9px;color:var(--gold);letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
 .hold-section-title::after{content:'';flex:1;height:1px;background:var(--b)}
@@ -723,6 +723,10 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 
 <!-- ─── 보유 패널 ─── -->
 <div class="hold-panel-wrap" id="holdPanelWrap" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px 0">
+    <div style="font-family:var(--mono);font-size:11px;color:var(--gold);letter-spacing:.1em">보유 종목 관리</div>
+    <button onclick="switchSubTab('search')" style="background:none;border:1px solid var(--b);border-radius:8px;padding:5px 12px;font-family:var(--mono);font-size:11px;color:var(--t2);cursor:pointer">← 돌아가기</button>
+  </div>
   <div class="hold-panel-scroll">
     <div class="hold-section-title">보유 종목 등록</div>
     <div class="hold-input-row">
@@ -5534,9 +5538,8 @@ function calcSellTargets(r){
     if(lvls2.length>0) t2=parseFloat(lvls2[0].toFixed(2));
     else t2=parseFloat((t1*1.15).toFixed(2)); // 레벨 없으면 T1+15%
   } else {
-    // SWING/CORE — 52주 고가 사용 가능
-    if(r.fiftyTwoWeekHigh&&r.fiftyTwoWeekHigh>entry&&r.fiftyTwoWeekHigh<t2base)
-      t2=parseFloat(r.fiftyTwoWeekHigh.toFixed(2));
+    // SWING/CORE — 52주 고가는 참고만, T2 캡하지 않음 (엔진 T2와 불일치 방지)
+    t2 = t2base;
   }
   var parabolic=r.price&&entry&&r.price>entry*1.30;
   var overextended=r.pm_high&&r.price&&r.price>r.pm_high*1.15;
@@ -6071,7 +6074,7 @@ function cardHTML(r, mode){
     '<div style="margin-top:10px;display:flex;gap:6px">'+
       '<button onclick="openTradeLog(\''+r.ticker+'\','+(r.price||0)+')" '+
         'style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">+ 거래 기록</button>'+
-      '<button onclick="holdAutoAdd(\''+r.ticker+'\',\''+((r.displayName||r.shortName||r.ticker||'').replace(/'/g,''))+'\','+(r.entry||0)+','+(r.stop||0)+','+(st?st.t1:0)+','+(st?st.t2:0)+')" '+
+      '<button onclick="holdAutoAdd(\''+r.ticker+'\',\''+((r.displayName||r.shortName||r.ticker||'').replace(/'/g,''))+'\','+(r.entry||0)+','+(r.stop||0)+','+(r.target1||st&&st.t1||0)+','+(r.target2||st&&st.t2||0)+')" '+
         'style="flex:1;background:rgba(255,106,0,.08);border:1px solid rgba(255,106,0,.25);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--gold);cursor:pointer">📌 보유</button>'+
       (function(){ var _m=mode||r._mode; return _m&&_m!=='recon' ? '<button onclick="rerunCard(\''+r.ticker+'\',\''+_m+'\')" style="flex:1;background:none;border:1px solid var(--b);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--t2);cursor:pointer">↻ 재분석</button>' : ''; })()+
       (r._mode==='core'&&r.action!=='BLOCK'?
@@ -6675,6 +6678,7 @@ function holdDelete(i) {
   holdPositions.splice(i, 1);
   localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
   holdRender();
+  holdSync();
 }
 
 function holdShowStatus(msg, type) {
