@@ -1228,12 +1228,25 @@ function rescanOpenTrade(mode, ticker){
 function closeOpenPosition(tradeId){
   var trade = G_journal.find(function(t){return t.id===tradeId;});
   if(!trade) return;
-  if(!confirm(trade.ticker+' 포지션을 보유아님으로 처리할까요? (일지에서 삭제됩니다)')) return;
+  if(!confirm(trade.ticker+' 포지션을 보유아님으로 처리할까요? (일지 + 감시 모두 제거)')) return;
   G_journal = G_journal.filter(function(t){return t.id!==tradeId;});
   localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+
+  // 감시 포지션(holdPositions)에서도 같은 ticker 제거 + Worker KV 동기화
+  try {
+    holdLoad();
+    var before = holdPositions.length;
+    holdPositions = holdPositions.filter(function(p){ return p.ticker !== trade.ticker; });
+    if(holdPositions.length < before){
+      localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
+      if(typeof holdRender === 'function') holdRender();
+      if(typeof holdSync === 'function') holdSync(); // Worker KV 동기화 → 크론 알림 중단
+    }
+  } catch(e){ console.warn('holdPositions 정리 실패:', e); }
+
   renderOpenPositions(G.currentMode);
   renderJournal(G.currentMode);
-  showToast(trade.ticker+' 포지션 제거됨');
+  showToast(trade.ticker+' 포지션 및 감시 제거됨');
 }
 
 // ═══════════════════════════════════════
@@ -2312,6 +2325,25 @@ async function fetchYahooData(ticker){
 
       if(IS_PRE){ result.price = latestClose || meta.regularMarketPrice || null; result.preMarketPrice = result.price; }
       else { result.price = meta.regularMarketPrice || latestClose || null; }
+
+      // ── Webull 프리마켓 가격 override (Yahoo 1분봉이 stale한 경우 대응) ──
+      // 프리마켓 중에만, Worker의 /us-quote 엔드포인트로 Webull 실시간 가격 덮어쓰기
+      if(IS_PRE){
+        try {
+          var _wbQuoteResp = await fetch(WORKER_URL + '/us-quote?symbol=' + encodeURIComponent(ticker));
+          if(_wbQuoteResp.ok){
+            var _wbQuote = await _wbQuoteResp.json();
+            var _wbPmPrice = parseFloat(_wbQuote.preMarketPrice || 0);
+            if(_wbPmPrice > 0){
+              result.price = _wbPmPrice;
+              result.preMarketPrice = _wbPmPrice;
+              result._priceSource = 'webull';
+              // prevClose도 Webull 값이 있으면 백업으로 채움
+              if(!result.prevClose && _wbQuote.preClose > 0) result.prevClose = parseFloat(_wbQuote.preClose);
+            }
+          }
+        } catch(e){ /* Webull 실패 시 Yahoo 값 유지 */ }
+      }
 
       if(result.price && result.prevClose && result.prevClose > 0)
         result.gap_pct = (result.price - result.prevClose) / result.prevClose * 100;
@@ -6387,6 +6419,21 @@ function confirmPartialSell(tradeId){
     trade.pnl=parseFloat(trade.sells.reduce(function(s,sv){return s+sv.pnl;},0).toFixed(2));
   }
   localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+
+  // 전량 매도 시 감시 포지션(holdPositions)도 정리 + Worker KV 동기화
+  if(trade.remaining<=0){
+    try {
+      holdLoad();
+      var _before = holdPositions.length;
+      holdPositions = holdPositions.filter(function(p){ return p.ticker !== trade.ticker; });
+      if(holdPositions.length < _before){
+        localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
+        if(typeof holdRender === 'function') holdRender();
+        if(typeof holdSync === 'function') holdSync(); // Worker KV 동기화 → 크론 알림 중단
+      }
+    } catch(e){ console.warn('holdPositions 정리 실패:', e); }
+  }
+
   document.querySelector('div[style*=fixed]')?.remove();
   var msg=trade.ticker+' '+qty+'주 매도 · '+(pnl>=0?'+':'')+pnl+'$';
   if(trade.remaining<=0) msg+=' · 포지션 종료'; else msg+=' · 잔여 '+trade.remaining+'주';
