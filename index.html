@@ -4237,6 +4237,45 @@ function momoEngine(ydata){
   else if(ph==='LATE')  {score-=10; r.warnings.push('11:30+ 페이드 구간 — 포지션 절반 이하');}
   else if(ph==='ORB')   {r.warnings.push('ORB 형성 중 — 캔들 확정 후 진입');}
 
+  // ── PRE 전용 셋업 감지 (v5: 승률 중심 셋업 엔진) ──
+  // PRE는 VWAP/차트셋업이 약하므로 PM 구조 기반 셋업으로 대체 점수 부여
+  // 셋업 하나 이상 감지되어야 PRE에서 ENTER 허용됨 (방향성 확보)
+  var preSetup = null;
+  if(ph==='PRE' && price){
+    var _pmH = ydata.pm_high, _pmL = ydata.pm_low, _vw = ydata.vwap;
+
+    // ① BREAKOUT — PM 고점 재돌파 (최강 셋업)
+    if(_pmH && price >= _pmH * 0.995){
+      preSetup = {type:'BREAKOUT', bonus:15, reason:'PM 고점 $'+_pmH.toFixed(2)+' 돌파'};
+    }
+    // ② RANGE_BREAK — PM 박스권 돌파 (consolidation 후 상방 이탈)
+    else if(ydata.pm_consolidation && _pmH && price >= _pmH * 0.99){
+      preSetup = {type:'RANGE_BREAK', bonus:13, reason:'PM 응집 박스 $'+_pmH.toFixed(2)+' 상단 돌파'};
+    }
+    // ③ PULLBACK — PM 되돌림 후 반등 (Jim 주력 셋업)
+    //    pm_high 형성 + 5% 이상 눌림 + pm_low 대비 3%+ 반등 + (VWAP 근처 또는 위)
+    else if(_pmH && _pmL && price < _pmH * 0.95 && price > _pmL * 1.03 && (!_vw || price >= _vw * 0.98)){
+      var pullbackPct = ((_pmH - price) / _pmH * 100).toFixed(1);
+      var bouncePct = ((price - _pmL) / _pmL * 100).toFixed(1);
+      preSetup = {type:'PULLBACK', bonus:12, reason:'PM 고점에서 -'+pullbackPct+'% 눌림 → 저점에서 +'+bouncePct+'% 반등'};
+    }
+    // ④ MOMENTUM_CHASE — 강한 갭 + 뉴스 + 가격 유지 (모멘텀 추격)
+    else if(gap >= 50 && ydata.newsText && ydata.newsText.trim() !== '' && _vw && price >= _vw){
+      preSetup = {type:'MOMENTUM', bonus:10, reason:'갭 +'+gap.toFixed(0)+'% + 뉴스 촉매 + VWAP 위 유지'};
+    }
+    // ⑤ REVERSAL — PM 저점에서 강한 반등 (폭등 초입 포착)
+    else if(_pmH && _pmL && price > _pmL * 1.08 && (_pmH - _pmL) / _pmL > 0.15){
+      var revBounce = ((price - _pmL) / _pmL * 100).toFixed(1);
+      preSetup = {type:'REVERSAL', bonus:8, reason:'PM 저점 $'+_pmL.toFixed(2)+' 대비 +'+revBounce+'% 반등 (스윕 가능성)'};
+    }
+
+    if(preSetup){
+      score += preSetup.bonus;
+      r.signals.push('[PRE셋업-'+preSetup.type+'] '+preSetup.reason);
+      r._preSetup = preSetup.type;
+    }
+  }
+
   // ORB 덤프 패턴
   if(ph!=='PRE' && ydata.orb_low && price && price<ydata.orb_low*0.99){
     score-=20; r.warnings.push('ORB 저점 이탈 — 덤프 패턴');
@@ -4249,26 +4288,58 @@ function momoEngine(ydata){
 
   r.score = Math.min(100, Math.max(0, score));
 
-  // ── 4. 액션 결정 (타입별 점수 기준) ──
-  var enterThreshold = momoType==='C' ? 60 : momoType==='B' ? 55 : 50; // A=50, B=55, C=60
-  var blockThreshold = momoType==='C' ? 35 : momoType==='B' ? 35 : 30; // A는 30 이하만 BLOCK
+  // ── 4. 액션 결정 (타입별 점수 기준, PRE는 셋업 기반 완화) ──
+  //    PRE는 차트셋업/VWAP 점수 구조적 손실 보정하여 기준 하향
+  var enterThreshold, blockThreshold;
+  if(ph==='PRE'){
+    enterThreshold = momoType==='C' ? 48 : momoType==='B' ? 42 : 38; // PRE: A=38, B=42, C=48
+    blockThreshold = momoType==='C' ? 28 : momoType==='B' ? 25 : 22; // PRE: 블록 기준도 하향
+  } else {
+    enterThreshold = momoType==='C' ? 60 : momoType==='B' ? 55 : 50; // 정규장: A=50, B=55, C=60
+    blockThreshold = momoType==='C' ? 35 : momoType==='B' ? 35 : 30;
+  }
+
   if(r.score < blockThreshold){
     r.action='BLOCK'; r.blockers.push('[Type '+momoType+'] 점수 '+r.score+'pt — 기준 '+blockThreshold+'pt 미달');
   } else if(r.score < enterThreshold){
     r.action='WATCH';
   } else {
-    // 점수 충족 → 트리거 체크
+    // 점수 충족 → 트리거 체크 (PRE와 정규장 분리)
     var triggerOk=true, triggerFail=[];
-    if(spyDown)                                              {triggerOk=false; triggerFail.push('SPY 하락 — WATCH만 허용');}
-    if(ph==='ORB')                                           {triggerOk=false; triggerFail.push('ORB 형성 중');}
-    if(ph==='LATE')                                          {triggerOk=false; triggerFail.push('페이드 구간 — 포지션 절반 이하');}
-    if(ydata.vwap&&price&&price<ydata.vwap*0.98)             {triggerOk=false; triggerFail.push('VWAP 아래');}
-    if(ph!=='PRE'&&ydata.orb_low&&price&&price<ydata.orb_low*0.99){triggerOk=false; triggerFail.push('ORB 저점 이탈');}
-    if(ydata.breakout_wick_strength==='failed')              {triggerOk=false; triggerFail.push('돌파 캔들 실패');}
+
+    if(ph==='PRE'){
+      // PRE: 셋업 기반 + 최소한의 안전망만
+      if(!preSetup){
+        triggerOk=false;
+        triggerFail.push('PRE 셋업 없음 — 진입 방향성 불확실 (고점돌파/되돌림반등/박스돌파/모멘텀 중 하나 필요)');
+      }
+      // SPY 폭락만 차단 (일반 하락은 PRE에서 허용 — 프리장은 종종 디커플링)
+      if(G.spyIntraday && G.spyIntraday.trend === 'crash'){
+        triggerOk=false; triggerFail.push('SPY 폭락 (-1.5%+) — PRE도 전체 차단');
+      }
+    } else {
+      // 정규장: 기존 트리거 체크 그대로
+      if(spyDown)                                                  {triggerOk=false; triggerFail.push('SPY 하락 — WATCH만 허용');}
+      if(ph==='ORB')                                               {triggerOk=false; triggerFail.push('ORB 형성 중');}
+      if(ph==='LATE')                                              {triggerOk=false; triggerFail.push('페이드 구간 — 포지션 절반 이하');}
+      if(ydata.vwap&&price&&price<ydata.vwap*0.98)                 {triggerOk=false; triggerFail.push('VWAP 아래');}
+      if(ydata.orb_low&&price&&price<ydata.orb_low*0.99)           {triggerOk=false; triggerFail.push('ORB 저점 이탈');}
+      if(ydata.breakout_wick_strength==='failed')                  {triggerOk=false; triggerFail.push('돌파 캔들 실패');}
+    }
 
     if(triggerOk){
       r.action='ENTER';
-      if(ydata.cons_breakout_confirmed)        r.entry_timing='consolidation_break';
+      // PRE 셋업 타입을 entry_timing에 반영 (없으면 기존 로직)
+      if(preSetup){
+        r.entry_timing = {
+          BREAKOUT:     'pm_breakout',
+          RANGE_BREAK:  'consolidation_break',
+          PULLBACK:     'pullback_reversal',
+          MOMENTUM:     'momentum_chase',
+          REVERSAL:     'reversal'
+        }[preSetup.type] || 'breakout';
+      }
+      else if(ydata.cons_breakout_confirmed)        r.entry_timing='consolidation_break';
       else if(ydata.resistance_breakout_confirmed) r.entry_timing='breakout';
       else if(ydata.vwap&&price&&Math.abs(price-ydata.vwap)/ydata.vwap<0.01) r.entry_timing='vwap_bounce';
       else r.entry_timing='breakout';
