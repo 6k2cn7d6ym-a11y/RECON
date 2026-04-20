@@ -4846,6 +4846,19 @@ function makeExplainPrompt(mode, ticker, ydata, decision){
     '【엔진 판단】 '+actionLabel+' ('+keyMetrics+')\n'+
     '【주요 시그널】 '+(decision.signals||[]).slice(0,3).join(', ')||'없음'+'\n'+
     '【뉴스/공시】 '+newsText+'\n\n'+
+    '【news_quality 판단 기준 — 엄격히 적용】\n'+
+    '  • factual: 검증 가능한 구체적 팩트 뉴스. 다음 중 하나라도 포함되면 factual:\n'+
+    '    - FDA 승인/거부/임상 결과 (Phase I/II/III, trial data, topline results, endpoint met)\n'+
+    '    - M&A/인수합병 ($X billion deal, to acquire, merger agreement, buyout)\n'+
+    '    - 실적 발표 (earnings beat/miss, revenue, EPS, guidance raise/cut)\n'+
+    '    - 정부 정책/행정명령 (executive order, government contract, tariff, sanctions)\n'+
+    '    - 제품 출시/계약/파트너십 (launch, partnership with [named company], contract awarded)\n'+
+    '    - 특허/승인 (patent granted, EMA approval, breakthrough designation)\n'+
+    '    - 분할/배당/자사주 (stock split, dividend, buyback)\n'+
+    '    - 경영진/구조조정 (CEO, layoffs, restructuring announcement)\n'+
+    '  • vague: 모호한 PR성 뉴스. "could", "may", "expected to", "explores", "considers", "plans to evaluate", "presents at conference" 등만 있는 경우\n'+
+    '  • none: 관련 뉴스가 없거나 종목과 무관한 내용만 있는 경우\n'+
+    '  ⚠ 뉴스 텍스트에 위 factual 키워드가 하나라도 있으면 반드시 "factual"로 판단할 것.\n\n'+
     '다음 JSON만 반환 (설명 없이, 마크다운 없이):\n'+
     '{"news_quality":"factual|vague|none",'+
     '"catalyst":"strong|moderate|weak|none",'+
@@ -5215,6 +5228,42 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       result.news_one_line = explain.news_one_line || null;
       result.risk_note     = explain.risk_note     || null;
       result.trade_note    = explain.trade_note    || null;
+
+      // ── news_quality 키워드 기반 fallback (v5) ──
+      // Claude가 'none' 반환해도 텍스트에 명백한 팩트 키워드 있으면 factual로 상향
+      // 프롬프트 개선에도 불구하고 AI가 보수적일 때 대비
+      if((result.news_quality === 'none' || result.news_quality === 'vague') && ydata.newsText){
+        var _nt = ydata.newsText.toLowerCase();
+        var _factualPatterns = [
+          // FDA/임상
+          /fda[- ]approv/i, /fda[- ]cleared/i, /phase\s*(i{1,3}|1|2|3)/i,
+          /clinical trial/i, /trial data/i, /topline result/i, /endpoint met/i,
+          /breakthrough designation/i, /orphan drug/i,
+          // M&A
+          /to acquire/i, /acquisition of/i, /merger agreement/i, /\$\d+\s*(billion|b)\s+deal/i,
+          /\$\d+\s*billion/i, /buyout/i, /take private/i, /definitive agreement/i,
+          // 실적
+          /earnings beat/i, /earnings miss/i, /q[1-4]\s+(revenue|earnings|results)/i,
+          /guidance raise/i, /raises.*guidance/i, /cuts.*guidance/i,
+          // 정부/정책
+          /executive order/i, /government contract/i, /department of defense/i,
+          /doe\s+(grant|award|contract)/i, /white house/i, /presidential/i,
+          // 제품/계약
+          /launches\s+/i, /partnership with/i, /strategic partnership/i,
+          /contract award/i, /awarded a contract/i,
+          // 기타
+          /patent granted/i, /patent approval/i, /stock split/i, /reverse split/i,
+          /dividend/i, /buyback/i, /share repurchase/i,
+          /ceo\s+(resign|step|appoint)/i, /layoffs/i, /restructur/i
+        ];
+        var _matched = _factualPatterns.find(function(p){ return p.test(_nt); });
+        if(_matched){
+          result.news_quality = 'factual';
+          result._newsQualityAutoUpgrade = true;
+          result.signals = (result.signals||[]).concat(['[뉴스] 팩트 키워드 자동 감지: '+_matched.source.replace(/\\/g,'')]);
+        }
+      }
+
       // news_quality 기반 P&D 후처리 (엔진이 못잡은 케이스)
       if(result.news_quality==='none' && result.gap_pct && result.gap_pct > 50 && result.action==='ENTER'){
         result.action='WATCH';
