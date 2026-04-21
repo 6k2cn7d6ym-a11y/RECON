@@ -2126,49 +2126,73 @@ async function loadMovers(){
   moversList.innerHTML =
     '<div style="text-align:center;padding:20px;color:var(--t3);font-size:12px;font-family:var(--mono)">로딩 중...</div>';
 
-  // 프리마켓 여부 판단
+  // ── 세션 판단 (ET 기준) ──
+  //   PRE:     04:00 ~ 09:30
+  //   REGULAR: 09:30 ~ 16:00
+  //   AFTER:   16:00 ~ 20:00
+  //   CLOSED:  그 외 (주말/야간) → 정규장 마지막 데이터 표시 시도
   var _etNow = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
   var _etHM  = _etNow.getHours()*100 + _etNow.getMinutes();
-  var _isPre = _etHM >= 400 && _etHM < 930;
+  var _day   = _etNow.getDay();
+  var _isWeekday = _day >= 1 && _day <= 5;
+  var _session;
+  if(_isWeekday && _etHM >= 400 && _etHM < 930)       _session = 'pre';
+  else if(_isWeekday && _etHM >= 930 && _etHM < 1600) _session = 'regular';
+  else if(_isWeekday && _etHM >= 1600 && _etHM < 2000) _session = 'after';
+  else _session = 'closed';
 
   try{
     var quotes = [];
+    var effectiveSession = _session === 'closed' ? 'regular' : _session;
 
-    if(_isPre){
-      // ── 프리마켓: Webull 프리마켓 급등주 (Worker 프록시)
-      try{
-        var wbResp = await fetch(WORKER_URL + '/us-premarket?pageSize=50');
-        var wbData = await wbResp.json();
-        var allPre = wbData.quotes || [];
-        // 3%+ 필터 + 정렬
-        allPre = allPre.filter(function(q){ return q.preMarketChangePercent && q.preMarketChangePercent > 3; });
-        allPre.sort(function(a,b){ return (b.preMarketChangePercent||0)-(a.preMarketChangePercent||0); });
-        quotes = allPre;
-      }catch(e1){}
-    } else {
-      // ── 정규장: Webull 1일 급등주
-      try{
-        var wbResp2 = await fetch(WORKER_URL + '/us-premarket?pageSize=30');
-        var wbData2 = await wbResp2.json();
-        quotes = (wbData2.quotes || []).filter(function(q){ return q.regularMarketChangePercent > 3; });
-      }catch(e2){}
-    }
+    try{
+      var wbResp = await fetch(WORKER_URL + '/us-movers?session='+effectiveSession+'&pageSize=50');
+      var wbData = await wbResp.json();
+      var allQ = wbData.quotes || [];
+
+      // 세션별 변동률 기준 필터 (3%+)
+      allQ = allQ.filter(function(q){
+        if(effectiveSession === 'pre')   return q.preMarketChangePercent   && q.preMarketChangePercent   > 3;
+        if(effectiveSession === 'after') return q.afterMarketChangePercent && q.afterMarketChangePercent > 3;
+        return q.regularMarketChangePercent && q.regularMarketChangePercent > 3;
+      });
+
+      // 세션별 변동률로 정렬
+      allQ.sort(function(a,b){
+        var aChg, bChg;
+        if(effectiveSession === 'pre')        { aChg=a.preMarketChangePercent;   bChg=b.preMarketChangePercent; }
+        else if(effectiveSession === 'after') { aChg=a.afterMarketChangePercent; bChg=b.afterMarketChangePercent; }
+        else                                   { aChg=a.regularMarketChangePercent; bChg=b.regularMarketChangePercent; }
+        return (bChg||0) - (aChg||0);
+      });
+
+      quotes = allQ;
+    }catch(e1){ console.warn('movers fetch failed:', e1); }
 
     var _ml = document.getElementById('moversList');
     if(!quotes.length){
+      var _emptyMsg;
+      if(_session === 'closed')      _emptyMsg = '장 마감 — 최근 정규장 급등주 데이터 없음';
+      else if(_session === 'pre')    _emptyMsg = '프리마켓 급등 후보 없음 (3%+ 기준)';
+      else if(_session === 'regular')_emptyMsg = '정규장 급등 후보 없음 (3%+ 기준)';
+      else if(_session === 'after')  _emptyMsg = '애프터마켓 급등 후보 없음 (3%+ 기준)';
       if(_ml) _ml.innerHTML =
-        '<div class="empty-state"><div class="es-icon">◎</div>'+
-        (_isPre?'프리마켓 급등 후보 없음 (3%+ 기준)':'데이터 없음')+
-        '<br>'+(_isPre?'잠시 후 새로고침 해보세요':'장 마감 후에는 데이터가 제한될 수 있습니다')+'</div>';
+        '<div class="empty-state"><div class="es-icon">◎</div>'+_emptyMsg+
+        '<br>잠시 후 새로고침 해보세요</div>';
       if(btn) btn.textContent = '↺ 새로고침';
       return;
     }
 
     var html = quotes.slice(0,12).map(function(q){
-      var chg, price;
-      if(_isPre && q.preMarketChangePercent){
+      var chg, price, sessionBadge = '';
+      if(effectiveSession === 'pre' && q.preMarketChangePercent){
         chg   = q.preMarketChangePercent;
         price = (q.preMarketPrice || q.regularMarketPrice || 0).toFixed(2);
+        sessionBadge = '<span style="font-size:8px;color:var(--a);margin-left:3px">PRE</span>';
+      } else if(effectiveSession === 'after' && q.afterMarketChangePercent){
+        chg   = q.afterMarketChangePercent;
+        price = (q.afterMarketPrice || q.regularMarketPrice || 0).toFixed(2);
+        sessionBadge = '<span style="font-size:8px;color:var(--bl);margin-left:3px">AH</span>';
       } else {
         chg   = q.regularMarketChangePercent || 0;
         price = (q.regularMarketPrice||0).toFixed(2);
@@ -2182,7 +2206,7 @@ async function loadMovers(){
           '<div class="mover-name">'+name+'</div>'+
         '</div>'+
         '<div class="mover-right">'+
-          '<div class="mover-price">$'+price+(_isPre?'<span style="font-size:8px;color:var(--a);margin-left:3px">PRE</span>':'')+'</div>'+
+          '<div class="mover-price">$'+price+sessionBadge+'</div>'+
           '<div class="mover-chg" style="color:'+chgCls+'">'+chgStr+'</div>'+
         '</div>'+
       '</div>';
