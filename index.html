@@ -671,7 +671,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <div class="sg-row"><div><div class="sg-label">최대 시가총액</div><div class="sg-sub">이상 종목 경고</div></div><div class="sg-val" id="swingMaxCap" onclick="cycle('swingMaxCap',['없음','$5B','$10B','$20B'])">$10B</div></div>
     <div class="sg-row"><div><div class="sg-label">최소 일평균 거래량</div><div class="sg-sub">이하 유동성 경고</div></div><div class="sg-val" id="swingMinVol" onclick="cycle('swingMinVol',['없음','30만','50만','100만'])">50만</div></div>
     <div class="sg-title">SWING 스캔 기준</div>
-    <div class="sg-row"><div><div class="sg-label">최소 R:R (T1 기준)</div><div class="sg-sub">이하이면 BLOCK 처리</div></div><div class="sg-val" id="swingMinRR" onclick="cycle('swingMinRR',['1.5','2.0','2.5'])">1.5</div></div>
+    <div class="sg-row"><div><div class="sg-label">최소 T1 상승률 (%)</div><div class="sg-sub">이하이면 BLOCK — 스윙 최소 기대 수익</div></div><div class="sg-val" id="swingMinT1Pct" onclick="cycle('swingMinT1Pct',['6','8','10'])">8</div></div>
     <div class="sg-row"><div><div class="sg-label">RSI 상단 기준</div><div class="sg-sub">진입 시 RSI 최대 허용값</div></div><div class="sg-val" id="swingRsiMax" onclick="cycle('swingRsiMax',['60','65','70'])">65</div></div>
     <div class="sg-row"><div><div class="sg-label">시간 손절 (일)</div><div class="sg-sub">N일 내 움직임 없으면 청산</div></div><div class="sg-val" id="swingHoldDays" onclick="cycle('swingHoldDays',['7','10','14'])">10</div></div>
     <div class="sg-title">공통 설정</div>
@@ -2011,6 +2011,7 @@ async function runSwingScreener(){
             swing_type: decision.swing_type,
             conditions_met: decision.conditions_met,
             rr:       decision.rr,
+            target1_pct: decision.target1_pct,
             entry:    decision.entry,
             stop:     decision.stop,
             target1:  decision.target1,
@@ -2084,7 +2085,7 @@ async function runSwingScreener(){
           '<span>조건 <b style="color:var(--t)">'+r.conditions_met+'/8</b></span>'+
           (r.rsi14?'<span>RSI <b style="color:var(--t)">'+r.rsi14+'</b></span>':'')+
           (r.vol_ratio?'<span>거래량 <b style="color:var(--t)">'+r.vol_ratio+'x</b></span>':'')+
-          (r.rr?'<span>R:R <b style="color:var(--t)">'+r.rr+'</b></span>':'')+
+          (r.target1_pct?'<span>T1 <b style="color:var(--t)">+'+r.target1_pct+'%</b></span>':'')+
         '</div>'+
         (topSig?'<div style="font-size:10px;color:var(--t2)">'+topSig+'</div>':'')+
       '</div>';
@@ -2953,6 +2954,9 @@ async function fetchSwingData(ticker){
     rsi14:null, macd:null, macd_signal:null, macd_hist:null, macd_hist_prev:null,
     vol20avg:null, vol_ratio:null,
     high10:null,   // 10일 최고가
+    high20:null,   // 20일 최고가 (T1 기준)
+    high50:null,   // 50일 최고가 (T2 후보)
+    atr20:null,    // 20일 일봉 ATR (타겟 계산용 — 변동성 기반)
     ma20_5d_ago:null, ma20_slope:null, // 20일선 기울기
     above_ma200:null, above_ma20:null,
     pullback_to_ma20:null, // MA20 ±3% 이내
@@ -3050,12 +3054,32 @@ async function fetchSwingData(ticker){
       }
     }
 
-    // 10일 / 20일 최고가
+    // 10일 / 20일 / 50일 최고가
     var highs_clean = highs.filter(function(v){return v&&v>0;});
     if(highs_clean.length >= 10)
       sw.high10 = parseFloat(Math.max.apply(null, highs_clean.slice(-10)).toFixed(2));
     if(highs_clean.length >= 20)
       sw.high20 = parseFloat(Math.max.apply(null, highs_clean.slice(-20)).toFixed(2));
+    if(highs_clean.length >= 50)
+      sw.high50 = parseFloat(Math.max.apply(null, highs_clean.slice(-50)).toFixed(2));
+
+    // 20일 일봉 ATR (타겟 계산용 — 종목별 변동성 반영)
+    // True Range = max(high-low, |high-prevClose|, |low-prevClose|)
+    var lows_all = q.low || [];
+    if(closes.length >= 21 && highs.length >= 21 && lows_all.length >= 21){
+      var trs = [];
+      var startIdx = Math.max(0, closes.length - 21);
+      for(var ti = startIdx + 1; ti < closes.length; ti++){
+        var h = highs[ti], l = lows_all[ti], pc = closes[ti-1];
+        if(h > 0 && l > 0 && pc > 0){
+          var tr = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+          trs.push(tr);
+        }
+      }
+      if(trs.length >= 14){
+        sw.atr20 = parseFloat((trs.reduce(function(a,b){return a+b;},0) / trs.length).toFixed(2));
+      }
+    }
 
     // 거래량 20일 평균
     var vols_clean = vols.filter(function(v){return v&&v>0;});
@@ -3938,12 +3962,12 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
 
     // 타입별 손절/포지션 기준
     var typeGuide = swType === 'A' ?
-      '=== Type A 눌림목형 기준 ===\n손절: 진입가 -5% or MA20 -3% 중 낮은 쪽. 포지션: 최대 50%.\nT1: 10일 최고가×0.985 도달 시 50% 익절. T2: 20일 최고가 or 52주 고가.\n분할 진입 불필요 — 눌림목 확인 후 일괄 진입.\n' :
+      '=== Type A 눌림목형 기준 ===\n손절: 진입가 -5% or MA20 -3% 중 낮은 쪽. 포지션: 최대 50%.\nT1: 20일 최고가×0.99 or ATR×3 (시장 구조 기반). T2: 52주 고가 or ATR×8.\n분할 진입 불필요 — 눌림목 확인 후 일괄 진입.\n' :
       swType === 'B' ?
-      '=== Type B 돌파형 기준 ===\n손절: 진입가 -7% or 돌파 레벨 아래. 포지션: 최대 25% (가짜 돌파 대비).\n진입: 거래량 동반 돌파 캔들 종가 확인 후. 추격 진입 금지.\nT1: 다음 저항 레벨. T2: 52주 고가.\n' :
+      '=== Type B 돌파형 기준 ===\n손절: 진입가 -7% or 돌파 레벨 아래. 포지션: 최대 25% (가짜 돌파 대비).\n진입: 거래량 동반 돌파 캔들 종가 확인 후. 추격 진입 금지.\nT1: 20일/50일 최고가. T2: 52주 고가.\n' :
       swType === 'C' ?
       '=== Type C 반전형 기준 ===\n손절: 진입가 -8% or MA200 이탈. 포지션: 최대 15%, 5% 먼저 진입 후 확인.\nMA200 재이탈 시 즉시 청산. 추세 전환 확인까지 1~2주 소요 감안.\n' :
-      '=== 일반 스윙 기준 ===\n손절: 진입가 -5~7%. 포지션: 조건 수에 따라 15~50%.\nT1: 10일 최고가. T2: 20일 최고가 or 52주 고가.\n';
+      '=== 일반 스윙 기준 ===\n손절: 진입가 -5~7%. 포지션: 조건 수에 따라 15~50%.\nT1: 20일 최고가 or ATR×3. T2: 52주 고가 or ATR×8.\n';
 
     return '당신은 스윙 트레이딩 전문 AI입니다. 룰엔진이 BLOCK을 내리지 않은 종목입니다. 아래 데이터를 바탕으로 최종 진입 여부를 직접 판단하세요.\n\n' +
       base + mktCtx + swStr + typeGuide + '\n' +
@@ -3954,7 +3978,7 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
       '시간 손절: '+holdDays+'일 내 의미 있는 움직임 없으면 청산 권고.\n\n' +
       '{"ticker":"'+ticker+'","action":"ENTER"|"WATCH"|"BLOCK","score":0-100,'+
       '"swing_type":"'+( swType||'unknown')+'",'+
-      '"entry":진입권장가,"stop":손절가,"target1":T1목표가,"target2":T2목표가,"rr":R:R비율,'+
+      '"entry":진입권장가,"stop":손절가,"target1":T1목표가,"target2":T2목표가,"target1_pct":T1상승률(%),'+
       '"position_size":"half(50%)"|"quarter(25%)"|"small(15%)",'+
       '"entry_timing":"pullback_entry"|"breakout_entry"|"reversal_entry"|"wait_pullback"|"avoid",'+
       '"entry_reason":"타입+핵심근거 한 줄",'+
@@ -4007,7 +4031,7 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
       '"core_stage":"Stage 1"|"Stage 1→2 전환"|"Stage 2 초입"|"Stage 2 중반"|"Stage 3",'+
       '"core_mode":"A"|"B",'+
       '"underground_score":'+( coreData?coreData.conditions_met:0 )+',' +
-      '"entry":진입권장가,"stop":손절가,"target1":1차목표가,"rr":손익비,'+
+      '"entry":진입권장가,"stop":손절가,"target1":1차목표가,"target2":2차목표가,'+
       '"entry_timing":"accumulation_phase"|"base_breakout"|"stage2_continuation"|"overextended"|"avoid",'+
       '"entry_reason":"Mode A/B 구분 + 핵심 근거 한 줄",'+
       '"news_quality":"factual"|"vague"|"none",'+
@@ -4583,7 +4607,9 @@ function swingEngine(ydata, swingData){
   var price = ydata.price;
   var ma20  = swingData.ma20;
   var ma60  = swingData.ma60;
-  var swingMinRR = parseFloat((document.getElementById('swingMinRR')||{textContent:'1.5'}).textContent||'1.5');
+  // SWING 최소 T1 상승률 (%) — R:R 대신 시장구조 기반 필터
+  // R:R은 MOMO(고빈도)에 맞는 철학. 스윙은 "절대 수익폭"이 의미 있음.
+  var swingMinT1Pct = parseFloat((document.getElementById('swingMinT1Pct')||{textContent:'8'}).textContent||'8');
 
   // ══════════════════════════════════════
   // 거시 게이트 (VIX + 주봉 MA + 어닝)
@@ -4661,17 +4687,47 @@ function swingEngine(ydata, swingData){
     ).toFixed(2));
     var sRisk = sEntry - sStop;
     var stopPctActual = sRisk > 0 ? ((sStop - sEntry) / sEntry * 100).toFixed(0) : '-7';
-    var sT1 = swingData.high10&&swingData.high10>sEntry*1.02
-      ? parseFloat((swingData.high10*0.985).toFixed(2))
-      : parseFloat((sEntry+sRisk*2).toFixed(2));
-    var fw   = ydata.fiftyTwoWeekHigh;
-    var sT2  = swingData.high20&&swingData.high20>sT1*1.02
-      ? parseFloat((swingData.high20*0.99).toFixed(2))
-      : fw&&fw>sEntry*1.10 ? parseFloat(fw.toFixed(2))
-      : parseFloat((sEntry+sRisk*4).toFixed(2));
+    // ── 타겟 계산 (시장 구조 독립) ──
+    // 철학: 타겟은 손절과 무관하게 "시장 저항/변동성/신고가"로만 결정.
+    // R 배수 폴백은 손절에 종속되므로 스윙 철학(추세추종)과 충돌.
+
+    // T1: 가장 가까운 저항 — MIN(20일 고점, 50일 고점 — 각 entry×1.05 이상만)
+    var t1Candidates = [];
+    if(swingData.high20 && swingData.high20 > sEntry*1.05)
+      t1Candidates.push(parseFloat((swingData.high20*0.99).toFixed(2)));
+    if(swingData.high50 && swingData.high50 > sEntry*1.05)
+      t1Candidates.push(parseFloat((swingData.high50*0.99).toFixed(2)));
+    var sT1;
+    if(t1Candidates.length > 0){
+      sT1 = Math.min.apply(null, t1Candidates);
+    } else {
+      // 폴백: ATR × 3 (변동성 3일치) or entry × 1.10, 중 큰 값
+      var atrT1 = swingData.atr20 ? parseFloat((sEntry + swingData.atr20*3).toFixed(2)) : 0;
+      var pctT1 = parseFloat((sEntry*1.10).toFixed(2));
+      sT1 = Math.max(atrT1, pctT1);
+    }
+
+    // T2: 확장 목표 — MAX(52주 고점, ATR × 8, entry × 1.25)
+    var t2Candidates = [];
+    if(ydata.fiftyTwoWeekHigh && ydata.fiftyTwoWeekHigh > sT1*1.02)
+      t2Candidates.push(parseFloat(ydata.fiftyTwoWeekHigh.toFixed(2)));
+    if(swingData.atr20)
+      t2Candidates.push(parseFloat((sEntry + swingData.atr20*8).toFixed(2)));
+    t2Candidates.push(parseFloat((sEntry*1.25).toFixed(2)));
+    var sT2 = Math.max.apply(null, t2Candidates);
+    // T2는 T1보다 최소 10% 위여야 의미 있음
+    if(sT2 < sT1 * 1.10) sT2 = parseFloat((sT1*1.15).toFixed(2));
+
+    // R:R 참고용 (카드에 표시 안 함 — 삭제 방침이지만 다른 코드 호환 위해 유지)
     var sRR  = sRisk>0 ? parseFloat(((sT1-sEntry)/sRisk).toFixed(1)) : null;
     var sRR2 = sRisk>0 ? parseFloat(((sT2-sEntry)/sRisk).toFixed(1)) : null;
-    r.entry=sEntry; r.stop=sStop; r.target1=sT1; r.target2=sT2; r.rr=sRR; r.rr2=sRR2;
+    // T1/T2 수익률 (새로운 필터 기준)
+    var sT1Pct = parseFloat(((sT1-sEntry)/sEntry*100).toFixed(1));
+    var sT2Pct = parseFloat(((sT2-sEntry)/sEntry*100).toFixed(1));
+
+    r.entry=sEntry; r.stop=sStop; r.target1=sT1; r.target2=sT2;
+    r.rr=sRR; r.rr2=sRR2;
+    r.target1_pct=sT1Pct; r.target2_pct=sT2Pct;
     r.stop_type = '손절('+stopPctActual+'%)';
   }
 
@@ -4684,7 +4740,8 @@ function swingEngine(ydata, swingData){
   else if(swingData.ma100&&price){ score-=8; }
   if(G.spyAboveMA200===true) score+=5;
   else if(G.spyAboveMA200===false){score-=10; r.warnings.push('SPY MA200 아래 — 약세 구조');}
-  if(r.rr&&r.rr<swingMinRR) score-=20;
+  // ※ R:R 점수 감점 제거 (2026-04-23) — 스윙은 손절 대비가 아닌 상승폭 자체가 기준
+  // 아래 BLOCK 로직에서 T1 상승률 기준으로 대체 검증
 
   // SPY 상대강도
   if(G.spyIntraday&&price){
@@ -4708,8 +4765,10 @@ function swingEngine(ydata, swingData){
   if(swingData.vol_ratio!==null&&swingData.vol_ratio<0.8)      r.warnings.push('거래량 평균比 '+swingData.vol_ratio+'x — 약한 거래량');
 
   // ── BLOCK 조건 (엔진이 처리 — 나머지는 Claude 판단) ──
-  if(r.rr!==null&&r.rr<swingMinRR){
-    r.blockers.push('[SWING] T1 R:R '+r.rr+' — 최소 '+swingMinRR+' 미만');
+  // BLOCK: T1 절대 상승률 기준 (R:R 대신)
+  // 스윙 철학: "이 거래가 스윙치고 충분한 상방을 가지는가"만 판단. 손절 크기는 무관.
+  if(r.target1_pct!==null && r.target1_pct!==undefined && r.target1_pct<swingMinT1Pct){
+    r.blockers.push('[SWING] T1 상승폭 +'+r.target1_pct+'% — 최소 '+swingMinT1Pct+'% 미만 (스윙 기대 수익 부족)');
     r.action='BLOCK'; return r;
   }
   if(r.conditions_met<=1){
@@ -4858,7 +4917,11 @@ function coreEngine(ydata, coreData, fundData, sectorData){
     }
     var cRisk=cEntry-cStop;
     r.entry=cEntry; r.stop=cStop; r.target1=cTarget1; r.target2=cTarget2;
+    // ※ r.rr — 구버전 호환용만. CORE는 중장기 성장주 철학상 R:R 무의미.
+    //   카드 UI에서는 "익절1 상승률 %" 로 표시됨.
     r.rr=cRisk>0?parseFloat(((cTarget1-cEntry)/cRisk).toFixed(1)):null;
+    r.target1_pct = parseFloat(((cTarget1-cEntry)/cEntry*100).toFixed(1));
+    r.target2_pct = parseFloat(((cTarget2-cEntry)/cEntry*100).toFixed(1));
   }
 
   // ── 종합 점수 ──
@@ -4981,7 +5044,7 @@ function makeExplainPrompt(mode, ticker, ydata, decision){
   var keyMetrics = mode==='momo'
     ? '갭: '+(decision.gap_pct!==undefined?decision.gap_pct+'%':'?')+' | RVol: '+(ydata.rvol||'?')+'x | Float: '+(ydata.float_m!==null?ydata.float_m+'M':'?')+' | 점수: '+decision.score+'pt'
     : mode==='swing'
-    ? 'conditions: '+decision.conditions_met+'/8 | 점수: '+decision.score+'pt | R:R: '+(decision.rr||'?')
+    ? 'conditions: '+decision.conditions_met+'/8 | 점수: '+decision.score+'pt | T1 상승률: +'+(decision.target1_pct||'?')+'%'
     : '매집: '+decision.accum_score+'/10 | 타이밍: '+decision.timing_score+'/10 | 펀더멘털: '+(decision.fund_score||0)+'/10 ('+decision.fund_gate+') | 점수: '+decision.score+'pt';
 
   // CORE: 촉매 캘린더 + conviction 포함 확장 프롬프트
@@ -5096,6 +5159,8 @@ function _buildSnapshot(result, mode){
     target1:     result.target1      || null,
     target2:     result.target2      || null,
     rr:          result.rr           || null,
+    target1_pct: result.target1_pct  ?? null,
+    target2_pct: result.target2_pct  ?? null,
     summary:     result.summary      || result.action_reason || null,
     news:        (result.news||'').substring(0,120) || null,
     news_quality: result.news_quality || null,
@@ -6312,13 +6377,17 @@ function cardHTML(r, mode){
         '<div class="lv lv-entry"><div class="lv-label">진입</div><div class="lv-val">'+(r.entry?'$'+r.entry:'--')+'</div></div>'+
         '<div class="lv lv-stop"><div class="lv-label">'+(r._mode==='core'?(r.entry&&r.stop?'손절('+((r.stop-r.entry)/r.entry*100).toFixed(0)+'%)':'손절'):r._mode==='swing'?(r.stop_type||'손절'):r.momo_type==='C'?'손절(-15%)':r.momo_type==='B'?'손절(-10%)':'손절(-7%)')+'</div><div class="lv-val">'+(r.stop?'$'+r.stop:'--')+'</div></div>'+
         '<div class="lv lv-t1"><div class="lv-label">'+(r._mode==='core'?'익절1 (25%)':'T1(50%)')+'</div><div class="lv-val">'+(st?'$'+st.t1:r.target1?'$'+r.target1:'--')+'</div></div>'+
-        '<div class="lv lv-rr"><div class="lv-label">'+(r._mode==='core'?'익절1 R:R':'손익비')+'</div><div class="lv-val">'+(r.rr?r.rr+'R':'--')+'</div></div>'+
+        '<div class="lv lv-rr"><div class="lv-label">'+(r._mode==='core'?'익절1 상승률':r._mode==='swing'?'T1 상승률':'손익비')+'</div><div class="lv-val">'+
+          (r._mode==='momo'
+            ? (r.rr?r.rr+'R':'--')
+            : (r.entry&&r.target1?'+'+((r.target1-r.entry)/r.entry*100).toFixed(0)+'%':'--')
+          )+'</div></div>'+
       '</div>'+
       ((r._mode==='swing')&&r.target2?
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:5px;padding:6px 10px;background:rgba(43,159,255,.06);border:1px solid rgba(43,159,255,.15);border-radius:8px">'+
           '<span style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.08em">T2 최종목표 (잔량)</span>'+
           '<span style="font-family:var(--mono);font-size:13px;color:var(--bl)">$'+r.target2+'</span>'+
-          (r.rr2?'<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">'+r.rr2+'R</span>':'')+
+          (r.entry?'<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">+'+((r.target2-r.entry)/r.entry*100).toFixed(0)+'%</span>':'')+
         '</div>'
       :'')+
       (r._mode==='core'&&r.target2&&ac!=='BLOCK'?
