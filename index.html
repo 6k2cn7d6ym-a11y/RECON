@@ -1514,6 +1514,29 @@ async function fetchKisOverseasRanking(excd){
   }).filter(function(s){ return s.ticker && s.price > 0; });
 }
 
+// ── US 현재 세션 감지 (ET 기준, DST 자동 반영) ──
+// 반환: 'pre' | 'regular' | 'after' | 'closed'
+function getUsSession(){
+  var et = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+  var hm = et.getHours()*100 + et.getMinutes();
+  var dow = et.getDay();
+  if(dow === 0 || dow === 6) return 'closed';
+  if(hm >= 400  && hm < 930)  return 'pre';
+  if(hm >= 930  && hm < 1600) return 'regular';
+  if(hm >= 1600 && hm < 2000) return 'after';
+  return 'closed';
+}
+// 세션별 "변동률" 필드 이름
+function sessionChgField(session){
+  if(session === 'pre')   return 'preMarketChangePercent';
+  if(session === 'after') return 'afterMarketChangePercent';
+  return 'regularMarketChangePercent';
+}
+// 세션별 한국어 라벨
+function sessionLabel(session){
+  return session==='pre'?'프리마켓':session==='regular'?'정규장':session==='after'?'애프터마켓':'장 마감';
+}
+
 // ── 갭업 후보 로드 + 렌더링 ──
 async function loadKisGappers(){
   if(!KIS.appKey || !KIS.appSecret){
@@ -1541,17 +1564,16 @@ async function loadKisGappers(){
     var top = all.slice(0, 20);
 
     if(!top.length){
-      // ── KIS 빈 배열 → 프리마켓이면 Yahoo Finance 폴백 ──
-      var _etFb = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
-      var _etHMFb = _etFb.getHours()*100 + _etFb.getMinutes();
-      var _isPreFb = _etHMFb >= 400 && _etHMFb < 930;
-      if(_isPreFb){
-        if(statusEl) statusEl.textContent = 'Webull 폴백';
+      // ── KIS 빈 배열 → Webull 폴백 (세션별 자동 분기) ──
+      var _sess = getUsSession();
+      if(_sess !== 'closed'){
+        if(statusEl) statusEl.textContent = 'Webull '+sessionLabel(_sess);
         try{
-          var _wbResp = await fetch(WORKER_URL + '/us-premarket?pageSize=50');
+          var _wbResp = await fetch(WORKER_URL + '/us-movers?session='+_sess+'&pageSize=50');
           var _wbData = await _wbResp.json();
-          var _fbQuotes = (_wbData.quotes || []).filter(function(q){ return q.preMarketChangePercent > 3; });
-          _fbQuotes.sort(function(a,b){ return (b.preMarketChangePercent||0)-(a.preMarketChangePercent||0); });
+          var _chgKey = sessionChgField(_sess);
+          var _fbQuotes = (_wbData.quotes || []).filter(function(q){ return (q[_chgKey]||0) > 3; });
+          _fbQuotes.sort(function(a,b){ return (b[_chgKey]||0)-(a[_chgKey]||0); });
           var _fbSeen = {};
           _fbQuotes = _fbQuotes.filter(function(q){
             if(_fbSeen[q.symbol]) return false;
@@ -1559,9 +1581,13 @@ async function loadKisGappers(){
             return true;
           });
           if(_fbQuotes.length){
+            var _sessTag = _sess==='pre'?'PRE':_sess==='after'?'AH':'LIVE';
             var _fbHtml = _fbQuotes.slice(0,15).map(function(q){
-              var chg = q.preMarketChangePercent;
-              var price = (q.preMarketPrice || q.regularMarketPrice || 0).toFixed(2);
+              var chg = q[_chgKey];
+              var priceField = _sess==='pre'?q.preMarketPrice
+                              :_sess==='after'?q.afterMarketPrice
+                              :q.regularMarketPrice;
+              var price = (priceField || q.regularMarketPrice || 0).toFixed(2);
               var rateStr = (chg>=0?'+':'')+chg.toFixed(1)+'%';
               var rateColor = chg>0?'var(--g)':chg<0?'var(--r)':'var(--t2)';
               return '<div style="display:flex;align-items:center;justify-content:space-between;'+
@@ -1574,7 +1600,7 @@ async function loadKisGappers(){
                   '<div style="font-family:var(--mono);font-size:14px;color:var(--t);letter-spacing:.06em">'+q.symbol+'</div>'+
                   '<div style="font-size:10px;color:var(--t2);margin-top:1px">'+
                     (q.shortName||q.longName||q.symbol||'').substring(0,22)+
-                    ' <span style="color:var(--a);font-size:8px">PRE</span>'+
+                    ' <span style="color:var(--a);font-size:8px">'+_sessTag+'</span>'+
                   '</div>'+
                 '</div>'+
                 '<div style="text-align:right">'+
@@ -1591,7 +1617,7 @@ async function loadKisGappers(){
       }
       document.getElementById('kisGapList').innerHTML =
         '<div style="text-align:center;padding:14px;color:var(--t3);font-size:11px;font-family:var(--mono)">'+
-        (_isPreFb ? '프리마켓 급등 후보 없음 (3%+ 기준)' : '데이터 없음 (장 전/후 또는 주말)')+'</div>';
+        (_sess!=='closed' ? sessionLabel(_sess)+' 급등 후보 없음 (3%+ 기준)' : '데이터 없음 (장 마감 또는 주말)')+'</div>';
       if(btn) btn.textContent = '↺ 새로고침';
       return;
     }
@@ -1710,6 +1736,7 @@ async function runMomoScreener(){
     // kisGapList에 있는 ticker들 먼저 수집
     var tickers = [];
     var seen = {};
+    var _wbMarketCap = {};  // A안: Webull 시총 캐시 (P&D 필터용)
 
     // kisGapList DOM에서 ticker 추출
     var kisItems = document.querySelectorAll('#kisGapList [onclick*="quickScanToMomo"]');
@@ -1718,22 +1745,47 @@ async function runMomoScreener(){
       if(m && m[1] && !seen[m[1]]){ seen[m[1]] = true; tickers.push(m[1]); }
     });
 
-    // kisGapList 비어있으면 Webull 프리마켓 데이터 수집
-    if(!tickers.length){
-      statusEl.textContent = '1/3 Webull 프리마켓 데이터 수집 중...';
+    // A안: kisGapList에서 tickers 수집된 경우에도 Webull 시총 보조 조회
+    // (kisGapList는 ticker만 가지고 있어 시총이 없음)
+    if(tickers.length){
       try{
-        var _wbResp = await fetch(WORKER_URL + '/us-premarket?pageSize=50');
+        var _sideSess = getUsSession();
+        var _sideEndpoint = _sideSess === 'closed' ? 'regular' : _sideSess;
+        var _wbSideResp = await fetch(WORKER_URL + '/us-movers?session='+_sideEndpoint+'&pageSize=50');
+        var _wbSideData = await _wbSideResp.json();
+        (_wbSideData.quotes || []).forEach(function(q){
+          if(q.symbol && q.marketCap && q.marketCap > 0){
+            _wbMarketCap[q.symbol] = parseFloat((q.marketCap / 1e9).toFixed(4));
+          }
+        });
+      }catch(e){}
+    }
+
+    // kisGapList 비어있으면 Webull 데이터 수집 (세션별 자동 분기)
+    if(!tickers.length){
+      var _scanSess = getUsSession();
+      var _scanEndpoint = _scanSess === 'closed' ? 'regular' : _scanSess;  // 마감 시엔 최신 정규장
+      statusEl.textContent = '1/3 Webull '+sessionLabel(_scanSess)+' 데이터 수집 중...';
+      try{
+        var _wbResp = await fetch(WORKER_URL + '/us-movers?session='+_scanEndpoint+'&pageSize=50');
         var _wbData = await _wbResp.json();
+        var _scanChgKey = sessionChgField(_scanEndpoint);
         (_wbData.quotes || []).forEach(function(q){
-          if(q.symbol && !seen[q.symbol] && q.preMarketChangePercent && q.preMarketChangePercent > 3){
+          var chg = q[_scanChgKey] || 0;
+          if(q.symbol && !seen[q.symbol] && chg > 3){
             seen[q.symbol] = true; tickers.push(q.symbol);
+          }
+          // 시총 캐시 (모든 종목 대상, ticker 조건과 무관)
+          if(q.symbol && q.marketCap && q.marketCap > 0){
+            _wbMarketCap[q.symbol] = parseFloat((q.marketCap / 1e9).toFixed(4));
           }
         });
       }catch(e){}
     }
 
     if(!tickers.length){
-      statusEl.textContent = '프리마켓 급등 후보가 없습니다. 먼저 급등 후보를 새로고침해주세요.';
+      var _emptySess = getUsSession();
+      statusEl.textContent = sessionLabel(_emptySess)+' 급등 후보가 없습니다. 먼저 급등 후보를 새로고침해주세요.';
       statusEl.style.display = 'block';
       if(btn){ btn.disabled = false; btn.textContent = '스캔'; }
       return;
@@ -1753,6 +1805,11 @@ async function runMomoScreener(){
         try{
           var ydata = await fetchYahooData(ticker);
           if(!ydata || !ydata.price) return null;
+
+          // A안: Webull 시총 주입 (Yahoo v8에는 marketCap 없음)
+          if(!ydata.marketCap_b && _wbMarketCap[ticker]){
+            ydata.marketCap_b = _wbMarketCap[ticker];
+          }
 
           // 하드 프리필터
           var earlyBlock = [];
@@ -1929,7 +1986,7 @@ async function runSwingScreener(){
           var ydata = { price: null, gap_pct: null, float_m: null, short_pct: null,
             rvol: null, spread_pct: null, vwap: null, vwap_pct: null,
             pm_high: null, pm_low: null, orb_high: null, orb_low: null,
-            fiftyTwoWeekHigh: null, avgVolume: null, marketCap_b: null,
+            fiftyTwoWeekHigh: null, fiftyTwoWeekLow: null, avgVolume: null, marketCap_b: null,
             earningsDaysAway: null, levInfo: null, newsText: '' };
 
           // 가격 데이터 간단히 가져오기
@@ -1940,6 +1997,7 @@ async function runSwingScreener(){
             var meta = pd?.chart?.result?.[0]?.meta || {};
             ydata.price = meta.regularMarketPrice || null;
             ydata.fiftyTwoWeekHigh = meta.fiftyTwoWeekHigh || null;
+            ydata.fiftyTwoWeekLow  = meta.fiftyTwoWeekLow  || null;
           }catch(e){}
 
           var swingData = await fetchSwingData(q.symbol);
@@ -2232,6 +2290,30 @@ function quickScanToMomo(ticker){
 // ═══════════════════════════════════════
 // Yahoo Finance 데이터 수집
 // ═══════════════════════════════════════
+
+// A안: Webull 시총 캐시 (fetchYahooData에 주입용)
+// Yahoo v8/chart에는 marketCap 없음. Webull 랭킹에서 가져와 캐시.
+var _WB_CAP_CACHE = { map: {}, ts: 0, ttlMs: 5*60*1000 };
+async function _ensureWbMarketCapCache(){
+  if(Date.now() - _WB_CAP_CACHE.ts < _WB_CAP_CACHE.ttlMs && Object.keys(_WB_CAP_CACHE.map).length > 0) return;
+  try{
+    // pre + regular 세션 모두 조회해서 커버리지 최대화
+    var sessions = ['pre','regular','after'];
+    for(var i=0;i<sessions.length;i++){
+      try{
+        var r = await fetch(WORKER_URL + '/us-movers?session='+sessions[i]+'&pageSize=50');
+        var d = await r.json();
+        (d.quotes || []).forEach(function(q){
+          if(q.symbol && q.marketCap && q.marketCap > 0){
+            _WB_CAP_CACHE.map[q.symbol] = parseFloat((q.marketCap/1e9).toFixed(4));
+          }
+        });
+      }catch(_){}
+    }
+    _WB_CAP_CACHE.ts = Date.now();
+  }catch(e){}
+}
+
 async function fetchYahooData(ticker){
   var etNow = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
   var etHM  = etNow.getHours()*100 + etNow.getMinutes();
@@ -2243,7 +2325,7 @@ async function fetchYahooData(ticker){
     gap_pct:null, volume:null, avgVolume:null,
     float_m:null, short_pct:null, rvol:null,
     bid:null, ask:null, spread_pct:null,
-    exchange:null, fiftyTwoWeekHigh:null,
+    exchange:null, fiftyTwoWeekHigh:null, fiftyTwoWeekLow:null,
     news:[], newsText:'',
     entry_calc:null, stop_calc:null, target_calc:null, rr_calc:null,
     pullback_entry:null, pullback_stop:null, pullback_target:null, pullback_rr:null,
@@ -2284,6 +2366,7 @@ async function fetchYahooData(ticker){
       result.longName    = qtMeta.longName || qtMeta.shortName || null;
       result.quoteType   = qtMeta.instrumentType || null;
       result.fiftyTwoWeekHigh = qtMeta.fiftyTwoWeekHigh || null;
+      result.fiftyTwoWeekLow  = qtMeta.fiftyTwoWeekLow  || null;
       result.levInfo     = (result.quoteType === 'ETF') ? parseLeverageETF(result.longName, '') : null;
       // 어닝 발표일 — earningsTimestamp / earningsTimestampStart 중 가까운 것
       var ets = qtMeta.earningsTimestamp || qtMeta.earningsTimestampStart || null;
@@ -2851,6 +2934,15 @@ async function fetchYahooData(ticker){
       result.pullback_entry_slip = parseFloat((result.pullback_entry * (1 + slipPct/100)).toFixed(2));
 
   }catch(e){ console.warn('[Yahoo]',ticker,e.message); }
+
+  // A안: marketCap_b 보완 (Yahoo v8에 없는 필드, Webull 캐시에서 조회)
+  if(!result.marketCap_b){
+    try{
+      await _ensureWbMarketCapCache();
+      if(_WB_CAP_CACHE.map[ticker]) result.marketCap_b = _WB_CAP_CACHE.map[ticker];
+    }catch(_){}
+  }
+
   return result;
 }
 
@@ -3938,9 +4030,13 @@ function getDumpScore(r){
   else if(r.news_quality==='vague') score+=18;
 
   // ── RVol 이상 ──
+  // A안: 5~100x 구간 점수 공백 메움. SPRC 43.6x 같은 케이스 잡기 위함.
   if(r.rvol!==null&&r.rvol!==undefined){
-    if(r.rvol>200)    score+=50;  // 완전 비정상
+    if(r.rvol>200)      score+=50;  // 완전 비정상
     else if(r.rvol>100) score+=35;
+    else if(r.rvol>50)  score+=25;  // 신규 (50~100x)
+    else if(r.rvol>20)  score+=18;  // 신규 (20~50x)
+    else if(r.rvol>10)  score+=10;  // 신규 (10~20x)
     else if(r.rvol<3)   score+=30;
     else if(r.rvol<5)   score+=12;
   }
@@ -3985,6 +4081,26 @@ function getDumpScore(r){
   if(r.fiftyTwoWeekHigh&&r.price&&r.gap_pct){
     var vs52 = (r.price - r.fiftyTwoWeekHigh) / r.fiftyTwoWeekHigh * 100;
     if(vs52 > 0 && r.gap_pct > 50 && r.news_quality !== 'factual') score+=25; // 신고가 돌파 + 갭 + 뉴스없음
+  }
+
+  // ── A안: 죽은 마이크로캡 깨우기 패턴 (dormant pump) ──
+  // 52주 고점 대비 깊은 낙폭 + 52주 저점 대비 급등 + 당일 갭 = 저점에서 깨운 펌프
+  // SPRC 예: 52주 고점 $94.50, 저점 $2.98, 현재 $6.47 (고점 -93%, 저점 +117%), 갭 +53%
+  if(r.fiftyTwoWeekHigh&&r.fiftyTwoWeekLow&&r.price&&r.gap_pct){
+    var vsHigh = (r.price - r.fiftyTwoWeekHigh) / r.fiftyTwoWeekHigh * 100; // 음수 = 고점 아래
+    var vsLow  = (r.price - r.fiftyTwoWeekLow)  / r.fiftyTwoWeekLow  * 100; // 양수 = 저점 위
+    if(vsHigh < -70 && vsLow > 80 && r.gap_pct > 30) score+=30;
+    else if(vsHigh < -50 && vsLow > 50 && r.gap_pct > 30) score+=15;
+  }
+
+  // ── A안: 마이크로캡 시총 (P&D 핵심 타겟 사이즈) ──
+  // US 펌프앤덤프 주 타겟은 $50M 미만 나스닥 마이크로캡
+  // ($30M 미만은 momoEngine에서 하드 블록, 여기는 open trade 재분석 / SWING / CORE 경로)
+  if(r.marketCap_b!==null&&r.marketCap_b!==undefined&&r.marketCap_b>0){
+    if(r.marketCap_b < 0.01)      score+=40; // $10M 미만
+    else if(r.marketCap_b < 0.05) score+=25; // $50M 미만
+    else if(r.marketCap_b < 0.1)  score+=20; // $100M 미만 (Jim A안 스펙)
+    else if(r.marketCap_b < 0.2)  score+=8;  // $200M 미만
   }
 
   return Math.min(score, 100);
@@ -4188,6 +4304,32 @@ function momoEngine(ydata){
   }
   if(gap>80 && (!ydata.newsText||ydata.newsText.trim()==='')){
     r.action='BLOCK'; r.blockers.push('[P&D] 갭 +'+gap.toFixed(0)+'% + 뉴스 없음 — 조작성 급등'); return r;
+  }
+
+  // ── A안: 마이크로캡 하드 블록 ($30M 미만) ──
+  // US 펌프 타겟 종목은 거의 모두 $50M 미만. $30M 미만은 강제 차단.
+  var capB = ydata.marketCap_b;
+  if(capB!==null && capB!==undefined && capB>0 && capB < 0.03){
+    r.action='BLOCK';
+    r.blockers.push('[P&D] 시총 $'+(capB*1000).toFixed(1)+'M — $30M 미만 (마이크로캡 펌프 고위험)');
+    r.momo_type = momoType;
+    r.marketCap_b = capB;
+    return r;
+  }
+
+  // ── A안: 죽은 마이크로캡 깨우기 패턴 하드 블록 ──
+  // 52주 고점 -85% + 저점 +100% + 갭 +40% + 시총 $100M 미만 = 저점 펌프 전형
+  var fwH = ydata.fiftyTwoWeekHigh, fwL = ydata.fiftyTwoWeekLow;
+  if(fwH && fwL && price && gap){
+    var vsH = (price - fwH)/fwH*100;
+    var vsL = (price - fwL)/fwL*100;
+    if(vsH < -85 && vsL > 100 && gap > 40 && (!capB || capB < 0.1)){
+      r.action='BLOCK';
+      r.blockers.push('[P&D] Dormant Pump — 52주 고점 '+vsH.toFixed(0)+'%, 저점 +'+vsL.toFixed(0)+'%, 갭 +'+gap.toFixed(0)+'% (죽은 마이크로캡 깨우기)');
+      r.momo_type = momoType;
+      r.marketCap_b = capB;
+      return r;
+    }
   }
 
   // ── 2. SPY 시장 게이트 ──
@@ -4940,6 +5082,7 @@ function _hydrateResult(result, ydata){
   result.vwap           = ydata.vwap           || null;
   result.vwap_pct       = ydata.vwap_pct       !== undefined ? ydata.vwap_pct : null;
   result.fiftyTwoWeekHigh = ydata.fiftyTwoWeekHigh || null;
+  result.fiftyTwoWeekLow  = ydata.fiftyTwoWeekLow  || null;
   return result;
 }
 
@@ -5393,6 +5536,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       fb.pm_low   = ydata.pm_low   || null;
       fb.pm_consolidation = ydata.pm_consolidation || false;
       fb.fiftyTwoWeekHigh = ydata.fiftyTwoWeekHigh || null;
+      fb.fiftyTwoWeekLow  = ydata.fiftyTwoWeekLow  || null;
       fb.news_quality  = 'none';
       fb.news_one_line = null;
       fb.warnings = (fb.warnings||[]).concat(['⚠ Claude API '+(isOverload?'과부하':'오류')+' — 뉴스 해석 생략됨 (재시도 가능)']);
