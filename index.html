@@ -1230,9 +1230,9 @@ function switchMode(mode){
     }
   }
 
-  // 스크리너 탭: SWING 모드에서만 표시
+  // 스크리너 탭: SWING + CORE 모드에서 표시 (MOMO는 프리마켓 급등후보가 대신)
   var scrTab = document.getElementById('btabScreener');
-  if(scrTab) scrTab.style.display = mode === 'swing' ? '' : 'none';
+  if(scrTab) scrTab.style.display = (mode === 'swing' || mode === 'core') ? '' : 'none';
 }
 
 // ═══════════════════════════════════════
@@ -1344,9 +1344,9 @@ function switchSubTab(sub){
   if(holdPanel) holdPanel.style.display = (sub === 'hold') ? '' : 'none';
   if(sub === 'hold') holdRender();
 
-  // 스크리너 탭: SWING + MOMO + CORE 모드에서 표시
+  // 스크리너 탭: SWING + CORE 모드에서 표시 (MOMO는 프리마켓 급등후보가 대신)
   var scrTab = document.getElementById('btabScreener');
-  if(scrTab) scrTab.style.display = (G.currentMode === 'swing' || G.currentMode === 'momo' || G.currentMode === 'core') ? '' : 'none';
+  if(scrTab) scrTab.style.display = (G.currentMode === 'swing' || G.currentMode === 'core') ? '' : 'none';
 
   if(sub === 'history') renderHistory(G.currentMode);
   if(sub === 'journal') renderJournal(G.currentMode);
