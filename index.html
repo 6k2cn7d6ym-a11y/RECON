@@ -5660,6 +5660,482 @@ function swingEngine(ydata, swingData){
   return r;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// CORE 옵션 C — Step 1: 셋업 라벨 함수
+// ─────────────────────────────────────────────────────────────
+// 축 2 "진입 타이밍" 판단. 매트릭스 합성 전 단계.
+// 설계 문서: CORE_ENGINE_DESIGN.md
+//
+// 입력:
+//   coreData   — fetchCoreData 반환 { accum_score, timing_score, entry_trigger, ... }
+//   fundData   — fetchFundData 반환 { fund_gate, ... }
+//   sectorData — fetchSectorData 반환 { sector_gate, ... }
+//
+// 출력:
+//   { label, raw_label, downgrade_steps, confidence, decision_path, inputs }
+//
+// 라벨 규칙:
+//   FAIL     = fund_gate === 'BLOCK'
+//   EARLY    = accum < 4 AND timing < 3  (또는 어중간)
+//   BUILDING = (accum >= 6) XOR (timing >= 5)
+//   IMMINENT = accum >= 6 AND timing >= 5 AND entry_trigger === 'NONE'
+//   READY    = accum >= 6 AND timing >= 5 AND entry_trigger !== 'NONE'
+//
+// 다운그레이드 모디파이어 (FAIL 제외):
+//   fund_gate === 'WATCH'  → −1
+//   sector_gate === 'WEAK' AND VIX 공포구간 아님 → −1
+//   최저 EARLY (언더플로우 방지)
+// ═══════════════════════════════════════════════════════════════
+function deriveSetupLabel(coreData, fundData, sectorData){
+  var path = [];
+
+  // ── 입력 가용성 ──
+  if(!coreData){
+    return {
+      label: 'EARLY',
+      raw_label: 'EARLY',
+      downgrade_steps: 0,
+      confidence: 'unavailable',
+      decision_path: ['coreData 없음 → EARLY 기본값'],
+      inputs: null
+    };
+  }
+
+  var accum      = coreData.accum_score  || 0;
+  var timing     = coreData.timing_score || 0;
+  var trigger    = coreData.entry_trigger || 'NONE';
+  var fundGate   = (fundData && fundData.fund_gate)     || 'UNKNOWN';
+  var sectorGate = (sectorData && sectorData.sector_gate) || 'UNKNOWN';
+
+  // ── FAIL 게이트: 펀더멘털 BLOCK (최상위) ──
+  if(fundGate === 'BLOCK'){
+    path.push('fund_gate=BLOCK → FAIL');
+    return {
+      label: 'FAIL',
+      raw_label: 'FAIL',
+      downgrade_steps: 0,
+      confidence: 'full',
+      decision_path: path,
+      inputs: { accum: accum, timing: timing, trigger: trigger, fundGate: fundGate, sectorGate: sectorGate }
+    };
+  }
+
+  // ── Raw 라벨 산출 ──
+  var rawLabel;
+  var accumMet   = accum  >= 6;
+  var timingMet  = timing >= 5;
+  var hasTrigger = trigger !== 'NONE';
+
+  if(accum < 4 && timing < 3){
+    rawLabel = 'EARLY';
+    path.push('accum<4 AND timing<3 → EARLY');
+  } else if(accumMet !== timingMet){  // XOR
+    rawLabel = 'BUILDING';
+    path.push('accum>=6 XOR timing>=5 → BUILDING ('+(accumMet?'accum만':'timing만')+')');
+  } else if(accumMet && timingMet && !hasTrigger){
+    rawLabel = 'IMMINENT';
+    path.push('accum>=6 AND timing>=5 AND trigger=NONE → IMMINENT');
+  } else if(accumMet && timingMet && hasTrigger){
+    rawLabel = 'READY';
+    path.push('accum>=6 AND timing>=5 AND trigger='+trigger+' → READY');
+  } else {
+    // 어중간 (예: accum=5, timing=4) → EARLY
+    rawLabel = 'EARLY';
+    path.push('어중간 (accum='+accum+', timing='+timing+') → EARLY');
+  }
+
+  // ── 다운그레이드 모디파이어 ──
+  var downgradeSteps = 0;
+  var vixFear = typeof G !== 'undefined' && (G.vixRegime === 'FEAR' || G.vixRegime === 'STRESS');
+
+  if(fundGate === 'WATCH'){
+    downgradeSteps++;
+    path.push('fund_gate=WATCH → 다운그레이드 +1');
+  }
+  if(sectorGate === 'WEAK'){
+    if(!vixFear){
+      downgradeSteps++;
+      path.push('sector_gate=WEAK (VIX 정상) → 다운그레이드 +1');
+    } else {
+      path.push('sector_gate=WEAK 이지만 VIX '+G.vixRegime+' → 다운그레이드 면제');
+    }
+  }
+
+  // ── 사다리 적용 ──
+  var ladder = ['EARLY', 'BUILDING', 'IMMINENT', 'READY'];
+  var finalLabel = rawLabel;
+  if(downgradeSteps > 0){
+    var idx = ladder.indexOf(rawLabel);
+    if(idx >= 0){
+      var newIdx = Math.max(0, idx - downgradeSteps);
+      finalLabel = ladder[newIdx];
+      if(finalLabel !== rawLabel){
+        path.push(rawLabel+' −'+downgradeSteps+' → '+finalLabel);
+      }
+    }
+  }
+
+  // ── confidence ──
+  var confidence = 'full';
+  if(fundGate === 'UNKNOWN' || sectorGate === 'UNKNOWN') confidence = 'missing';
+  if(coreData.conditions_met === 0) confidence = 'missing';
+
+  return {
+    label: finalLabel,
+    raw_label: rawLabel,
+    downgrade_steps: downgradeSteps,
+    confidence: confidence,
+    decision_path: path,
+    inputs: {
+      accum: accum, timing: timing, trigger: trigger,
+      fundGate: fundGate, sectorGate: sectorGate,
+      vixRegime: (typeof G !== 'undefined' ? G.vixRegime : null)
+    }
+  };
+}
+window.deriveSetupLabel = deriveSetupLabel;
+
+// ── deriveSetupLabel 단위 테스트 (브라우저 콘솔: runSetupLabelTests()) ──
+function runSetupLabelTests(){
+  var cases = [
+    // ── 기본 라벨 ──
+    { name:'FAIL: fund_gate=BLOCK (다른 조건 무시)',
+      cd:{accum_score:8,timing_score:8,entry_trigger:'MA50_BREAKOUT'}, fd:{fund_gate:'BLOCK'}, sd:{sector_gate:'STRONG'},
+      vix:'CALM', expected:'FAIL' },
+    { name:'EARLY: 둘 다 낮음',
+      cd:{accum_score:2,timing_score:1,entry_trigger:'NONE',conditions_met:2}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'NEUTRAL'},
+      vix:'CALM', expected:'EARLY' },
+    { name:'EARLY: 어중간 (accum=5, timing=4)',
+      cd:{accum_score:5,timing_score:4,entry_trigger:'NONE',conditions_met:4}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'NEUTRAL'},
+      vix:'CALM', expected:'EARLY' },
+    { name:'BUILDING: accum만 충족',
+      cd:{accum_score:7,timing_score:3,entry_trigger:'NONE',conditions_met:5}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'NEUTRAL'},
+      vix:'CALM', expected:'BUILDING' },
+    { name:'BUILDING: timing만 충족',
+      cd:{accum_score:3,timing_score:6,entry_trigger:'NONE',conditions_met:4}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'NEUTRAL'},
+      vix:'CALM', expected:'BUILDING' },
+    { name:'IMMINENT: 둘 다 충족, 트리거 없음',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'NONE',conditions_met:6}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'NEUTRAL'},
+      vix:'CALM', expected:'IMMINENT' },
+    { name:'READY: 둘 다 충족, 트리거 있음',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'STRONG'},
+      vix:'CALM', expected:'READY' },
+    // ── 다운그레이드 ──
+    { name:'다운그레이드: READY → IMMINENT (fund WATCH)',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'WATCH'}, sd:{sector_gate:'NEUTRAL'},
+      vix:'CALM', expected:'IMMINENT' },
+    { name:'다운그레이드: READY → BUILDING (fund WATCH + sector WEAK)',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'WATCH'}, sd:{sector_gate:'WEAK'},
+      vix:'CALM', expected:'BUILDING' },
+    { name:'다운그레이드 최하: IMMINENT -2 → EARLY',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'NONE',conditions_met:6}, fd:{fund_gate:'WATCH'}, sd:{sector_gate:'WEAK'},
+      vix:'CALM', expected:'EARLY' },
+    { name:'VIX FEAR 면제: sector WEAK 무시 → READY 유지',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'WEAK'},
+      vix:'FEAR', expected:'READY' },
+    { name:'VIX STRESS 도 면제',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'WEAK'},
+      vix:'STRESS', expected:'READY' },
+    // ── confidence ──
+    { name:'confidence missing: fund UNKNOWN',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:6}, fd:{fund_gate:'UNKNOWN'}, sd:{sector_gate:'STRONG'},
+      vix:'CALM', expected:'READY', expectedConfidence:'missing' },
+    { name:'coreData null → EARLY + unavailable',
+      cd:null, fd:{fund_gate:'PASS'}, sd:{sector_gate:'STRONG'},
+      vix:'CALM', expected:'EARLY', expectedConfidence:'unavailable' },
+  ];
+
+  var oldVix = (typeof G !== 'undefined') ? G.vixRegime : undefined;
+  var pass = 0, fail = 0;
+  cases.forEach(function(c){
+    if(typeof G !== 'undefined') G.vixRegime = c.vix || 'CALM';
+    var result = deriveSetupLabel(c.cd, c.fd, c.sd);
+    var labelOK = result.label === c.expected;
+    var confOK = !c.expectedConfidence || result.confidence === c.expectedConfidence;
+    if(labelOK && confOK){
+      pass++;
+      console.log('✅', c.name, '=', result.label, '('+result.confidence+')');
+    } else {
+      fail++;
+      console.error('❌', c.name, '\n   예상:', c.expected, c.expectedConfidence || '', '\n   실제:', result.label, result.confidence, '\n   경로:', result.decision_path);
+    }
+  });
+  if(typeof G !== 'undefined') G.vixRegime = oldVix;
+
+  console.log('━━━━━━━━━━━━━━━━━━━━');
+  console.log('Setup Label 테스트: '+pass+'/'+cases.length+' pass'+(fail>0?' · '+fail+' fail':''));
+  return { pass: pass, fail: fail, total: cases.length };
+}
+window.runSetupLabelTests = runSetupLabelTests;
+
+// ═══════════════════════════════════════════════════════════════
+// CORE 옵션 C — Step 2: 매트릭스 합성 함수
+// ─────────────────────────────────────────────────────────────
+// 두 축 결과를 받아 최종 action + position_size_pct 생성.
+// 설계 문서: CORE_ENGINE_DESIGN.md
+//
+// 매트릭스 (5×5):
+//   Babylon \ 셋업  FAIL   EARLY        BUILDING     IMMINENT       READY
+//   BLOCK           BLOCK  BLOCK        BLOCK        BLOCK          BLOCK
+//   WATCH_WEAK      BLOCK  BLOCK        BLOCK        WATCH_REJECT*  WATCH_REJECT*
+//   WATCH_CLAUDE    BLOCK  WATCH        WATCH        WATCH_CLAUDE** WATCH_CLAUDE**
+//   ENTER_50        BLOCK  WATCH        ENTER 25%    ENTER 50%      ENTER 75%
+//   ENTER_100       BLOCK  ENTER 30%†   ENTER 50%    ENTER 75%      ENTER 100%
+//
+//   * WATCH_REJECT:  CORE 전략 대상 아님 (재무 가속 없음, MOMO/SWING 권장)
+//   ** WATCH_CLAUDE: Claude 정성 분석 필요 (자동 진입 금지)
+//   † 탐색 진입:     펀더 먼저 포착, 셋업 완성 시 추가
+// ═══════════════════════════════════════════════════════════════
+
+// 매트릭스 데이터 (원칙 1 데이터 기반 — 검증 후 튜닝 대상. 현재 값은 Step 6 검증 예정)
+var MATRIX_SYNTHESIS = {
+  BLOCK: {
+    FAIL:     { action:'BLOCK', pct:0, code:'BLOCK',           note:'Babylon 하드블록' },
+    EARLY:    { action:'BLOCK', pct:0, code:'BLOCK',           note:'Babylon 하드블록' },
+    BUILDING: { action:'BLOCK', pct:0, code:'BLOCK',           note:'Babylon 하드블록' },
+    IMMINENT: { action:'BLOCK', pct:0, code:'BLOCK',           note:'Babylon 하드블록' },
+    READY:    { action:'BLOCK', pct:0, code:'BLOCK',           note:'Babylon 하드블록' },
+  },
+  WATCH_WEAK: {
+    FAIL:     { action:'BLOCK', pct:0, code:'BLOCK',           note:'Babylon 약함 + 펀더 실패' },
+    EARLY:    { action:'BLOCK', pct:0, code:'BLOCK',           note:'재무 가속 없음 + 셋업 부재' },
+    BUILDING: { action:'BLOCK', pct:0, code:'BLOCK',           note:'재무 가속 없음 + 셋업 미완성' },
+    IMMINENT: { action:'WATCH_REJECT', pct:0, code:'WATCH_REJECT', special:'STRATEGY_MISMATCH',
+      note:'재무 가속 없음 — CORE 대상 아님. MOMO/SWING 엔진으로 확인' },
+    READY:    { action:'WATCH_REJECT', pct:0, code:'WATCH_REJECT', special:'STRATEGY_MISMATCH',
+      note:'재무 가속 없음 — CORE 대상 아님. MOMO/SWING 엔진으로 확인' },
+  },
+  WATCH_CLAUDE: {
+    FAIL:     { action:'BLOCK', pct:0, code:'BLOCK',           note:'펀더 실패' },
+    EARLY:    { action:'WATCH', pct:0, code:'WATCH',           note:'복합 위험 + 셋업 미형성 — 대기' },
+    BUILDING: { action:'WATCH', pct:0, code:'WATCH',           note:'복합 위험 + 셋업 미완성 — 대기' },
+    IMMINENT: { action:'WATCH_CLAUDE_REQUIRED', pct:0, code:'WATCH_CLAUDE', special:'CLAUDE_REQUIRED',
+      note:'복합 위험 신호 — Claude 정성 분석 후 진입 결정' },
+    READY:    { action:'WATCH_CLAUDE_REQUIRED', pct:0, code:'WATCH_CLAUDE', special:'CLAUDE_REQUIRED',
+      note:'복합 위험 신호 — Claude 정성 분석 후 진입 결정' },
+  },
+  ENTER_50: {
+    FAIL:     { action:'BLOCK', pct:0, code:'BLOCK',           note:'펀더 실패' },
+    EARLY:    { action:'WATCH', pct:0, code:'WATCH',           note:'경고 있음 — 셋업 대기' },
+    BUILDING: { action:'ENTER', pct:25, code:'ENTER_25',       note:'경고 + 셋업 중 — 소량 탐색' },
+    IMMINENT: { action:'ENTER', pct:50, code:'ENTER_50',       note:'경고 있으나 진입 (추가 확인 필수)' },
+    READY:    { action:'ENTER', pct:75, code:'ENTER_75',       note:'경고 있으나 셋업 완성 — 큰 비중' },
+  },
+  ENTER_100: {
+    FAIL:     { action:'BLOCK', pct:0, code:'BLOCK',           note:'펀더 실패' },
+    EARLY:    { action:'ENTER', pct:30, code:'ENTER_30_EXPLORATORY', special:'EXPLORATORY',
+      note:'탐색 진입 — 펀더 먼저 포착, 셋업 완성 시 추가' },
+    BUILDING: { action:'ENTER', pct:50, code:'ENTER_50',       note:'본격 진입 + 추가 여지' },
+    IMMINENT: { action:'ENTER', pct:75, code:'ENTER_75',       note:'셋업 곧 완성 — 대부분 진입' },
+    READY:    { action:'ENTER', pct:100, code:'ENTER_100',     note:'이상적 조합 — 풀 진입' },
+  },
+  NO_DATA: {
+    _all:     { action:'WATCH', pct:0, code:'WATCH_NO_BABYLON', note:'Babylon 데이터 부족 — 수동 확인 필요' },
+  },
+  ERROR: {
+    _all:     { action:'WATCH', pct:0, code:'WATCH_ERROR',      note:'Babylon 에러 — 재조회 권장' },
+  },
+};
+window.MATRIX_SYNTHESIS = MATRIX_SYNTHESIS;
+
+// Babylon 결과에서 매트릭스 row 추출
+function deriveBabylonRow(babylonResult){
+  if(!babylonResult) return 'NO_DATA';
+  var v = babylonResult.verdict;
+  if(!v) return 'NO_DATA';
+  if(v === 'BLOCK' || v === 'SKIP') return 'BLOCK';
+  if(v === 'WATCH_WEAK')   return 'WATCH_WEAK';
+  if(v === 'WATCH_CLAUDE') return 'WATCH_CLAUDE';
+  if(v === 'ENTER'){
+    var pct = (babylonResult.decision_details && babylonResult.decision_details.position_size_pct);
+    if(pct === 100) return 'ENTER_100';
+    if(pct === 50)  return 'ENTER_50';
+    // 알 수 없는 pct값: 방어적으로 낮은 쪽(ENTER_50)으로 fallback
+    return 'ENTER_50';
+  }
+  if(v === 'NO_DATA') return 'NO_DATA';
+  if(v === 'ERROR')   return 'ERROR';
+  return 'NO_DATA';  // unknown verdict
+}
+window.deriveBabylonRow = deriveBabylonRow;
+
+// 매트릭스 합성
+function synthesizeVerdict(babylonResult, setupResult){
+  var path = [];
+
+  // ── Babylon row ──
+  var babylonRow = deriveBabylonRow(babylonResult);
+  path.push('Babylon row: '+babylonRow +
+    (babylonResult && babylonResult.verdict === 'ENTER' && babylonResult.decision_details
+      ? ' (pct='+babylonResult.decision_details.position_size_pct+')' : ''));
+
+  // ── Setup label ──
+  var setupLabel = (setupResult && setupResult.label) || 'EARLY';
+  if(setupResult && setupResult.downgrade_steps > 0){
+    path.push('Setup label: '+setupLabel+' (raw='+setupResult.raw_label+', −'+setupResult.downgrade_steps+')');
+  } else {
+    path.push('Setup label: '+setupLabel);
+  }
+
+  // ── 매트릭스 lookup ──
+  var row = MATRIX_SYNTHESIS[babylonRow] || MATRIX_SYNTHESIS.NO_DATA;
+  var cell;
+  if(row._all){
+    cell = row._all;  // NO_DATA / ERROR 모든 셋업에 동일 처리
+  } else {
+    cell = row[setupLabel] || row.EARLY;  // 알 수 없는 라벨 fallback
+  }
+  path.push('매트릭스 ['+babylonRow+']['+setupLabel+'] → '+cell.code+' ('+cell.action+(cell.pct>0?' '+cell.pct+'%':'')+')');
+
+  // ── confidence 종합 ──
+  var confidence = 'full';
+  if(babylonRow === 'NO_DATA' || babylonRow === 'ERROR'){
+    confidence = 'unavailable';
+  } else if(setupResult){
+    if(setupResult.confidence === 'unavailable') confidence = 'unavailable';
+    else if(setupResult.confidence === 'missing') confidence = 'missing';
+  }
+
+  return {
+    action: cell.action,                  // ENTER | WATCH | BLOCK | WATCH_REJECT | WATCH_CLAUDE_REQUIRED
+    position_size_pct: cell.pct,
+    matrix_cell: cell.code,               // ENTER_100, ENTER_75, ENTER_50, ENTER_30_EXPLORATORY, ENTER_25, WATCH, WATCH_REJECT, WATCH_CLAUDE, WATCH_NO_BABYLON, WATCH_ERROR, BLOCK
+    special: cell.special || null,        // STRATEGY_MISMATCH | CLAUDE_REQUIRED | EXPLORATORY | null
+    note: cell.note,
+    babylon_row: babylonRow,
+    setup_label: setupLabel,
+    confidence: confidence,
+    decision_path: path,
+  };
+}
+window.synthesizeVerdict = synthesizeVerdict;
+
+// ── synthesizeVerdict 단위 테스트 ──
+// 매트릭스 5×5 전 셀 + NO_DATA/ERROR + 엣지 케이스 (총 29개)
+function runSynthesisTests(){
+  // 테스트 헬퍼
+  var bR = function(verdict, pct){
+    var res = { verdict: verdict };
+    if(pct !== undefined) res.decision_details = { position_size_pct: pct };
+    return res;
+  };
+  var sR = function(label, conf){ return { label: label, raw_label: label, downgrade_steps:0, confidence: conf || 'full' }; };
+
+  var cases = [
+    // ── Babylon BLOCK row (모든 셋업 → BLOCK) ──
+    { name:'BLOCK × FAIL', b:bR('BLOCK'), s:sR('FAIL'), expect:{action:'BLOCK', pct:0, cell:'BLOCK'} },
+    { name:'BLOCK × READY', b:bR('BLOCK'), s:sR('READY'), expect:{action:'BLOCK', pct:0, cell:'BLOCK'} },
+
+    // ── Babylon WATCH_WEAK row ──
+    { name:'WATCH_WEAK × FAIL → BLOCK',     b:bR('WATCH_WEAK'), s:sR('FAIL'),     expect:{action:'BLOCK', pct:0} },
+    { name:'WATCH_WEAK × EARLY → BLOCK',    b:bR('WATCH_WEAK'), s:sR('EARLY'),    expect:{action:'BLOCK', pct:0} },
+    { name:'WATCH_WEAK × BUILDING → BLOCK', b:bR('WATCH_WEAK'), s:sR('BUILDING'), expect:{action:'BLOCK', pct:0} },
+    { name:'WATCH_WEAK × IMMINENT → WATCH_REJECT', b:bR('WATCH_WEAK'), s:sR('IMMINENT'),
+      expect:{action:'WATCH_REJECT', pct:0, special:'STRATEGY_MISMATCH'} },
+    { name:'WATCH_WEAK × READY → WATCH_REJECT',    b:bR('WATCH_WEAK'), s:sR('READY'),
+      expect:{action:'WATCH_REJECT', pct:0, special:'STRATEGY_MISMATCH'} },
+
+    // ── Babylon WATCH_CLAUDE row ──
+    { name:'WATCH_CLAUDE × FAIL → BLOCK',    b:bR('WATCH_CLAUDE'), s:sR('FAIL'),    expect:{action:'BLOCK', pct:0} },
+    { name:'WATCH_CLAUDE × EARLY → WATCH',    b:bR('WATCH_CLAUDE'), s:sR('EARLY'),    expect:{action:'WATCH', pct:0} },
+    { name:'WATCH_CLAUDE × BUILDING → WATCH', b:bR('WATCH_CLAUDE'), s:sR('BUILDING'), expect:{action:'WATCH', pct:0} },
+    { name:'WATCH_CLAUDE × IMMINENT → WATCH_CLAUDE_REQUIRED',
+      b:bR('WATCH_CLAUDE'), s:sR('IMMINENT'),
+      expect:{action:'WATCH_CLAUDE_REQUIRED', pct:0, special:'CLAUDE_REQUIRED'} },
+    { name:'WATCH_CLAUDE × READY → WATCH_CLAUDE_REQUIRED',
+      b:bR('WATCH_CLAUDE'), s:sR('READY'),
+      expect:{action:'WATCH_CLAUDE_REQUIRED', pct:0, special:'CLAUDE_REQUIRED'} },
+
+    // ── Babylon ENTER_50 row ──
+    { name:'ENTER_50 × FAIL → BLOCK',        b:bR('ENTER', 50), s:sR('FAIL'),     expect:{action:'BLOCK', pct:0} },
+    { name:'ENTER_50 × EARLY → WATCH',        b:bR('ENTER', 50), s:sR('EARLY'),    expect:{action:'WATCH', pct:0} },
+    { name:'ENTER_50 × BUILDING → ENTER 25%', b:bR('ENTER', 50), s:sR('BUILDING'), expect:{action:'ENTER', pct:25, cell:'ENTER_25'} },
+    { name:'ENTER_50 × IMMINENT → ENTER 50%', b:bR('ENTER', 50), s:sR('IMMINENT'), expect:{action:'ENTER', pct:50, cell:'ENTER_50'} },
+    { name:'ENTER_50 × READY → ENTER 75%',    b:bR('ENTER', 50), s:sR('READY'),    expect:{action:'ENTER', pct:75, cell:'ENTER_75'} },
+
+    // ── Babylon ENTER_100 row ──
+    { name:'ENTER_100 × FAIL → BLOCK',     b:bR('ENTER', 100), s:sR('FAIL'),     expect:{action:'BLOCK', pct:0} },
+    { name:'ENTER_100 × EARLY → ENTER 30% 탐색',
+      b:bR('ENTER', 100), s:sR('EARLY'),
+      expect:{action:'ENTER', pct:30, cell:'ENTER_30_EXPLORATORY', special:'EXPLORATORY'} },
+    { name:'ENTER_100 × BUILDING → ENTER 50%', b:bR('ENTER', 100), s:sR('BUILDING'), expect:{action:'ENTER', pct:50} },
+    { name:'ENTER_100 × IMMINENT → ENTER 75%', b:bR('ENTER', 100), s:sR('IMMINENT'), expect:{action:'ENTER', pct:75} },
+    { name:'ENTER_100 × READY → ENTER 100% (이상적)', b:bR('ENTER', 100), s:sR('READY'), expect:{action:'ENTER', pct:100} },
+
+    // ── 특수 row ──
+    { name:'NO_DATA × 무관 → WATCH_NO_BABYLON (confidence unavailable)',
+      b:bR('NO_DATA'), s:sR('READY'),
+      expect:{action:'WATCH', pct:0, cell:'WATCH_NO_BABYLON', confidence:'unavailable'} },
+    { name:'ERROR × 무관 → WATCH_ERROR',
+      b:bR('ERROR'), s:sR('READY'),
+      expect:{action:'WATCH', pct:0, cell:'WATCH_ERROR', confidence:'unavailable'} },
+
+    // ── 엣지 케이스 ──
+    { name:'babylonResult=null → NO_DATA 처리', b:null, s:sR('READY'),
+      expect:{action:'WATCH', pct:0, cell:'WATCH_NO_BABYLON', confidence:'unavailable'} },
+    { name:'setupResult=null → EARLY 대체', b:bR('ENTER', 100), s:null,
+      expect:{action:'ENTER', pct:30, cell:'ENTER_30_EXPLORATORY'} },
+    { name:'Babylon ENTER 그러나 pct 이상값 → ENTER_50 fallback',
+      b:bR('ENTER', 75), s:sR('READY'),
+      expect:{action:'ENTER', pct:75, cell:'ENTER_75'} },  // ENTER_50 row × READY = ENTER_75
+    { name:'Setup confidence missing 전파',
+      b:bR('ENTER', 100), s:sR('READY', 'missing'),
+      expect:{action:'ENTER', pct:100, confidence:'missing'} },
+    { name:'Setup confidence unavailable 전파',
+      b:bR('ENTER', 100), s:sR('READY', 'unavailable'),
+      expect:{action:'ENTER', pct:100, confidence:'unavailable'} },
+  ];
+
+  var pass = 0, fail = 0;
+  cases.forEach(function(c){
+    var result = synthesizeVerdict(c.b, c.s);
+    var ok = true;
+    var reasons = [];
+    if(c.expect.action !== undefined && result.action !== c.expect.action){
+      ok = false; reasons.push('action 예상='+c.expect.action+' 실제='+result.action);
+    }
+    if(c.expect.pct !== undefined && result.position_size_pct !== c.expect.pct){
+      ok = false; reasons.push('pct 예상='+c.expect.pct+' 실제='+result.position_size_pct);
+    }
+    if(c.expect.cell !== undefined && result.matrix_cell !== c.expect.cell){
+      ok = false; reasons.push('cell 예상='+c.expect.cell+' 실제='+result.matrix_cell);
+    }
+    if(c.expect.special !== undefined && result.special !== c.expect.special){
+      ok = false; reasons.push('special 예상='+c.expect.special+' 실제='+result.special);
+    }
+    if(c.expect.confidence !== undefined && result.confidence !== c.expect.confidence){
+      ok = false; reasons.push('confidence 예상='+c.expect.confidence+' 실제='+result.confidence);
+    }
+    if(ok){
+      pass++;
+      console.log('✅', c.name, '→', result.matrix_cell, result.position_size_pct>0?result.position_size_pct+'%':'');
+    } else {
+      fail++;
+      console.error('❌', c.name);
+      reasons.forEach(function(r){ console.error('   ', r); });
+      console.error('    경로:', result.decision_path);
+    }
+  });
+  console.log('━━━━━━━━━━━━━━━━━━━━');
+  console.log('Synthesis 테스트: '+pass+'/'+cases.length+' pass'+(fail>0?' · '+fail+' fail':''));
+  return { pass: pass, fail: fail, total: cases.length };
+}
+window.runSynthesisTests = runSynthesisTests;
+
+// 전체 옵션 C 엔진 테스트 (Step 1 + Step 2 통합)
+function runCoreOptionCTests(){
+  console.log('═══ Setup Label 테스트 ═══');
+  var s1 = runSetupLabelTests();
+  console.log('\n═══ Synthesis 테스트 ═══');
+  var s2 = runSynthesisTests();
+  console.log('\n═══ 전체 결과 ═══');
+  var totalPass = s1.pass + s2.pass;
+  var totalAll = s1.total + s2.total;
+  console.log(totalPass+'/'+totalAll+' pass');
+  return { setup: s1, synthesis: s2 };
+}
+window.runCoreOptionCTests = runCoreOptionCTests;
+
 // ── CORE 결정 엔진 (v2) ──
 // 두 축: 매집 강도(accum 10pt) + 타이밍 품질(timing 10pt)
 // 액션: ENTER / WATCH / BLOCK  (트리거 없으면 WATCH 유지)
@@ -5674,7 +6150,10 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     sector_gate:'UNKNOWN', sector_etf:null, sector_score:0,
     conviction_level:'LOW',
     underground_score:0, core_mode:'A', core_detail:[], core_stage:null,
-    babylon: null  // 베이비 자이언트 엔진 결과
+    babylon: null,           // 베이비 자이언트 엔진 결과 (원본)
+    setup: null,             // 옵션 C Step 1: deriveSetupLabel 결과
+    synthesis: null,         // 옵션 C Step 2: synthesizeVerdict 결과
+    position_size_pct: 0     // 옵션 C 매트릭스 기반 최종 포지션 사이즈
   };
 
   // ── 베이비 자이언트 결과 결합 ──
@@ -5897,42 +6376,44 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     }
   }
 
-  // ── Babylon 기반 포지션 사이즈 조정 ──
-  // Jim 정책: WATCH_CLAUDE 판정 시 포지션 사이즈 조정 (차단 X)
-  if(r.babylon && r.action === 'ENTER' && r.scale_in_plan){
-    var bv = r.babylon.verdict;
-    var bpct = r.babylon.details?.position_size_pct;
-    
-    if(bv === 'WATCH_CLAUDE' || bpct === 30){
-      // 복합 위험 감지 — 전체 사이즈 30%로 축소
-      var origPlan = r.scale_in_plan;
-      r.scale_in_plan = {
-        label: origPlan.label + ' (💎 베이비 경고 — 축소)',
-        note: origPlan.note + ' | Babylon 경고: '+(r.babylon.reason||'복합 위험'),
-        steps: origPlan.steps.map(function(s){
-          return Object.assign({}, s, { pct: Math.round(s.pct * 0.5) });
-        })
-      };
-      r.warnings.unshift('💎 베이비 자이언트 WATCH_CLAUDE — 포지션 50% 축소');
-    } else if(bv === 'ENTER' && bpct === 50){
-      // Warning 1개 — 전체 사이즈 75%로
-      r.scale_in_plan = Object.assign({}, r.scale_in_plan, {
-        note: r.scale_in_plan.note + ' | Babylon Warning 1개, 축소 진입',
-        steps: r.scale_in_plan.steps.map(function(s){
-          return Object.assign({}, s, { pct: Math.round(s.pct * 0.75) });
-        })
-      });
-      r.warnings.unshift('💎 베이비 자이언트 Warning 1개 — 포지션 75% 축소');
-    } else if(bv === 'ENTER' && bpct === 100){
-      // 완전 클린 — 신호 강화
-      r.signals.unshift('💎 베이비 자이언트 ENTER (clean, '+(r.babylon.reason||'')+')');
-    } else if(bv === 'WATCH_WEAK'){
-      // 펀더멘털 약함 — 경고만 남김
-      r.warnings.push('💎 베이비 자이언트 WATCH_WEAK (펀더멘털 가속 미확인) — 섹터 모멘텀 의존');
+  // ═══════════════════════════════════════════
+  // 옵션 C Step 3: 매트릭스 합성으로 최종 action + position_size_pct 결정
+  // 
+  // 설계 원칙:
+  //   - 기존 CORE hard block (Stage 3 분배, RS+A/D 분배 등 차트 기반) 보존
+  //   - Babylon/Setup 축은 synthesis로 최종 판정
+  //   - WATCH_REJECT / WATCH_CLAUDE_REQUIRED 는 action='WATCH' 로 호환 매핑 + 특수 메타
+  //   - synthesis 정보는 항상 저장 (카드 표시용)
+  // ═══════════════════════════════════════════
+  var setupResult = deriveSetupLabel(coreData, fundData, sectorData);
+  r.setup = setupResult;
+
+  var synthesis = synthesizeVerdict(babylonResult, setupResult);
+  r.synthesis = synthesis;
+  r.position_size_pct = synthesis.position_size_pct;
+
+  var matrixNote = '📐 매트릭스 ['+synthesis.babylon_row+']['+synthesis.setup_label+'] → '+synthesis.matrix_cell;
+
+  if(r.action === 'BLOCK'){
+    // 기존 CORE hard block 유지 (Stage 3 분배, RS+A/D, 차트 RED 등)
+    // synthesis 결과는 기록만 — 카드에서 두 신호 모두 보이게
+    r.signals.unshift(matrixNote+' (기존 CORE BLOCK 유지)');
+  } else {
+    // synthesis로 최종 action 결정
+    var synAction = synthesis.action;
+    if(synAction === 'WATCH_REJECT'){
+      // 재무 가속 없음 — CORE 전략 대상 아님
+      r.action = 'WATCH';
+      r.blockers.push('[전략] '+synthesis.note);
+    } else if(synAction === 'WATCH_CLAUDE_REQUIRED'){
+      // 복합 위험 — Claude 정성 분석 필요
+      r.action = 'WATCH';
+      r.warnings.unshift('🧠 Claude 분석 필수 — '+synthesis.note);
+    } else {
+      // ENTER / WATCH / BLOCK 직접 반영
+      r.action = synAction;
     }
-  } else if(r.babylon && r.babylon.verdict === 'ENTER' && r.action !== 'ENTER'){
-    // 베이비는 ENTER인데 기존 CORE는 WAIT/WATCH — 펀더멘털 신호 먼저 나온 상태
-    r.signals.push('💎 베이비 자이언트 ENTER ('+r.babylon.reason+') — 기술적 확인 대기');
+    r.signals.unshift(matrixNote+(synthesis.special ? ' ['+synthesis.special+']' : ''));
   }
 
   return r;
@@ -6139,6 +6620,9 @@ function _buildSnapshot(result, mode){
     catalyst_calendar:     result.catalyst_calendar      || null,
     conviction_note:       result.conviction_note        || null,
     babylon:               result.babylon                || null,
+    setup:                 result.setup                  || null,
+    synthesis:             result.synthesis              || null,
+    position_size_pct:     result.position_size_pct      ?? null,
     _ts: Date.now()
   };
 }
@@ -7161,6 +7645,81 @@ function cardHTML(r, mode){
 
   // ── 💎 베이비 자이언트 배너 (CORE 모드만) ──
   var babylonBanner = '';
+  var synthesisBanner = '';
+
+  // ── 합성 판정 배너 (옵션 C 매트릭스 최종 결과) ──
+  if(r._mode === 'core' && r.synthesis){
+    var sy = r.synthesis;
+    var sAction = sy.action;
+    var sPct = sy.position_size_pct;
+    var sCell = sy.matrix_cell;
+    var sSpecial = sy.special;
+
+    // 색상/아이콘 매핑
+    var syColor, syBg, syBorder, syIcon, syLabel;
+    if(sAction === 'ENTER' && sPct >= 75){
+      syColor='var(--g)'; syBg='rgba(0,240,122,.1)'; syBorder='rgba(0,240,122,.35)';
+      syIcon='🎯'; syLabel='ENTER '+sPct+'%';
+    } else if(sAction === 'ENTER' && sPct >= 50){
+      syColor='var(--g)'; syBg='rgba(0,240,122,.08)'; syBorder='rgba(0,240,122,.25)';
+      syIcon='🎯'; syLabel='ENTER '+sPct+'%';
+    } else if(sAction === 'ENTER'){
+      // ENTER 25% / 30% (탐색)
+      syColor='var(--a)'; syBg='rgba(255,170,0,.08)'; syBorder='rgba(255,170,0,.25)';
+      syIcon = sSpecial==='EXPLORATORY' ? '🔍' : '🎯';
+      syLabel='ENTER '+sPct+'%'+(sSpecial==='EXPLORATORY' ? ' (탐색)' : '');
+    } else if(sAction === 'WATCH' && sSpecial === 'STRATEGY_MISMATCH'){
+      syColor='var(--r)'; syBg='rgba(255,45,78,.08)'; syBorder='rgba(255,45,78,.25)';
+      syIcon='⚠️'; syLabel='전략 불일치';
+    } else if(sSpecial === 'CLAUDE_REQUIRED'){
+      syColor='var(--a)'; syBg='rgba(255,170,0,.1)'; syBorder='rgba(255,170,0,.3)';
+      syIcon='🧠'; syLabel='Claude 분석 필요';
+    } else if(sAction === 'WATCH'){
+      syColor='var(--t2)'; syBg='rgba(90,122,149,.08)'; syBorder='rgba(90,122,149,.2)';
+      syIcon='⏸'; syLabel='WATCH';
+    } else if(sAction === 'BLOCK'){
+      syColor='var(--r)'; syBg='rgba(255,45,78,.08)'; syBorder='rgba(255,45,78,.25)';
+      syIcon='🛑'; syLabel='BLOCK';
+    } else {
+      syColor='var(--t3)'; syBg='rgba(45,74,96,.06)'; syBorder='rgba(45,74,96,.15)';
+      syIcon='—'; syLabel=sAction;
+    }
+
+    // confidence 배지
+    var confBadge = '';
+    if(sy.confidence === 'missing'){
+      confBadge = '<span style="font-family:var(--mono);font-size:9px;color:var(--a);background:rgba(255,170,0,.15);padding:1px 5px;border-radius:3px;margin-left:4px">데이터 일부 부족</span>';
+    } else if(sy.confidence === 'unavailable'){
+      confBadge = '<span style="font-family:var(--mono);font-size:9px;color:var(--r);background:rgba(255,45,78,.15);padding:1px 5px;border-radius:3px;margin-left:4px">데이터 없음</span>';
+    }
+
+    // "기존 CORE BLOCK 유지" 오버라이드 표시
+    var overrideNote = '';
+    if(r.action === 'BLOCK' && sAction !== 'BLOCK'){
+      overrideNote = '<div style="font-family:var(--mono);font-size:10px;color:var(--r);margin-top:4px">⚠ 차트 기반 CORE hard block으로 매트릭스 판정 덮어씀</div>';
+    }
+
+    synthesisBanner =
+      '<div style="background:'+syBg+';border:1px solid '+syBorder+';border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'+
+          '<div style="display:flex;align-items:center;gap:6px">'+
+            '<span style="font-size:14px">'+syIcon+'</span>'+
+            '<span style="font-family:var(--mono);font-size:10px;color:'+syColor+';font-weight:700;letter-spacing:.1em">최종 판정</span>'+
+            '<span style="font-family:var(--mono);font-size:12px;color:'+syColor+';font-weight:700">'+syLabel+'</span>'+
+            confBadge+
+          '</div>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">'+sCell+'</span>'+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:11px;color:var(--t);margin-bottom:4px">'+
+          'Babylon <span style="color:'+syColor+'">'+sy.babylon_row+'</span> × '+
+          '셋업 <span style="color:'+syColor+'">'+sy.setup_label+'</span>'+
+          (sy.setup_label !== (r.setup?.raw_label) && r.setup?.raw_label ? ' (raw: '+r.setup.raw_label+')' : '')+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:10px;color:var(--t2)">'+sy.note+'</div>'+
+        overrideNote+
+      '</div>';
+  }
+
   if(r._mode === 'core' && r.babylon){
     var bv = r.babylon.verdict;
     var bReason = r.babylon.reason || '';
@@ -7327,6 +7886,7 @@ function cardHTML(r, mode){
   }
 
   return '<div class="stock-card '+cardC+'">'+
+    synthesisBanner+
     babylonBanner+
     holdBanner+
 
