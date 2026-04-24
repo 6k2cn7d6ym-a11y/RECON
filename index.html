@@ -1626,13 +1626,19 @@ async function fetchKisMarketScreener(opts){
 async function coreScanFetchUniverse(onProgress){
   var pool = {};  // ticker → stock info (중복 제거)
   
-  // 시총 구간 (단위: 백만달러)
-  //   $10B~$50B / $50B~$200B / $200B~$1T / $1T+ (상한 없음 = 공백)
+  // KIS valx 단위 확인 (2026-04-24): $1,000 (천달러)
+  // 검증: NVDA valx=4894316460 → $4.89T, MSFT valx=3128326584 → $3.13T
+  //
+  // 시총 구간 (천달러):
+  //   $10B ~ $50B       = 10,000,000 ~ 50,000,000
+  //   $50B ~ $200B      = 50,000,000 ~ 200,000,000
+  //   $200B ~ $1T       = 200,000,000 ~ 1,000,000,000
+  //   $1T+ (상한 없음)  = 1,000,000,000 ~ 공백
   var capBands = [
-    { min: 10000,  max: 50000,  label: '$10B~$50B' },
-    { min: 50000,  max: 200000, label: '$50B~$200B' },
-    { min: 200000, max: 1000000,label: '$200B~$1T' },
-    { min: 1000000,max: undefined, label: '$1T+' },  // 상한 없음
+    { min: 10000000,   max: 50000000,   label: '$10B~$50B' },
+    { min: 50000000,   max: 200000000,  label: '$50B~$200B' },
+    { min: 200000000,  max: 1000000000, label: '$200B~$1T' },
+    { min: 1000000000, max: undefined,  label: '$1T+' },
   ];
   var excds = ['NAS', 'NYS'];  // AMS는 대부분 페니스탁, 베이비 자이언트 적어서 제외
   
@@ -1650,7 +1656,7 @@ async function coreScanFetchUniverse(onProgress){
           excd:     excd,
           capMin:   band.min,
           capMax:   band.max,
-          volMin:   100000,   // 10만주+
+          volMin:   100000,   // 10만주+ (일거래량)
           priceMin: 10,       // $10+
         });
         results.forEach(function(s){
@@ -2063,12 +2069,15 @@ function renderCoreScannerCard(stock, babylon, entry, status){
     }).join(' → ');
   }
   
-  // 시가총액 포맷
+  // 시가총액 포맷 (단위: 천달러)
+  // NVDA valx=4,894,316,460 → $4.89T
+  // MSFT valx=3,128,326,584 → $3.13T
   var mcapStr = '';
   if(stock.marketCap && stock.marketCap > 0){
-    if(stock.marketCap >= 1000000) mcapStr = '$'+(stock.marketCap/1000000).toFixed(1)+'T';
-    else if(stock.marketCap >= 1000) mcapStr = '$'+(stock.marketCap/1000).toFixed(1)+'B';
-    else mcapStr = '$'+stock.marketCap.toFixed(0)+'M';
+    if(stock.marketCap >= 1_000_000_000) mcapStr = '$'+(stock.marketCap/1_000_000_000).toFixed(1)+'T';
+    else if(stock.marketCap >= 1_000_000) mcapStr = '$'+(stock.marketCap/1_000_000).toFixed(1)+'B';
+    else if(stock.marketCap >= 1_000)     mcapStr = '$'+(stock.marketCap/1_000).toFixed(0)+'M';
+    else mcapStr = '$'+stock.marketCap.toFixed(0)+'K';
   }
   
   // Warnings
