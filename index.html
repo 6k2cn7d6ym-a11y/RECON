@@ -710,6 +710,32 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   <div class="cards-area"><div id="coreHistoryList"></div></div>
 </div>
 
+<!-- CORE 스크리너 (베이비 자이언트 스캐너) -->
+<div class="scroll" id="page-core-screener" style="display:none">
+  <div style="padding:14px 16px 8px;display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--pu);letter-spacing:.1em;margin-bottom:2px">💎 CORE 베이비 자이언트 스캐너</div>
+      <div style="font-size:11px;color:var(--t2)">시총 $10B+ · KIS 필터 → SEC 펀더멘털 가속 · Claude 0토큰</div>
+    </div>
+    <button onclick="runCoreScanner()" id="coreScannerBtn"
+      style="background:var(--pu);color:#000;border:none;border-radius:8px;padding:8px 14px;font-family:var(--sans);font-size:12px;font-weight:700;cursor:pointer">
+      스캔
+    </button>
+  </div>
+  <div id="coreScannerStatus" style="display:none;margin:0 16px 8px;padding:10px 14px;background:var(--bg1);border:1px solid var(--b);border-radius:10px;font-family:var(--mono);font-size:11px;color:var(--t2)">
+    대기 중...
+  </div>
+  <div id="coreScannerSummary" style="display:none;margin:0 16px 10px;padding:10px 14px;background:rgba(159,122,255,.06);border:1px solid rgba(159,122,255,.2);border-radius:10px;font-family:var(--mono);font-size:11px;color:var(--t)">
+  </div>
+  <div id="coreScannerResults" style="padding:0 16px">
+    <div style="text-align:center;padding:30px 20px;color:var(--t3);font-size:12px;line-height:2">
+      <div style="font-size:24px;margin-bottom:8px;opacity:.3">💎</div>
+      스캔 버튼으로 베이비 자이언트 발굴<br>
+      <span style="font-size:10px">1차: KIS 시총 필터 · 2차: SEC 매출 가속 감지</span>
+    </div>
+  </div>
+</div>
+
 <!-- CORE 설정 -->
 <div class="scroll" id="page-core-settings" style="display:none">
   <div class="settings">
@@ -1318,13 +1344,14 @@ function switchSubTab(sub){
   if(holdPanel) holdPanel.style.display = (sub === 'hold') ? '' : 'none';
   if(sub === 'hold') holdRender();
 
-  // 스크리너 탭: SWING + MOMO 모드에서 표시
+  // 스크리너 탭: SWING + MOMO + CORE 모드에서 표시
   var scrTab = document.getElementById('btabScreener');
-  if(scrTab) scrTab.style.display = (G.currentMode === 'swing' || G.currentMode === 'momo') ? '' : 'none';
+  if(scrTab) scrTab.style.display = (G.currentMode === 'swing' || G.currentMode === 'momo' || G.currentMode === 'core') ? '' : 'none';
 
   if(sub === 'history') renderHistory(G.currentMode);
   if(sub === 'journal') renderJournal(G.currentMode);
   if(sub === 'screener' && G.currentMode === 'swing') renderSwingAutoList();
+  if(sub === 'screener' && G.currentMode === 'core') renderCoreScannerFromStorage();
   if(sub === 'search'){
     renderOpenPositions(G.currentMode);
     if(G.currentMode === 'momo') renderMomoTodayCards();
@@ -1512,6 +1539,647 @@ async function fetchKisOverseasRanking(excd){
       excd:    excd,
     };
   }).filter(function(s){ return s.ticker && s.price > 0; });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CORE 스캐너 — KIS 조건검색 API (시총/거래량 필터)
+// tr_id: HHDFS76410000 · url: /uapi/overseas-price/v1/quotations/inquire-search
+// ═══════════════════════════════════════════════════════════════════
+// 
+// 1차 필터: 시총 + 거래량 조건으로 직접 스크리닝
+// - EXCD: NAS (나스닥) / NYS (뉴욕) / AMS (아멕스)
+// - CO_YN_VALX / CO_ST_VALX / CO_EN_VALX: 시가총액 범위 (단위: M$ 가정)
+// - CO_YN_VOLUME / CO_ST_VOLUME / CO_EN_VOLUME: 거래량 범위
+// - CO_YN_PRICECUR / CO_ST_PRICECUR / CO_EN_PRICECUR: 가격 범위
+// 
+// 최대 100개 반환 / 다음조회 미지원 → 구간 분할로 풀 확대
+
+/**
+ * KIS 조건검색으로 시총/거래량/가격 필터링된 종목 리스트 획득
+ * @param {Object} opts
+ * @param {string} opts.excd     'NAS' | 'NYS' | 'AMS'
+ * @param {number} [opts.capMin] 시총 최소 (단위: 백만달러, 예: 10000 = $10B)
+ * @param {number} [opts.capMax] 시총 최대 (없으면 무제한, CO_YN_VALX='1'로 설정 시 하한만 작동)
+ * @param {number} [opts.volMin] 거래량 최소 (단위: 주, 예: 100000 = 10만주)
+ * @param {number} [opts.priceMin] 가격 최소 (예: 10 = $10)
+ */
+async function fetchKisMarketScreener(opts){
+  var excd  = opts.excd || 'NAS';
+  var query = {
+    AUTH: '',
+    EXCD: excd,
+    KEYB: '',
+  };
+  
+  // 시가총액 조건
+  if(opts.capMin !== undefined || opts.capMax !== undefined){
+    query.CO_YN_VALX = '1';
+    query.CO_ST_VALX = opts.capMin !== undefined ? String(opts.capMin) : '';
+    query.CO_EN_VALX = opts.capMax !== undefined ? String(opts.capMax) : '';
+  }
+  // 거래량 조건
+  if(opts.volMin !== undefined){
+    query.CO_YN_VOLUME = '1';
+    query.CO_ST_VOLUME = String(opts.volMin);
+    query.CO_EN_VOLUME = '';
+  }
+  // 가격 조건
+  if(opts.priceMin !== undefined){
+    query.CO_YN_PRICECUR = '1';
+    query.CO_ST_PRICECUR = String(opts.priceMin);
+    query.CO_EN_PRICECUR = '';
+  }
+  
+  var headers = await kisAuthHeaders('HHDFS76410000');
+  var data = await kisGet('/uapi/overseas-price/v1/quotations/inquire-search', query, headers);
+  
+  if(data.rt_cd !== '0'){
+    throw new Error('KIS 조건검색 오류: ' + (data.msg1 || 'unknown'));
+  }
+  
+  return (data.output2 || []).map(function(o){
+    return {
+      ticker:   o.symb || '',
+      name:     o.ename || o.name || '',
+      price:    parseFloat(o.last)  || 0,
+      marketCap: parseFloat(o.valx) || 0,   // 시가총액 (단위: M$ 추정)
+      volume:   parseFloat(o.tvol) || 0,
+      sharesOutstanding: parseFloat(o.shar) || 0,
+      eps:      parseFloat(o.eps)  || 0,
+      per:      parseFloat(o.per)  || 0,
+      rate:     parseFloat(o.rate) || 0,
+      high:     parseFloat(o.phigh) || 0,
+      low:      parseFloat(o.plow)  || 0,
+      open:     parseFloat(o.popen) || 0,
+      rank:     parseInt(o.rank)   || 0,
+      excd:     o.excd || excd,
+      tradable: o.e_ordyn === '○',
+    };
+  }).filter(function(s){ return s.ticker && s.price > 0; });
+}
+
+/**
+ * CORE 스캐너용 통합 종목 풀 수집
+ * 시총 상한 없음, 구간 분할로 최대 풀 확보
+ * @param {Function} onProgress - (msg) => void, 진행상황 콜백
+ */
+async function coreScanFetchUniverse(onProgress){
+  var pool = {};  // ticker → stock info (중복 제거)
+  
+  // 시총 구간 (단위: 백만달러)
+  //   $10B~$50B / $50B~$200B / $200B~$1T / $1T+ (상한 없음 = 공백)
+  var capBands = [
+    { min: 10000,  max: 50000,  label: '$10B~$50B' },
+    { min: 50000,  max: 200000, label: '$50B~$200B' },
+    { min: 200000, max: 1000000,label: '$200B~$1T' },
+    { min: 1000000,max: undefined, label: '$1T+' },  // 상한 없음
+  ];
+  var excds = ['NAS', 'NYS'];  // AMS는 대부분 페니스탁, 베이비 자이언트 적어서 제외
+  
+  var total = capBands.length * excds.length;
+  var done = 0;
+  
+  for(var i=0; i<excds.length; i++){
+    for(var j=0; j<capBands.length; j++){
+      var excd = excds[i];
+      var band = capBands[j];
+      done++;
+      if(onProgress) onProgress('KIS 조건검색 '+done+'/'+total+' · '+excd+' '+band.label+' ...');
+      try {
+        var results = await fetchKisMarketScreener({
+          excd:     excd,
+          capMin:   band.min,
+          capMax:   band.max,
+          volMin:   100000,   // 10만주+
+          priceMin: 10,       // $10+
+        });
+        results.forEach(function(s){
+          if(!pool[s.ticker]) pool[s.ticker] = s;
+        });
+      } catch(e){
+        console.warn('[CoreScan]', excd, band.label, 'failed:', e.message);
+      }
+      // KIS rate limit 준수 (Oracle VM이 10/s 제한. 여유분 대기)
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
+  
+  return Object.values(pool);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CORE 스캐너 메인 실행 (KIS 1차 + Babylon 2차)
+// ═══════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
+// CORE 스캐너 메인 실행 (watchlist 영구 킵 + 자동 재분석)
+// ═══════════════════════════════════════════════════════════════════
+// 
+// watchlist 데이터 구조 (localStorage.coreWatchlist):
+// {
+//   'NVDA': {
+//     ticker, stock, babylon,
+//     firstDetected, lastRefreshed, scanCount,
+//     verdictHistory: [{ts, verdict, reason, pct}],
+//     excluded: false
+//   }, ...
+// }
+// 
+// 상태 분류:
+//   - 'new':       이번 스캔에서 처음 발견 (ENTER/WATCH_CLAUDE)
+//   - 'kept':      기존 watchlist + 이번에도 ENTER/WATCH_CLAUDE 유지
+//   - 'degraded':  기존 watchlist + 이번에 WATCH_WEAK/BLOCK로 악화
+//   - 'improved':  기존 watchlist (악화 상태) + 이번에 복구
+
+var _coreScanState = {
+  running: false,
+  watchlist: {},   // 메모리 캐시 (localStorage 미러)
+  startTime: 0,
+};
+
+// ── watchlist 유틸 ──
+function loadCoreWatchlist(){
+  try {
+    var raw = localStorage.getItem('coreWatchlist');
+    if(!raw) return {};
+    return JSON.parse(raw);
+  } catch(e){
+    console.warn('[CoreScan] watchlist load failed:', e);
+    return {};
+  }
+}
+function saveCoreWatchlist(wl){
+  try {
+    localStorage.setItem('coreWatchlist', JSON.stringify(wl));
+  } catch(e){
+    console.warn('[CoreScan] watchlist save failed:', e);
+  }
+}
+function isWatchlistEntryValid(verdict){
+  return verdict === 'ENTER' || verdict === 'WATCH_CLAUDE';
+}
+function isWatchlistEntryDegraded(verdict){
+  return verdict === 'WATCH_WEAK' || verdict === 'BLOCK' || verdict === 'NO_DATA' || verdict === 'ERROR';
+}
+
+async function runCoreScanner(){
+  if(_coreScanState.running){
+    showToast('이미 스캔 중입니다');
+    return;
+  }
+  if(!KIS.appKey || !KIS.appSecret){
+    showToast('KIS 키를 먼저 설정하세요 (MOMO 설정에서)');
+    return;
+  }
+  if(typeof babylonEngine === 'undefined'){
+    showToast('Babylon 엔진이 로드되지 않았습니다');
+    return;
+  }
+  
+  _coreScanState.running = true;
+  _coreScanState.startTime = Date.now();
+  
+  var btn = document.getElementById('coreScannerBtn');
+  var statusEl = document.getElementById('coreScannerStatus');
+  var summaryEl = document.getElementById('coreScannerSummary');
+  var resultsEl = document.getElementById('coreScannerResults');
+  
+  if(btn){ btn.disabled = true; btn.textContent = '스캔 중...'; }
+  if(statusEl){ statusEl.style.display = ''; statusEl.textContent = '시작...'; }
+  if(summaryEl) summaryEl.style.display = 'none';
+  
+  var setStatus = function(msg){
+    if(statusEl) statusEl.textContent = msg;
+  };
+  
+  try {
+    // ═══ 기존 watchlist 로드 (excluded 제외) ═══
+    var watchlist = loadCoreWatchlist();
+    _coreScanState.watchlist = watchlist;
+    var existingTickers = Object.keys(watchlist).filter(function(t){
+      return !watchlist[t].excluded;
+    });
+    console.log('[CoreScan] 기존 watchlist:', existingTickers.length, '개');
+    
+    // ═══ Phase 1: KIS 시총/거래량 필터 ═══
+    setStatus('1차: KIS 조건검색 (시총 $10B+, 거래량 10만주+) ...');
+    var universe = await coreScanFetchUniverse(setStatus);
+    console.log('[CoreScan] KIS 통과:', universe.length, '개');
+    
+    if(universe.length === 0 && existingTickers.length === 0){
+      setStatus('❌ KIS에서 종목을 가져오지 못했고 기존 watchlist도 없습니다');
+      throw new Error('Empty universe');
+    }
+    
+    // ═══ Phase 1.5: 기존 watchlist 종목을 universe에 추가 (KIS 결과에 없어도) ═══
+    var universeTickers = new Set(universe.map(function(s){ return s.ticker; }));
+    var existingOnlyCount = 0;
+    existingTickers.forEach(function(t){
+      if(!universeTickers.has(t)){
+        // KIS 결과에 없는 기존 종목도 재분석 대상에 포함
+        // stock 정보는 기존 watchlist에서 가져옴 (오래된 값일 수 있음)
+        universe.push(watchlist[t].stock || { ticker: t, name: '', marketCap: 0, excd: '--' });
+        existingOnlyCount++;
+      }
+    });
+    if(existingOnlyCount > 0){
+      console.log('[CoreScan] KIS에 없지만 기존 watchlist 종목:', existingOnlyCount);
+    }
+    
+    setStatus('1차 완료: '+universe.length+'개 ('+existingOnlyCount+'개 기존 추가) · 2차 Babylon 시작...');
+    
+    // ═══ Phase 2: Babylon 병렬 분석 ═══
+    var allResults = [];  // 전체 결과 { stock, babylon, status }
+    
+    var BATCH_SIZE = 8;
+    var processed = 0;
+    var enterCount = 0, warnCount = 0, watchCount = 0;
+    
+    for(var i=0; i<universe.length; i+=BATCH_SIZE){
+      var batch = universe.slice(i, i+BATCH_SIZE);
+      var promises = batch.map(function(stock){
+        return babylonEngine.analyze(stock.ticker).then(function(result){
+          return { stock: stock, babylon: result };
+        }).catch(function(e){
+          return { stock: stock, babylon: { verdict: 'ERROR', error: e.message } };
+        });
+      });
+      var batchResults = await Promise.all(promises);
+      allResults = allResults.concat(batchResults);
+      
+      batchResults.forEach(function(r){
+        var v = r.babylon.verdict;
+        var pct = r.babylon.decision_details?.position_size_pct;
+        if(v === 'ENTER' && pct === 100) enterCount++;
+        else if(v === 'ENTER') warnCount++;
+        else if(v === 'WATCH_CLAUDE') watchCount++;
+      });
+      
+      processed += batch.length;
+      var pctDone = Math.round(processed / universe.length * 100);
+      setStatus('2차 Babylon: '+processed+'/'+universe.length+' ('+pctDone+'%) · 💎'+enterCount+' ⚠'+warnCount+' 🟡'+watchCount);
+    }
+    
+    // ═══ Phase 3: watchlist 업데이트 + 상태 분류 ═══
+    var nowIso = new Date().toISOString();
+    var newStocks = [];       // 새로 발견
+    var keptStocks = [];      // 계속 유지
+    var degradedStocks = [];  // 악화 (기존 + 이번에 안 좋아짐)
+    var improvedStocks = [];  // 복구 (기존 악화 상태 → 이번에 ENTER/WATCH)
+    
+    allResults.forEach(function(r){
+      var t = r.stock.ticker;
+      var v = r.babylon.verdict;
+      var reason = r.babylon.reason || '';
+      var pct = r.babylon.decision_details?.position_size_pct || 0;
+      var existing = watchlist[t];
+      
+      // 제외된 종목은 건너뜀
+      if(existing && existing.excluded){
+        return;
+      }
+      
+      var isValid = isWatchlistEntryValid(v);
+      var isDegraded = isWatchlistEntryDegraded(v);
+      
+      if(!existing && isValid){
+        // 신규 발견
+        watchlist[t] = {
+          ticker: t,
+          stock: r.stock,
+          babylon: r.babylon,
+          firstDetected: nowIso,
+          lastRefreshed: nowIso,
+          scanCount: 1,
+          verdictHistory: [{ ts: nowIso, verdict: v, reason: reason, pct: pct }],
+          excluded: false,
+          lastWasDegraded: false,
+        };
+        newStocks.push({ stock: r.stock, babylon: r.babylon, entry: watchlist[t], status: 'new' });
+      } else if(existing && isValid){
+        // 기존 + 유효 (유지 또는 복구)
+        var wasDegraded = existing.lastWasDegraded;
+        existing.stock = r.stock;  // KIS 정보 업데이트
+        existing.babylon = r.babylon;
+        existing.lastRefreshed = nowIso;
+        existing.scanCount = (existing.scanCount || 0) + 1;
+        existing.verdictHistory = existing.verdictHistory || [];
+        existing.verdictHistory.push({ ts: nowIso, verdict: v, reason: reason, pct: pct });
+        // 히스토리 너무 길어지지 않게 최근 20개만
+        if(existing.verdictHistory.length > 20) existing.verdictHistory = existing.verdictHistory.slice(-20);
+        existing.lastWasDegraded = false;
+        if(wasDegraded){
+          improvedStocks.push({ stock: r.stock, babylon: r.babylon, entry: existing, status: 'improved' });
+        } else {
+          keptStocks.push({ stock: r.stock, babylon: r.babylon, entry: existing, status: 'kept' });
+        }
+      } else if(existing && isDegraded){
+        // 기존 + 악화
+        existing.babylon = r.babylon;
+        existing.lastRefreshed = nowIso;
+        existing.scanCount = (existing.scanCount || 0) + 1;
+        existing.verdictHistory = existing.verdictHistory || [];
+        existing.verdictHistory.push({ ts: nowIso, verdict: v, reason: reason, pct: pct });
+        if(existing.verdictHistory.length > 20) existing.verdictHistory = existing.verdictHistory.slice(-20);
+        existing.lastWasDegraded = true;
+        degradedStocks.push({ stock: r.stock, babylon: r.babylon, entry: existing, status: 'degraded' });
+      }
+      // 그 외 (신규 + 무효): 무시 (watchlist에 추가 안함)
+    });
+    
+    saveCoreWatchlist(watchlist);
+    _coreScanState.watchlist = watchlist;
+    
+    // ═══ Phase 4: 결과 정렬 + 렌더링 ═══
+    // 각 카테고리 내부 정렬: 포지션% → 가속 강도 → 시총 작은 순
+    var sortFn = function(a, b){
+      var pa = a.babylon.decision_details?.position_size_pct || 0;
+      var pb = b.babylon.decision_details?.position_size_pct || 0;
+      if(pa !== pb) return pb - pa;
+      var ja = a.babylon.stages?.acceleration?.details?.latest_jump_pp || 0;
+      var jb = b.babylon.stages?.acceleration?.details?.latest_jump_pp || 0;
+      if(Math.abs(ja - jb) > 0.1) return jb - ja;
+      return (a.stock.marketCap||0) - (b.stock.marketCap||0);
+    };
+    newStocks.sort(sortFn);
+    keptStocks.sort(sortFn);
+    improvedStocks.sort(sortFn);
+    degradedStocks.sort(sortFn);
+    
+    // 요약
+    var elapsed = ((Date.now() - _coreScanState.startTime)/1000).toFixed(1);
+    var totalActive = newStocks.length + keptStocks.length + improvedStocks.length;
+    if(summaryEl){
+      summaryEl.style.display = '';
+      summaryEl.innerHTML = 
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'+
+          '<span style="color:var(--pu);font-weight:700">스캔 완료 ('+elapsed+'s)</span>'+
+          '<span style="color:var(--t2);font-size:10px">1차 '+universe.length+' → 관심 '+totalActive+'</span>'+
+        '</div>'+
+        '<div style="color:var(--t2);letter-spacing:.05em">'+
+          '🆕 신규: '+newStocks.length+'개 · 🔍 관찰 중: '+keptStocks.length+'개'+
+          (improvedStocks.length > 0 ? ' · 📈 복구: '+improvedStocks.length+'개' : '')+
+          (degradedStocks.length > 0 ? ' · ⚠ 악화: '+degradedStocks.length+'개' : '')+
+        '</div>';
+    }
+    
+    setStatus('');
+    if(statusEl) statusEl.style.display = 'none';
+    
+    renderCoreScannerResults({ new: newStocks, kept: keptStocks, improved: improvedStocks, degraded: degradedStocks });
+    
+  } catch(e){
+    console.error('[CoreScan] Failed:', e);
+    setStatus('❌ 스캔 실패: ' + e.message);
+  } finally {
+    _coreScanState.running = false;
+    if(btn){ btn.disabled = false; btn.textContent = '스캔'; }
+  }
+}
+
+// 페이지 로드 시 watchlist 표시 (스캔 안 해도 기존 것 보이게)
+function renderCoreScannerFromStorage(){
+  var watchlist = loadCoreWatchlist();
+  _coreScanState.watchlist = watchlist;
+  var el = document.getElementById('coreScannerResults');
+  if(!el) return;
+  
+  var active = Object.values(watchlist).filter(function(e){ return !e.excluded; });
+  if(active.length === 0){
+    // 기본 안내 유지 (이미 HTML에 있음)
+    return;
+  }
+  
+  // 악화 상태와 유효 상태 분리
+  var kept = [], degraded = [];
+  active.forEach(function(entry){
+    var item = { stock: entry.stock, babylon: entry.babylon, entry: entry };
+    if(entry.lastWasDegraded) { item.status = 'degraded'; degraded.push(item); }
+    else { item.status = 'kept'; kept.push(item); }
+  });
+  
+  var sortFn = function(a, b){
+    var pa = a.babylon?.decision_details?.position_size_pct || 0;
+    var pb = b.babylon?.decision_details?.position_size_pct || 0;
+    return pb - pa;
+  };
+  kept.sort(sortFn);
+  degraded.sort(sortFn);
+  
+  renderCoreScannerResults({ new: [], kept: kept, improved: [], degraded: degraded });
+}
+
+function renderCoreScannerResults(groups){
+  var el = document.getElementById('coreScannerResults');
+  if(!el) return;
+  
+  var total = (groups.new?.length || 0) + (groups.kept?.length || 0) + (groups.improved?.length || 0) + (groups.degraded?.length || 0);
+  if(total === 0){
+    el.innerHTML = 
+      '<div style="text-align:center;padding:30px 20px;color:var(--t3);font-size:12px;line-height:2">'+
+        '<div style="font-size:24px;margin-bottom:8px;opacity:.3">⏸</div>'+
+        '조건에 맞는 종목이 없습니다<br>'+
+        '<span style="font-size:10px">시총 필터나 거래량 조건을 조정해보세요</span>'+
+      '</div>';
+    return;
+  }
+  
+  var html = '';
+  
+  // 🆕 신규 발견
+  if(groups.new && groups.new.length > 0){
+    html += '<div style="font-family:var(--mono);font-size:10px;color:var(--g);letter-spacing:.15em;margin:8px 0 6px;padding:4px 8px;background:rgba(0,240,122,.08);border-left:3px solid var(--g);border-radius:3px">🆕 신규 발견 ('+groups.new.length+')</div>';
+    html += groups.new.map(function(r){ return renderCoreScannerCard(r.stock, r.babylon, r.entry, 'new'); }).join('');
+  }
+  
+  // 📈 복구
+  if(groups.improved && groups.improved.length > 0){
+    html += '<div style="font-family:var(--mono);font-size:10px;color:var(--bl);letter-spacing:.15em;margin:14px 0 6px;padding:4px 8px;background:rgba(43,159,255,.08);border-left:3px solid var(--bl);border-radius:3px">📈 복구 ('+groups.improved.length+') — 악화 후 다시 ENTER</div>';
+    html += groups.improved.map(function(r){ return renderCoreScannerCard(r.stock, r.babylon, r.entry, 'improved'); }).join('');
+  }
+  
+  // 🔍 관찰 중
+  if(groups.kept && groups.kept.length > 0){
+    html += '<div style="font-family:var(--mono);font-size:10px;color:var(--pu);letter-spacing:.15em;margin:14px 0 6px;padding:4px 8px;background:rgba(159,122,255,.08);border-left:3px solid var(--pu);border-radius:3px">🔍 관찰 중 ('+groups.kept.length+')</div>';
+    html += groups.kept.map(function(r){ return renderCoreScannerCard(r.stock, r.babylon, r.entry, 'kept'); }).join('');
+  }
+  
+  // ⚠ 악화
+  if(groups.degraded && groups.degraded.length > 0){
+    html += '<div style="font-family:var(--mono);font-size:10px;color:var(--r);letter-spacing:.15em;margin:14px 0 6px;padding:4px 8px;background:rgba(255,45,78,.08);border-left:3px solid var(--r);border-radius:3px">⚠ 상태 악화 ('+groups.degraded.length+') — 제외 권장</div>';
+    html += groups.degraded.map(function(r){ return renderCoreScannerCard(r.stock, r.babylon, r.entry, 'degraded'); }).join('');
+  }
+  
+  el.innerHTML = html;
+}
+
+function renderCoreScannerCard(stock, babylon, entry, status){
+  var v = babylon.verdict;
+  var det = babylon.decision_details || {};
+  var stg = babylon.stages || {};
+  var pct = det.position_size_pct || 0;
+  
+  // 색상/아이콘 (verdict 기준)
+  var color, bg, border, icon, verdictLabel;
+  if(v === 'ENTER' && pct === 100){
+    color = 'var(--g)'; bg = 'rgba(0,240,122,.08)'; border = 'rgba(0,240,122,.3)';
+    icon = '💎'; verdictLabel = 'ENTER clean';
+  } else if(v === 'ENTER'){
+    color = 'var(--a)'; bg = 'rgba(255,170,0,.08)'; border = 'rgba(255,170,0,.25)';
+    icon = '⚠'; verdictLabel = 'ENTER w/warning';
+  } else if(v === 'WATCH_CLAUDE'){
+    color = 'var(--a)'; bg = 'rgba(255,170,0,.08)'; border = 'rgba(255,170,0,.25)';
+    icon = '🟡'; verdictLabel = 'WATCH_CLAUDE';
+  } else if(v === 'WATCH_WEAK'){
+    color = 'var(--t2)'; bg = 'rgba(90,122,149,.06)'; border = 'rgba(90,122,149,.15)';
+    icon = '⏸'; verdictLabel = 'WATCH_WEAK';
+  } else if(v === 'BLOCK'){
+    color = 'var(--r)'; bg = 'rgba(255,45,78,.06)'; border = 'rgba(255,45,78,.2)';
+    icon = '🛑'; verdictLabel = 'BLOCK';
+  } else {
+    color = 'var(--t3)'; bg = 'rgba(45,74,96,.05)'; border = 'rgba(45,74,96,.15)';
+    icon = '—'; verdictLabel = v || 'N/A';
+  }
+  
+  // 가속 경로
+  var pathLabel = {
+    'consec_accel':'2분기 연속 가속', 'strong_latest':'단일 급가속',
+    'latest_with_trend':'가속+상승추세', 'turnaround_recovery':'턴어라운드',
+    'sustained_uptrend':'지속 상승', 'ipo_momentum':'IPO 초기 고성장',
+    'ipo_early_qoq':'IPO QoQ 가속', 'margin_improvement':'마진 급개선',
+    'multiple_risk_signals':'복합 위험', 'growth_with_context_warnings':'가속 but 경고',
+    'no_acceleration_no_margin_improvement':'가속/마진개선 없음',
+    'hard_block':'하드 블록', 'sec_data_insufficient':'SEC 데이터 부족'
+  }[babylon.reason] || babylon.reason || '';
+  
+  // 최근 YoY 추이
+  var yoyStr = '';
+  if(stg.quarters && stg.quarters.length > 0){
+    yoyStr = stg.quarters.slice(-4).map(function(q){
+      var y = q.yoy;
+      if(y === null || y === undefined) return '<span style="color:var(--t3)">--</span>';
+      var yColor = y >= 20 ? 'var(--g)' : y >= 0 ? 'var(--t)' : 'var(--r)';
+      return '<span style="color:'+yColor+'">'+(y >= 0 ? '+' : '')+y.toFixed(0)+'%</span>';
+    }).join(' → ');
+  }
+  
+  // 시가총액 포맷
+  var mcapStr = '';
+  if(stock.marketCap && stock.marketCap > 0){
+    if(stock.marketCap >= 1000000) mcapStr = '$'+(stock.marketCap/1000000).toFixed(1)+'T';
+    else if(stock.marketCap >= 1000) mcapStr = '$'+(stock.marketCap/1000).toFixed(1)+'B';
+    else mcapStr = '$'+stock.marketCap.toFixed(0)+'M';
+  }
+  
+  // Warnings
+  var warningsStr = '';
+  if(stg.warnings && stg.warnings.length > 0){
+    warningsStr = stg.warnings.map(function(w){
+      var wc = w.severity === 'high' ? 'var(--r)' : 'var(--a)';
+      return '<div style="font-family:var(--mono);font-size:10px;color:'+wc+';margin-top:3px">⚠ '+w.message+'</div>';
+    }).join('');
+  }
+  
+  // watchlist 메타 (몇 번째 스캔, 최초 발견 날짜)
+  var metaStr = '';
+  if(entry){
+    var firstDate = entry.firstDetected ? entry.firstDetected.slice(0, 10) : '';
+    var scanCount = entry.scanCount || 1;
+    var daysKept = entry.firstDetected ? Math.floor((Date.now() - new Date(entry.firstDetected).getTime()) / (86400*1000)) : 0;
+    metaStr = '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:4px">'+
+      '처음 발견: '+firstDate+' · '+scanCount+'회 확인'+
+      (daysKept > 0 ? ' · '+daysKept+'일째 관찰' : '')+
+      '</div>';
+  }
+  
+  // status 배지
+  var statusBadge = '';
+  if(status === 'new'){
+    statusBadge = '<span style="font-family:var(--mono);font-size:9px;color:var(--g);background:rgba(0,240,122,.15);padding:1px 5px;border-radius:3px;margin-left:4px">NEW</span>';
+  } else if(status === 'improved'){
+    statusBadge = '<span style="font-family:var(--mono);font-size:9px;color:var(--bl);background:rgba(43,159,255,.15);padding:1px 5px;border-radius:3px;margin-left:4px">복구</span>';
+  } else if(status === 'degraded'){
+    statusBadge = '<span style="font-family:var(--mono);font-size:9px;color:var(--r);background:rgba(255,45,78,.15);padding:1px 5px;border-radius:3px;margin-left:4px">악화</span>';
+  }
+  
+  // verdict history 축약
+  var historyStr = '';
+  if(entry && entry.verdictHistory && entry.verdictHistory.length >= 2){
+    var recentHist = entry.verdictHistory.slice(-5);
+    historyStr = '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:4px">추이: '+
+      recentHist.map(function(h){
+        var abbrev = h.verdict === 'ENTER' ? 'E' : h.verdict === 'WATCH_CLAUDE' ? 'W' : h.verdict === 'WATCH_WEAK' ? 'w' : h.verdict === 'BLOCK' ? 'B' : '?';
+        var hc = h.verdict === 'ENTER' ? 'var(--g)' : (h.verdict === 'WATCH_CLAUDE' ? 'var(--a)' : 'var(--r)');
+        return '<span style="color:'+hc+'">'+abbrev+'</span>';
+      }).join('→')+
+      '</div>';
+  }
+  
+  return (
+    '<div style="background:'+bg+';border:1px solid '+border+';border-radius:10px;padding:12px;margin-bottom:10px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px">'+
+        '<div style="flex:1;min-width:0">'+
+          '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:3px">'+
+            '<span style="font-size:13px">'+icon+'</span>'+
+            '<span style="font-family:var(--mono);font-weight:700;color:var(--t);font-size:14px">'+stock.ticker+'</span>'+
+            statusBadge +
+            '<span style="font-family:var(--mono);font-size:10px;color:'+color+';background:rgba(0,0,0,.15);padding:1px 5px;border-radius:3px">'+verdictLabel+'</span>'+
+            (pct > 0 ? '<span style="font-family:var(--mono);font-size:10px;color:'+color+'">'+pct+'%</span>' : '')+
+          '</div>'+
+          '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+
+            (stock.name ? stock.name.substring(0, 30) : '')+
+            (mcapStr ? ' · <span style="color:var(--t)">'+mcapStr+'</span>' : '')+
+            (stock.excd ? ' · '+stock.excd : '')+
+          '</div>'+
+        '</div>'+
+        '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">'+
+          '<button onclick="quickAnalyzeCore(\''+stock.ticker+'\')" style="background:var(--pu);color:#000;border:none;border-radius:6px;padding:5px 10px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap">분석 →</button>'+
+          '<button onclick="excludeFromWatchlist(\''+stock.ticker+'\')" style="background:none;color:var(--t3);border:1px solid var(--b);border-radius:6px;padding:3px 8px;font-family:var(--mono);font-size:9px;cursor:pointer;white-space:nowrap">제외</button>'+
+        '</div>'+
+      '</div>'+
+      '<div style="font-family:var(--mono);font-size:11px;color:var(--t);margin-top:6px;padding-top:6px;border-top:1px dashed '+border+'">'+pathLabel+'</div>'+
+      (yoyStr ? '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);margin-top:4px">YoY: '+yoyStr+'</div>' : '')+
+      warningsStr +
+      historyStr +
+      metaStr +
+    '</div>'
+  );
+}
+
+// 제외 버튼
+function excludeFromWatchlist(ticker){
+  var wl = loadCoreWatchlist();
+  if(wl[ticker]){
+    wl[ticker].excluded = true;
+    wl[ticker].excludedAt = new Date().toISOString();
+    saveCoreWatchlist(wl);
+    _coreScanState.watchlist = wl;
+    showToast(ticker + ' 제외됨');
+    // 화면 재렌더링
+    renderCoreScannerFromStorage();
+  }
+}
+
+// 제외 해제 (설정에서 쓸 수도)
+function unexcludeFromWatchlist(ticker){
+  var wl = loadCoreWatchlist();
+  if(wl[ticker]){
+    wl[ticker].excluded = false;
+    delete wl[ticker].excludedAt;
+    saveCoreWatchlist(wl);
+    _coreScanState.watchlist = wl;
+    showToast(ticker + ' 제외 해제');
+  }
+}
+
+// 스캐너 카드에서 "상세 분석" 버튼 → CORE 검색 탭으로 이동 + 자동 분석
+function quickAnalyzeCore(ticker){
+  switchSubTab('search');
+  setTimeout(function(){
+    var inputEl = document.getElementById('coreInput');
+    if(inputEl){ inputEl.value = ticker; }
+    runModeScan('core');
+  }, 100);
 }
 
 // ── US 현재 세션 감지 (ET 기준, DST 자동 반영) ──
