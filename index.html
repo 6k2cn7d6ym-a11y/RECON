@@ -7401,9 +7401,9 @@ function cardHTML(r, mode){
   var ea = calcEntryAction(r);
   var st = calcSellTargets(r);
 
-  // VWAP 바
+  // VWAP 바 (intraday — CORE 제외)
   var vwapHtml='';
-  if(r.vwap){
+  if(r.vwap && r._mode !== 'core'){
     var vp=r.vwap_pct!==null?r.vwap_pct:0;
     var barPct=Math.max(5,Math.min(95,50+vp/10*50));
     var vpColor=vp>=0?'var(--g)':'var(--r)';
@@ -7412,22 +7412,27 @@ function cardHTML(r, mode){
 
   // 태그
   var tags='';
-  if(r.news_quality==='factual' && !r.news_wire_only) tags+='<span class="tag tg">팩트뉴스</span>';
-  else if(r.news_quality==='factual' && r.news_wire_only) tags+='<span class="tag ta">⚠ 와이어 팩트</span>';
-  if(r.news_wire_only)             tags+='<span class="tag tr">Wire-only</span>';
+  // ── MOMO 전용 태그 (intraday 지표들) ──
+  if(r._mode === 'momo'){
+    if(r.news_quality==='factual' && !r.news_wire_only) tags+='<span class="tag tg">팩트뉴스</span>';
+    else if(r.news_quality==='factual' && r.news_wire_only) tags+='<span class="tag ta">⚠ 와이어 팩트</span>';
+    if(r.news_wire_only)             tags+='<span class="tag tr">Wire-only</span>';
+  }
+  // ── 공통 태그 ──
   if(r.float_m&&r.float_m<10)     tags+='<span class="tag tg">Low Float</span>';
   if(r.short_pct&&r.short_pct>20) tags+='<span class="tag tr">SI '+r.short_pct.toFixed(0)+'%</span>';
-  if(r.rvol&&r.rvol>8)            tags+='<span class="tag tb">RVol '+r.rvol+'x</span>';
-  if(r.pm_consolidation)          tags+='<span class="tag tp">PM 응집</span>';
-  if(r.rvol&&r.rvol>100)          tags+='<span class="tag tr">⚠ RVol 비정상</span>';
-  // 위꼬리 강도 태그 (브레이크아웃 발생한 경우만)
-  if(r.breakout_wick_strength==='strong') tags+='<span class="tag tg">위꼬리 강함</span>';
-  else if(r.breakout_wick_strength==='normal') tags+='<span class="tag tb">위꼬리 보통</span>';
-  else if(r.breakout_wick_strength==='weak')   tags+='<span class="tag ta">⚠ 위꼬리 주의</span>';
-  else if(r.breakout_wick_strength==='failed') tags+='<span class="tag tr">슈팅스타</span>';
-  // 슬리피지 위험 태그
-  if(r.slippage_risk==='high')    tags+='<span class="tag tr">⚡ 체결지옥</span>';
-  else if(r.slippage_risk==='medium') tags+='<span class="tag ta">⚠ 슬리피지</span>';
+  if(r.rvol&&r.rvol>8 && r._mode !== 'core') tags+='<span class="tag tb">RVol '+r.rvol+'x</span>';
+  // ── MOMO 전용 (프리마켓/돌파/체결 관련) ──
+  if(r._mode === 'momo'){
+    if(r.pm_consolidation)          tags+='<span class="tag tp">PM 응집</span>';
+    if(r.rvol&&r.rvol>100)          tags+='<span class="tag tr">⚠ RVol 비정상</span>';
+    if(r.breakout_wick_strength==='strong') tags+='<span class="tag tg">위꼬리 강함</span>';
+    else if(r.breakout_wick_strength==='normal') tags+='<span class="tag tb">위꼬리 보통</span>';
+    else if(r.breakout_wick_strength==='weak')   tags+='<span class="tag ta">⚠ 위꼬리 주의</span>';
+    else if(r.breakout_wick_strength==='failed') tags+='<span class="tag tr">슈팅스타</span>';
+    if(r.slippage_risk==='high')    tags+='<span class="tag tr">⚡ 체결지옥</span>';
+    else if(r.slippage_risk==='medium') tags+='<span class="tag ta">⚠ 슬리피지</span>';
+  }
   if(ac==='BLOCK')                 tags+='<span class="tag tr">BLOCK</span>';
   // SWING 전용 태그
   if(r._mode==='swing'&&r.conditions_met!==undefined){
@@ -7441,15 +7446,7 @@ function cardHTML(r, mode){
   if(r._mode==='swing'&&(r.signals||[]).some(function(s){return s.includes('B안');}))
     tags+='<span class="tag tb">⭐ B안 승격</span>';
   // CORE 전용 태그
-  if(r._mode==='core'&&r.core_stage) tags+='<span class="tag tp">'+r.core_stage+'</span>';
-  if(r._mode==='core'&&r.entry_trigger&&r.entry_trigger!=='NONE'){
-    var trgColors={'MA50_BREAKOUT':'var(--g)','BREAKOUT_IMMINENT':'var(--a)','VOL_EXPANSION':'var(--bl)'};
-    var trgLabels={'MA50_BREAKOUT':'MA50 돌파','BREAKOUT_IMMINENT':'돌파 임박','VOL_EXPANSION':'거래량 확장'};
-    var trgC=trgColors[r.entry_trigger]||'var(--pu)';
-    tags+='<span class="tag" style="color:'+trgC+';background:rgba(255,255,255,.05);border:1px solid '+trgC+'">🎯 '+(trgLabels[r.entry_trigger]||r.entry_trigger)+'</span>';
-  }
-  if(r._mode==='core'&&r.accum_score>=6) tags+='<span class="tag tp">매집 '+r.accum_score+'/10</span>';
-  if(r._mode==='core'&&r.timing_score>=5) tags+='<span class="tag tb">타이밍 '+r.timing_score+'/10</span>';
+  // CORE 전용 태그: 대부분 setupBanner와 중복 → 제거. overextended 경고만 유지
   if(r._mode==='core'&&r.core_mode==='overextended') tags+='<span class="tag tr">과확장 베이스없음</span>';
   // MOMO 시장 국면 + SPY 방향 태그 (분석 시점 기록)
   if(r._mode==='momo'&&r._marketPhase){
@@ -7814,6 +7811,73 @@ function cardHTML(r, mode){
       '</div>';
   }
 
+  // ── 셋업 섹션 (옵션 C Step 3: 진입 타이밍 축) ──
+  var setupBanner = '';
+  if(r._mode === 'core' && r.setup){
+    var sx = r.setup;
+    var sxLabel = sx.label;
+    var sxRaw = sx.raw_label;
+    var sxDown = sx.downgrade_steps || 0;
+
+    // 라벨별 색상
+    var sxColor, sxBg, sxBorder, sxIcon, sxDesc;
+    if(sxLabel === 'READY'){
+      sxColor='var(--g)'; sxBg='rgba(0,240,122,.08)'; sxBorder='rgba(0,240,122,.25)';
+      sxIcon='🎯'; sxDesc='진입 준비 완료 (트리거 발동)';
+    } else if(sxLabel === 'IMMINENT'){
+      sxColor='var(--a)'; sxBg='rgba(255,170,0,.08)'; sxBorder='rgba(255,170,0,.25)';
+      sxIcon='⏳'; sxDesc='트리거 임박 (조건 충족, 발동 대기)';
+    } else if(sxLabel === 'BUILDING'){
+      sxColor='var(--bl)'; sxBg='rgba(43,159,255,.08)'; sxBorder='rgba(43,159,255,.2)';
+      sxIcon='📐'; sxDesc='형성 중 (한 축만 충족)';
+    } else if(sxLabel === 'EARLY'){
+      sxColor='var(--t2)'; sxBg='rgba(90,122,149,.06)'; sxBorder='rgba(90,122,149,.15)';
+      sxIcon='⏸'; sxDesc='초기 단계 (매집/타이밍 부족)';
+    } else if(sxLabel === 'FAIL'){
+      sxColor='var(--r)'; sxBg='rgba(255,45,78,.08)'; sxBorder='rgba(255,45,78,.25)';
+      sxIcon='🛑'; sxDesc='펀더멘털 게이트 실패';
+    } else {
+      sxColor='var(--t3)'; sxBg='rgba(45,74,96,.06)'; sxBorder='rgba(45,74,96,.15)';
+      sxIcon='—'; sxDesc=sxLabel;
+    }
+
+    // 트리거 한국어
+    var triggerKr = {
+      'MA50_BREAKOUT':'MA50 돌파', 'BREAKOUT_IMMINENT':'돌파 임박',
+      'VOL_EXPANSION':'거래량 확장', 'NONE':'—'
+    }[r.entry_trigger || 'NONE'];
+
+    // 섹터
+    var sectorStr = r.sector_etf
+      ? r.sector_etf+' <span style="color:'+( {STRONG:'var(--g)', NEUTRAL:'var(--t2)', WEAK:'var(--r)'}[r.sector_gate] || 'var(--t3)' )+'">'+(r.sector_gate||'UNKNOWN')+'</span>'
+      : '<span style="color:var(--t3)">미매핑</span>';
+
+    // 다운그레이드 표기
+    var downStr = '';
+    if(sxDown > 0){
+      downStr = ' <span style="font-family:var(--mono);font-size:9px;color:var(--a);background:rgba(255,170,0,.12);padding:1px 5px;border-radius:3px">raw: '+sxRaw+' −'+sxDown+'</span>';
+    }
+
+    setupBanner =
+      '<div style="background:'+sxBg+';border:1px solid '+sxBorder+';border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+          '<div style="display:flex;align-items:center;gap:6px">'+
+            '<span style="font-size:14px">'+sxIcon+'</span>'+
+            '<span style="font-family:var(--mono);font-size:10px;color:'+sxColor+';font-weight:700;letter-spacing:.1em">셋업</span>'+
+            '<span style="font-family:var(--mono);font-size:12px;color:'+sxColor+';font-weight:700">'+sxLabel+'</span>'+
+            downStr+
+          '</div>'+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:11px;color:var(--t);margin-bottom:4px">'+sxDesc+'</div>'+
+        '<div style="display:flex;flex-wrap:wrap;gap:12px;font-family:var(--mono);font-size:10px;color:var(--t2);padding-top:4px;border-top:1px dashed '+sxBorder+'">'+
+          '<span>매집 <span style="color:'+(r.accum_score>=6?'var(--pu)':r.accum_score>=4?'var(--a)':'var(--t3)')+'">'+(r.accum_score||0)+'/10</span></span>'+
+          '<span>타이밍 <span style="color:'+(r.timing_score>=5?'var(--pu)':r.timing_score>=3?'var(--a)':'var(--t3)')+'">'+(r.timing_score||0)+'/10</span></span>'+
+          '<span>섹터 '+sectorStr+'</span>'+
+          '<span>트리거 <span style="color:'+(r.entry_trigger && r.entry_trigger !== 'NONE' ? 'var(--g)' : 'var(--t3)')+'">'+triggerKr+'</span></span>'+
+        '</div>'+
+      '</div>';
+  }
+
   // ── 보유 포지션 배너 ──
   var holdBanner = '';
   if(r._openTrade){
@@ -7888,6 +7952,7 @@ function cardHTML(r, mode){
   return '<div class="stock-card '+cardC+'">'+
     synthesisBanner+
     babylonBanner+
+    setupBanner+
     holdBanner+
 
     '<div class="card-row1">'+
@@ -7896,8 +7961,11 @@ function cardHTML(r, mode){
           '<div class="card-ticker">'+r.ticker+'</div>'+
           modeBadge+tsStr+
         '</div>'+
-        '<div class="card-sub">'+(r.float_m?r.float_m.toFixed(1)+'M float · ':'')+(r._mode==='swing'&&r.conditions_met!==undefined?'조건 '+r.conditions_met+'/8 · ':'')+(r._mode==='swing'&&r.marketCap_b?'시총 $'+r.marketCap_b+'B · ':'')+(r._mode==='core'&&r.accum_score!==undefined?'매집 '+r.accum_score+'/10 · 타이밍 '+r.timing_score+'/10 · ':'')+(r._mode==='core'&&r.core_stage?r.core_stage+' · ':'')+(r.news_quality||'--')+
-          (function(){ var z=getPMZone(r); return z?' · <span style="color:'+z.color+'">'+z.label+' '+z.pct+'%</span>':''; })()+
+        '<div class="card-sub">'+(r.float_m&&r._mode!=='core'?r.float_m.toFixed(1)+'M float · ':'')+(r._mode==='swing'&&r.conditions_met!==undefined?'조건 '+r.conditions_met+'/8 · ':'')+(r._mode==='swing'&&r.marketCap_b?'시총 $'+r.marketCap_b+'B · ':'')+(r._mode==='core'&&r.marketCap_b?'시총 $'+r.marketCap_b+'B · ':'')+(r._mode==='core' ? '' : (r.news_quality||'--'))+
+          (function(){ 
+            if(r._mode === 'core') return '';  // CORE는 PM zone 의미 없음
+            var z=getPMZone(r); return z?' · <span style="color:'+z.color+'">'+z.label+' '+z.pct+'%</span>':''; 
+          })()+
         '</div>'+
       '</div>'+
       '<div class="action-badge '+abC+'"><div class="ab-score">'+r.score+'</div><div class="ab-label">'+ac+'</div></div>'+
@@ -7906,7 +7974,7 @@ function cardHTML(r, mode){
     '<div class="card-row2">'+
       '<span class="card-price">'+price+'</span>'+
       '<span class="card-gap '+(r.gap_pct<0?'red':'')+'">'+gap+'</span>'+
-      (r.rvol?'<span class="card-rvol">RVol '+r.rvol+'x'+(r.rvol_corrected?'*':'')+' </span>':'')+
+      (r.rvol && r._mode !== 'core' ?'<span class="card-rvol">RVol '+r.rvol+'x'+(r.rvol_corrected?'*':'')+' </span>':'')+
     '</div>'+
 
     (ac!=='BLOCK'?
@@ -8097,13 +8165,15 @@ function cardHTML(r, mode){
       :'')+
     '</div>'+
 
-    '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--t3)">'+
-      (r.pm_high?'<span>PM↑ $'+r.pm_high.toFixed(2)+'</span>':'')+
-      (r.pm_low?'<span>PM↓ $'+r.pm_low.toFixed(2)+'</span>':'')+
-      (r.orb_high?'<span style="color:var(--bl)">ORB $'+r.orb_high.toFixed(2)+'</span>':'')+
-      (r.pm_range_pct!=null?'<span>레인지 '+r.pm_range_pct+'%'+(r.pm_consolidation?' 🟢':'')+'</span>':'')+
-    '</div>'+
-    (r._dumpScore>0?'<div style="font-family:var(--mono);font-size:10px;margin-top:3px;color:'+(r._dumpScore>=40?'var(--r)':r._dumpScore>=20?'var(--a)':'var(--t3)')+'">덤프위험 '+r._dumpScore+'pt'+(r._hardBlocked?' · 차단':'')+'</div>':'')+
+    (r._mode !== 'core' ? 
+      '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--t3)">'+
+        (r.pm_high?'<span>PM↑ $'+r.pm_high.toFixed(2)+'</span>':'')+
+        (r.pm_low?'<span>PM↓ $'+r.pm_low.toFixed(2)+'</span>':'')+
+        (r.orb_high?'<span style="color:var(--bl)">ORB $'+r.orb_high.toFixed(2)+'</span>':'')+
+        (r.pm_range_pct!=null?'<span>레인지 '+r.pm_range_pct+'%'+(r.pm_consolidation?' 🟢':'')+'</span>':'')+
+      '</div>'
+    : '')+
+    (r._dumpScore>0 && r._mode !== 'core'?'<div style="font-family:var(--mono);font-size:10px;margin-top:3px;color:'+(r._dumpScore>=40?'var(--r)':r._dumpScore>=20?'var(--a)':'var(--t3)')+'">덤프위험 '+r._dumpScore+'pt'+(r._hardBlocked?' · 차단':'')+'</div>':'')+
 
     sigs+
   '</div>';
