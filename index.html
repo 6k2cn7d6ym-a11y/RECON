@@ -1572,22 +1572,24 @@ async function fetchKisMarketScreener(opts){
   };
   
   // 시가총액 조건
+  // KIS 버그: CO_EN_VALX가 공백이면 "상한 0"으로 해석되어 0개 반환
+  //           공백 대신 매우 큰 값 넣어야 상한 없음 효과
   if(opts.capMin !== undefined || opts.capMax !== undefined){
     query.CO_YN_VALX = '1';
-    query.CO_ST_VALX = opts.capMin !== undefined ? String(opts.capMin) : '';
-    query.CO_EN_VALX = opts.capMax !== undefined ? String(opts.capMax) : '';
+    query.CO_ST_VALX = opts.capMin !== undefined ? String(opts.capMin) : '1';
+    query.CO_EN_VALX = opts.capMax !== undefined ? String(opts.capMax) : '99999999999';
   }
-  // 거래량 조건
+  // 거래량 조건 (마찬가지로 상한 필요)
   if(opts.volMin !== undefined){
     query.CO_YN_VOLUME = '1';
     query.CO_ST_VOLUME = String(opts.volMin);
-    query.CO_EN_VOLUME = '';
+    query.CO_EN_VOLUME = '99999999999';
   }
   // 가격 조건
   if(opts.priceMin !== undefined){
     query.CO_YN_PRICECUR = '1';
     query.CO_ST_PRICECUR = String(opts.priceMin);
-    query.CO_EN_PRICECUR = '';
+    query.CO_EN_PRICECUR = '999999';
   }
   
   var headers = await kisAuthHeaders('HHDFS76410000');
@@ -1602,7 +1604,7 @@ async function fetchKisMarketScreener(opts){
       ticker:   o.symb || '',
       name:     o.ename || o.name || '',
       price:    parseFloat(o.last)  || 0,
-      marketCap: parseFloat(o.valx) || 0,   // 시가총액 (단위: M$ 추정)
+      marketCap: parseFloat(o.valx) || 0,   // 시가총액 (KIS valx, 단위: 천달러 $1,000)
       volume:   parseFloat(o.tvol) || 0,
       sharesOutstanding: parseFloat(o.shar) || 0,
       eps:      parseFloat(o.eps)  || 0,
