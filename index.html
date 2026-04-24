@@ -4984,7 +4984,7 @@ function swingEngine(ydata, swingData){
 // ── CORE 결정 엔진 (v2) ──
 // 두 축: 매집 강도(accum 10pt) + 타이밍 품질(timing 10pt)
 // 액션: ENTER / WATCH / BLOCK  (트리거 없으면 WATCH 유지)
-function coreEngine(ydata, coreData, fundData, sectorData){
+function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
   var r = {
     action:'WATCH', score:0,
     blockers:[], warnings:[], signals:[],
@@ -4995,7 +4995,28 @@ function coreEngine(ydata, coreData, fundData, sectorData){
     sector_gate:'UNKNOWN', sector_etf:null, sector_score:0,
     conviction_level:'LOW',
     underground_score:0, core_mode:'A', core_detail:[], core_stage:null,
+    babylon: null  // 베이비 자이언트 엔진 결과
   };
+
+  // ── 베이비 자이언트 결과 결합 ──
+  // Jim 정책: 베이비 엔진이 WATCH_CLAUDE 판정 시 포지션 사이즈만 조정 (완전 차단 X)
+  //           BLOCK이면 코어 액션도 BLOCK으로
+  if(babylonResult && babylonResult.verdict){
+    r.babylon = {
+      verdict: babylonResult.verdict,
+      reason: babylonResult.reason,
+      details: babylonResult.decision_details || null,
+      stages: babylonResult.stages || null,
+      exit_signals: babylonResult.exit_signals || null,
+      error: babylonResult.error || null
+    };
+    // BLOCK이면 코어도 BLOCK
+    if(babylonResult.verdict === 'BLOCK'){
+      r.action = 'BLOCK';
+      var blkMsg = babylonResult.decision_details?.blocks?.[0]?.message || 'Babylon hard block';
+      r.blockers.push('[BABYLON] '+blkMsg);
+    }
+  }
 
   if(!coreData){ r.blockers.push('물밑 지표 데이터 부족'); r.action='BLOCK'; return r; }
 
@@ -5197,6 +5218,44 @@ function coreEngine(ydata, coreData, fundData, sectorData){
     }
   }
 
+  // ── Babylon 기반 포지션 사이즈 조정 ──
+  // Jim 정책: WATCH_CLAUDE 판정 시 포지션 사이즈 조정 (차단 X)
+  if(r.babylon && r.action === 'ENTER' && r.scale_in_plan){
+    var bv = r.babylon.verdict;
+    var bpct = r.babylon.details?.position_size_pct;
+    
+    if(bv === 'WATCH_CLAUDE' || bpct === 30){
+      // 복합 위험 감지 — 전체 사이즈 30%로 축소
+      var origPlan = r.scale_in_plan;
+      r.scale_in_plan = {
+        label: origPlan.label + ' (💎 베이비 경고 — 축소)',
+        note: origPlan.note + ' | Babylon 경고: '+(r.babylon.reason||'복합 위험'),
+        steps: origPlan.steps.map(function(s){
+          return Object.assign({}, s, { pct: Math.round(s.pct * 0.5) });
+        })
+      };
+      r.warnings.unshift('💎 베이비 자이언트 WATCH_CLAUDE — 포지션 50% 축소');
+    } else if(bv === 'ENTER' && bpct === 50){
+      // Warning 1개 — 전체 사이즈 75%로
+      r.scale_in_plan = Object.assign({}, r.scale_in_plan, {
+        note: r.scale_in_plan.note + ' | Babylon Warning 1개, 축소 진입',
+        steps: r.scale_in_plan.steps.map(function(s){
+          return Object.assign({}, s, { pct: Math.round(s.pct * 0.75) });
+        })
+      });
+      r.warnings.unshift('💎 베이비 자이언트 Warning 1개 — 포지션 75% 축소');
+    } else if(bv === 'ENTER' && bpct === 100){
+      // 완전 클린 — 신호 강화
+      r.signals.unshift('💎 베이비 자이언트 ENTER (clean, '+(r.babylon.reason||'')+')');
+    } else if(bv === 'WATCH_WEAK'){
+      // 펀더멘털 약함 — 경고만 남김
+      r.warnings.push('💎 베이비 자이언트 WATCH_WEAK (펀더멘털 가속 미확인) — 섹터 모멘텀 의존');
+    }
+  } else if(r.babylon && r.babylon.verdict === 'ENTER' && r.action !== 'ENTER'){
+    // 베이비는 ENTER인데 기존 CORE는 WAIT/WATCH — 펀더멘털 신호 먼저 나온 상태
+    r.signals.push('💎 베이비 자이언트 ENTER ('+r.babylon.reason+') — 기술적 확인 대기');
+  }
+
   return r;
 }
 
@@ -5216,21 +5275,62 @@ function makeExplainPrompt(mode, ticker, ydata, decision){
   // CORE: 촉매 캘린더 + conviction 포함 확장 프롬프트
   if(mode === 'core'){
     var sectorStr = decision.sector_etf ? decision.sector_etf+' ('+decision.sector_gate+')' : '섹터 미매핑';
+    
+    // 💎 Babylon 베이비 자이언트 정보
+    var babylonStr = '';
+    if(decision.babylon){
+      var b = decision.babylon;
+      var bVerdict = b.verdict || 'UNKNOWN';
+      var bReason = b.reason || '';
+      var bPct = b.details?.position_size_pct;
+      var pathLabel = {
+        'consec_accel':'2분기 연속 가속','strong_latest':'단일 급가속',
+        'latest_with_trend':'가속+상승추세','turnaround_recovery':'턴어라운드',
+        'sustained_uptrend':'지속 상승','ipo_momentum':'IPO 초기 고성장',
+        'ipo_early_qoq':'IPO QoQ 가속','margin_improvement':'마진 급개선'
+      }[bReason] || bReason;
+      
+      // 최근 YoY 추이
+      var yoyStr = '';
+      if(b.stages?.quarters){
+        var recent4 = b.stages.quarters.slice(-4);
+        yoyStr = recent4.map(function(q){
+          return q.yoy !== null && q.yoy !== undefined ? 
+            (q.yoy >= 0 ? '+' : '') + q.yoy.toFixed(0) + '%' : '--';
+        }).join('→');
+      }
+      
+      // Warnings
+      var wStr = '';
+      if(b.stages?.warnings && b.stages.warnings.length > 0){
+        wStr = ' | 경고: ' + b.stages.warnings.map(function(w){ return w.type; }).join(', ');
+      }
+      
+      babylonStr = '【Babylon 베이비 자이언트】 '+bVerdict+
+        (bPct !== undefined ? ' ('+bPct+'%)' : '')+
+        ' | '+pathLabel+
+        (yoyStr ? ' | YoY: '+yoyStr : '')+
+        wStr+'\\n';
+    }
+    
     return '당신은 US 중장기 성장주 물밑 포착 전문가입니다.\n'+
-      '규칙 엔진 판단이 내려졌습니다. 당신은 뉴스/촉매 해석과 확신도 판단을 제공합니다.\n\n'+
+      '규칙 엔진(기술적) + Babylon 엔진(SEC 펀더멘털) 두 관점의 판단이 내려졌습니다.\n'+
+      '당신은 두 신호를 종합하여 뉴스/촉매 해석과 확신도를 제공합니다.\n\n'+
       '【종목】 '+ticker+'\n'+
-      '【엔진 판단】 '+actionLabel+' | '+keyMetrics+'\n'+
+      '【기존 엔진 판단】 '+actionLabel+' | '+keyMetrics+'\n'+
       '【섹터】 '+sectorStr+'\n'+
       '【Conviction】 '+decision.conviction_level+'\n'+
+      babylonStr+
       '【시그널】 '+(decision.signals||[]).slice(0,4).join(' / ')+'\n'+
       '【뉴스】 '+newsText+'\n\n'+
+      '두 엔진이 일치하면 신뢰도 UP. 베이비 엔진이 WATCH_CLAUDE면 팬데믹 일시성 vs 구조적 수요 판단 필수.\n'+
       '순수 JSON만 반환 (마크다운 없이):\n'+
       '{"news_quality":"factual|vague|none",'+
       '"catalyst":"strong|moderate|weak|none",'+
       '"news_one_line":"뉴스 핵심 또는 null",'+
-      '"catalyst_calendar":"향후 3개월 내 예정 이벤트 (어닝/투자자데이/제품출시 등) 또는 null",'+
-      '"conviction_note":"파도 강도 + 시장 오해 여부 기반 확신도 한 줄",'+
-      '"risk_note":"규칙 엔진이 못 잡는 핵심 리스크 한 줄",'+
+      '"catalyst_calendar":"향후 3개월 내 예정 이벤트 또는 null",'+
+      '"conviction_note":"펀더멘털 가속 + 섹터 강도 + 시장 오해 여부 기반 확신도 한 줄",'+
+      '"risk_note":"두 엔진이 못 잡는 핵심 리스크 한 줄",'+
       '"trade_note":"지금 CORE 진입 관점 주목할 점 한 줄"}';
   }
 
@@ -5359,6 +5459,7 @@ function _buildSnapshot(result, mode){
     conviction_level:      result.conviction_level       || null,
     catalyst_calendar:     result.catalyst_calendar      || null,
     conviction_note:       result.conviction_note        || null,
+    babylon:               result.babylon                || null,
     _ts: Date.now()
   };
 }
@@ -5453,7 +5554,22 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   var coreData = null;
   var fundData = null;
   var sectorData = null;
+  var babylonResult = null;  // 베이비 자이언트 엔진 결과
   if(mode === 'core'){
+    // ── Step 1: 베이비 자이언트 선행 실행 (SEC 펀더멘털) ──
+    analyzeEl.innerHTML =
+      '<div class="analyzing-card"><div class="analyzing-spinner"></div>'+
+      '<div><div class="analyzing-ticker">'+ticker+'</div>'+
+      '<div class="analyzing-text">💎 베이비 자이언트 신호 분석 중 (SEC)...</div></div></div>';
+    try {
+      babylonResult = await babylonEngine.analyze(ticker, { isHolding: !!openTrade });
+      console.log('[Babylon]', ticker, babylonResult.verdict, babylonResult.reason);
+    } catch(e){
+      console.warn('[Babylon] 실패:', e.message);
+      babylonResult = { verdict: 'ERROR', reason: 'babylon_fetch_failed', error: e.message };
+    }
+    
+    // ── Step 2: 기존 CORE 분석 (섹터 + 펀더멘털 + 물밑) ──
     analyzeEl.innerHTML =
       '<div class="analyzing-card"><div class="analyzing-spinner"></div>'+
       '<div><div class="analyzing-ticker">'+ticker+'</div>'+
@@ -5487,7 +5603,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       '<div class="analyzing-text">⚡ 게이트 체크 중...'+(mode==='momo'&&G.marketPhase?' ['+G.marketPhase+']':'')+'</div></div></div>';
     if(mode==='momo')       decision = momoEngine(ydata);
     else if(mode==='swing') decision = swingEngine(ydata, swingData);
-    else                    decision = coreEngine(ydata, coreData, fundData, sectorData);
+    else                    decision = coreEngine(ydata, coreData, fundData, sectorData, babylonResult);
     decision.gap_pct   = ydata.gap_pct   !== null ? ydata.gap_pct   : null;
     decision.float_m   = ydata.float_m   !== null ? ydata.float_m   : null;
     decision.short_pct = ydata.short_pct !== null ? ydata.short_pct : null;
@@ -6364,6 +6480,102 @@ function cardHTML(r, mode){
   var tsStr='';
   if(r._ts){ var d=new Date(r._ts); tsStr='<span style="font-family:var(--mono);font-size:9px;color:var(--t3)">'+d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})+'</span>'; }
 
+  // ── 💎 베이비 자이언트 배너 (CORE 모드만) ──
+  var babylonBanner = '';
+  if(r._mode === 'core' && r.babylon){
+    var bv = r.babylon.verdict;
+    var bReason = r.babylon.reason || '';
+    var bDet = r.babylon.details || {};
+    var bStg = r.babylon.stages || {};
+    
+    // 색상 + 아이콘 매핑
+    var bColor, bBg, bBorder, bIcon, bLabel, bSummary;
+    if(bv === 'ENTER' && bDet.position_size_pct === 100){
+      bColor = 'var(--g)'; bBg = 'rgba(0,240,122,.08)'; bBorder = 'rgba(0,240,122,.3)';
+      bIcon = '💎'; bLabel = 'ENTER (clean)'; bSummary = '펀더멘털 매우 강함 — 풀 매수 가능';
+    } else if(bv === 'ENTER' && bDet.position_size_pct === 50){
+      bColor = 'var(--a)'; bBg = 'rgba(255,170,0,.08)'; bBorder = 'rgba(255,170,0,.25)';
+      bIcon = '💎'; bLabel = 'ENTER (w/ warning)'; bSummary = 'Warning 1개 — 50% 시작';
+    } else if(bv === 'WATCH_CLAUDE'){
+      bColor = 'var(--a)'; bBg = 'rgba(255,170,0,.1)'; bBorder = 'rgba(255,170,0,.3)';
+      bIcon = '⚠️'; bLabel = 'WATCH_CLAUDE'; bSummary = '복합 위험 — Claude 해석 필요 (30%)';
+    } else if(bv === 'BLOCK'){
+      bColor = 'var(--r)'; bBg = 'rgba(255,45,78,.1)'; bBorder = 'rgba(255,45,78,.3)';
+      bIcon = '🛑'; bLabel = 'BLOCK'; bSummary = '진짜 함정 감지 — 진입 금지';
+    } else if(bv === 'WATCH_WEAK'){
+      bColor = 'var(--t2)'; bBg = 'rgba(90,122,149,.08)'; bBorder = 'rgba(90,122,149,.2)';
+      bIcon = '⏸'; bLabel = 'WATCH_WEAK'; bSummary = '펀더멘털 가속 미확인';
+    } else if(bv === 'NO_DATA' || bv === 'ERROR'){
+      bColor = 'var(--t3)'; bBg = 'rgba(45,74,96,.08)'; bBorder = 'rgba(45,74,96,.2)';
+      bIcon = '—'; bLabel = bv; bSummary = 'SEC 데이터 없음 (외국회사 또는 IPO 전)';
+    } else {
+      bColor = 'var(--t2)'; bBg = 'rgba(90,122,149,.06)'; bBorder = 'rgba(90,122,149,.15)';
+      bIcon = '?'; bLabel = bv; bSummary = bReason;
+    }
+    
+    // 가속 경로 설명
+    var pathLabel = {
+      'consec_accel':'2분기 연속 가속', 'strong_latest':'단일 분기 급가속',
+      'latest_with_trend':'가속 + 상승 추세', 'turnaround_recovery':'턴어라운드 회복',
+      'sustained_uptrend':'지속 상승 추세', 'ipo_momentum':'IPO 초기 고성장',
+      'ipo_early_qoq':'IPO QoQ 가속', 'margin_improvement':'마진 급개선',
+      'multiple_risk_signals':'복합 위험', 'hard_block':'하드 블록',
+      'no_acceleration_no_margin_improvement':'가속/마진 개선 없음'
+    }[bReason] || bReason;
+    
+    // 최근 분기 YoY (최대 4개)
+    var quartersStr = '';
+    if(bStg.quarters && bStg.quarters.length > 0){
+      var recentQ = bStg.quarters.slice(-4);
+      quartersStr = recentQ.map(function(q){
+        var yoy = q.yoy !== null && q.yoy !== undefined ? 
+          (q.yoy >= 0 ? '+' : '') + q.yoy.toFixed(1) + '%' : '--';
+        var yColor = q.yoy >= 20 ? 'var(--g)' : q.yoy >= 0 ? 'var(--t)' : 'var(--r)';
+        return '<span style="color:'+yColor+'">'+yoy+'</span>';
+      }).join(' → ');
+    }
+    
+    // Warnings 표시
+    var warningsStr = '';
+    if(bStg.warnings && bStg.warnings.length > 0){
+      warningsStr = bStg.warnings.map(function(w){
+        var wColor = w.severity === 'high' ? 'var(--r)' : 'var(--a)';
+        return '<div style="font-family:var(--mono);font-size:10px;color:'+wColor+';margin-top:4px">⚠ '+w.message+'</div>';
+      }).join('');
+    }
+    
+    // Exit signals (보유 중)
+    var exitStr = '';
+    if(r.babylon.exit_signals && r.babylon.exit_signals.signals && r.babylon.exit_signals.signals.length > 0){
+      exitStr = '<div style="margin-top:8px;padding-top:8px;border-top:1px solid '+bBorder+'">'+
+        '<div style="font-family:var(--mono);font-size:10px;color:var(--r);letter-spacing:.1em;margin-bottom:4px">🚪 EXIT SIGNALS ('+r.babylon.exit_signals.severity+')</div>'+
+        r.babylon.exit_signals.signals.map(function(s){
+          var sColor = s.severity === 'exit' ? 'var(--r)' : 'var(--a)';
+          return '<div style="font-family:var(--mono);font-size:10px;color:'+sColor+';margin-top:3px">• '+s.message+'</div>';
+        }).join('')+
+      '</div>';
+    }
+    
+    babylonBanner =
+      '<div style="background:'+bBg+';border:1px solid '+bBorder+';border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+          '<div style="display:flex;align-items:center;gap:6px">'+
+            '<span style="font-size:14px">'+bIcon+'</span>'+
+            '<span style="font-family:var(--mono);font-size:10px;color:'+bColor+';font-weight:700;letter-spacing:.1em">BABYLON</span>'+
+            '<span style="font-family:var(--mono);font-size:11px;color:'+bColor+'">'+bLabel+'</span>'+
+          '</div>'+
+          (bDet.position_size_pct !== undefined ?
+            '<span style="font-family:var(--mono);font-size:11px;color:'+bColor+';background:rgba(0,0,0,.2);padding:2px 6px;border-radius:4px">'+bDet.position_size_pct+'%</span>'
+            : '')+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:11px;color:var(--t);margin-bottom:4px">'+pathLabel+'</div>'+
+        '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);margin-bottom:6px">'+bSummary+'</div>'+
+        (quartersStr ? '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.05em;padding-top:4px;border-top:1px dashed '+bBorder+'">최근 YoY: '+quartersStr+'</div>' : '')+
+        warningsStr +
+        exitStr +
+      '</div>';
+  }
+
   // ── 보유 포지션 배너 ──
   var holdBanner = '';
   if(r._openTrade){
@@ -6436,6 +6648,7 @@ function cardHTML(r, mode){
   }
 
   return '<div class="stock-card '+cardC+'">'+
+    babylonBanner+
     holdBanner+
 
     '<div class="card-row1">'+
