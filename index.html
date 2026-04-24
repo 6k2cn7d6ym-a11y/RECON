@@ -2328,6 +2328,7 @@ async function fetchYahooData(ticker){
     bid:null, ask:null, spread_pct:null,
     exchange:null, fiftyTwoWeekHigh:null, fiftyTwoWeekLow:null,
     news:[], newsText:'',
+    news_tier1:0, news_tier2:0, news_tier3:0, news_wire_only:false,
     entry_calc:null, stop_calc:null, target_calc:null, rr_calc:null,
     pullback_entry:null, pullback_stop:null, pullback_target:null, pullback_rr:null,
     pm_high:null, pm_low:null, orb_high:null, orb_low:null,
@@ -2840,26 +2841,64 @@ async function fetchYahooData(ticker){
         newsArr = d2b?.news || [];
       }catch(e2){}
     }
-    // 신뢰 출처: Reuters, AP, Bloomberg, WSJ, CNBC, MarketWatch, Barron's, FT, SEC
-    var trustedSources = ['reuters','associated press','bloomberg','wall street journal','wsj','cnbc','marketwatch','barron','financial times','ft.com','sec.gov','businesswire' /* 공식 IR */];
-    // 노이즈 출처: PRNewswire, GlobeNewswire (보도자료), 소셜 기반
-    var noiseSources   = ['pr newswire','globe newswire','accesswire','newmediawire','globenewswire'];
+    // ── 뉴스 출처 Tier 분류 (2026-04-23 B안) ──
+    //   Tier 1: primary journalism — 자체 취재·편집권 (정당한 catalyst의 기준)
+    //   Tier 2: paid wire distribution — 회사가 배포비 지불 (보도자료)
+    //   Tier 3: aggregator/auto-syndicated — 자동 수집 (독자 가치 낮음)
+    //   wire_only: Tier 1 부재 + Tier 2/3만 있으면 펌프 시그널
+    var tier1Sources = [
+      'reuters','associated press',' ap ','bloomberg',
+      'wall street journal','wsj','cnbc','marketwatch',
+      'barron','financial times','ft.com',
+      'cnn','new york times','washington post',
+      'sec.gov','sec filing',
+      'investor\'s business daily','ibd',
+    ];
+    var tier2Sources = [
+      'pr newswire','prnewswire',
+      'globe newswire','globenewswire',
+      'business wire','businesswire',
+      'accesswire','access newswire',
+      'newmediawire','new media wire',
+      'einpresswire','ein press',
+    ];
+    var tier3Sources = [
+      'tipranks','benzinga','seeking alpha','seekingalpha',
+      'zacks','motley fool','fool.com',
+      'investorplace','insidermonkey','simply wall',
+      'stocknews','marketbeat','gurufocus',
+    ];
+    // 레거시 호환 (아래 기존 코드에서 사용)
+    var trustedSources = tier1Sources;
+    var noiseSources   = tier2Sources.concat(tier3Sources);
+
+    var tier1Count = 0, tier2Count = 0, tier3Count = 0;
     var factualCount = 0, vagueCount = 0;
     result.news = newsArr.slice(0,6).map(function(n){
       var pub = (n.publisher||'').toLowerCase();
       var title = n.title||'';
-      var isTrusted = trustedSources.some(function(s){ return pub.includes(s); });
-      var isNoise   = noiseSources.some(function(s){ return pub.includes(s); });
+      var isT1 = tier1Sources.some(function(s){ return pub.includes(s); });
+      var isT2 = tier2Sources.some(function(s){ return pub.includes(s); });
+      var isT3 = tier3Sources.some(function(s){ return pub.includes(s); });
+      if(isT1) tier1Count++;
+      else if(isT2) tier2Count++;
+      else if(isT3) tier3Count++;
       // 제목 팩트 키워드
       var factKeywords = ['fda','approval','approved','earnings','revenue','acquisition','merger','contract','partnership','guidance','clinical','trial','phase','deal','buyout','ipo','offering'];
       var hasFact = factKeywords.some(function(k){ return title.toLowerCase().includes(k); });
-      if(isTrusted || hasFact) factualCount++;
-      else if(!isNoise) vagueCount++;
+      if(isT1 || hasFact) factualCount++;
+      else if(!isT2 && !isT3) vagueCount++;
       return (n.publisher ? '['+n.publisher+'] ' : '') + title;
     });
     result.newsText = result.news.join(' | ');
-    // 출처 기반 news_quality 사전 판단 (Claude가 최종 결정하지만 힌트 제공)
     result.newsQualityHint = factualCount >= 1 ? 'factual' : vagueCount >= 1 ? 'vague' : 'none';
+
+    // Tier 통계 + wire_only 판정
+    result.news_tier1 = tier1Count;
+    result.news_tier2 = tier2Count;
+    result.news_tier3 = tier3Count;
+    // wire_only: Tier 1 없음 + Tier 2/3 최소 2개 + Tier 2 최소 1개 (와이어 배포 확실)
+    result.news_wire_only = (tier1Count === 0) && (tier2Count >= 1) && (tier2Count + tier3Count >= 2);
 
     // 4. 5일 평균거래량
     if(!result.avgVolume){
@@ -4127,7 +4166,108 @@ function getDumpScore(r){
     else if(r.marketCap_b < 0.2)  score+=8;  // $200M 미만
   }
 
+  // ── B안: wire_only 뉴스 패턴 (Tier 1 부재 + Tier 2/3 도배) ──
+  // 정당한 catalyst는 Reuters/Bloomberg/WSJ 등 Tier 1이 받음. Tier 2/3만 있으면 펌프 의심.
+  if(r.news_wire_only === true){
+    score += 15;
+    // 팩트 뉴스 면책 완화: wire_only면 factual로 분류되어도 패널티 부여
+    if(r.news_quality === 'factual') score += 10;
+  }
+
+  // ── C안: US P&D 시그니처 (정당 거래와 구조적으로 다른 패턴들) ──
+  // 각 시그니처는 단독으로도 의심스럽고, 조합 시 강력한 펌프 증거
+  var sig = getPDSignatures(r);
+  score += sig.total_score;
+
   return Math.min(score, 100);
+}
+
+// ═══════════════════════════════════════
+// C안: US P&D 시그니처 체커
+// ═══════════════════════════════════════
+// 키워드 기반 펌프 특유 패턴 감지:
+//   - dilution_risk: 최근 자본 희석 이벤트 (offering/ATM/S-1)
+//   - nasdaq_deficiency: 상장 유지 위험 (저가주가 경고 후 펌프)
+//   - recent_reverse_split: 리버스 스플릿 직후 (이미 getDumpScore +60, 여기선 상세 분류용)
+//   - microcap_wire_pump: 소형주 + wire_only 뉴스 조합 (B안과 연계)
+// 반환: { flags, total_score, hits }
+function getPDSignatures(r){
+  var result = {
+    dilution_risk: false,
+    nasdaq_deficiency: false,
+    recent_reverse_split: false,
+    microcap_wire_pump: false,
+    hits: 0,
+    total_score: 0,
+    reasons: [],
+  };
+
+  var newsLow = (r.newsText || r.news || '').toString().toLowerCase();
+  if(!newsLow && !r.news_wire_only && !r.marketCap_b) return result;
+
+  // 1. Dilution 위험 — 최근 자본 희석/추가 상장 이벤트
+  var dilutionKW = [
+    'direct offering','registered direct',
+    'at-the-market','atm offering','atm facility',
+    's-1 filing','s-3 filing','form s-1','form s-3',
+    'secondary offering','public offering',
+    'dilutive','dilution','share issuance',
+    'pre-funded warrant','pre-funded warrants','prefunded warrant',
+    'convertible note','convertible debenture','convertible notes',
+    'debenture conversion','share repurchase program cancelled',
+  ];
+  if(dilutionKW.some(function(k){return newsLow.includes(k);})){
+    result.dilution_risk = true;
+    result.hits++;
+    result.total_score += 20;
+    result.reasons.push('Dilution 이벤트');
+  }
+
+  // 2. Nasdaq deficiency / delisting 위험
+  // 상장 유지 요건 위반 종목이 급등하면 "마지막 펌프" 패턴
+  var nasdaqKW = [
+    'nasdaq deficiency','nasdaq notification','nasdaq notice',
+    'minimum bid price','bid price rule','bid price requirement',
+    'stockholders equity','minimum equity','equity requirement',
+    'listing standards','continued listing',
+    'delisting','delist','compliance plan',
+    'hearing panel','cure period','grace period',
+    'regains compliance','regain compliance',
+  ];
+  if(nasdaqKW.some(function(k){return newsLow.includes(k);})){
+    result.nasdaq_deficiency = true;
+    result.hits++;
+    result.total_score += 25;
+    result.reasons.push('Nasdaq 상장 요건 이슈');
+  }
+
+  // 3. Reverse split (이미 +60 있으나 여기선 hits count에 기여)
+  if(newsLow.includes('reverse split')||newsLow.includes('reverse-split')||newsLow.includes('reverse stock split')){
+    result.recent_reverse_split = true;
+    result.hits++;
+    // 추가 점수 없음 (이미 getDumpScore 본문에서 +60)
+    result.reasons.push('Reverse split');
+  }
+  // "1-for-N" 패턴 (리버스 스플릿 변형 표기)
+  if(/1[- ]for[- ]\d+/i.test(r.newsText || r.news || '')){
+    if(!result.recent_reverse_split){
+      result.recent_reverse_split = true;
+      result.hits++;
+      result.total_score += 30;
+      result.reasons.push('1-for-N 스플릿');
+    }
+  }
+
+  // 4. Microcap + wire_only 조합 (B안 + 시총)
+  if(r.news_wire_only && r.marketCap_b !== null && r.marketCap_b !== undefined
+     && r.marketCap_b > 0 && r.marketCap_b < 0.05){
+    result.microcap_wire_pump = true;
+    result.hits++;
+    result.total_score += 15;
+    result.reasons.push('소형주 와이어-only 펌프');
+  }
+
+  return result;
 }
 
 function hardFilter(r, mode){
@@ -4354,6 +4494,32 @@ function momoEngine(ydata){
       r.marketCap_b = capB;
       return r;
     }
+  }
+
+  // ── C안: P&D 시그니처 조합 하드 블록 ──
+  // 2개 이상 시그니처 동시 히트 = 구조적 펌프 패턴. 상세 점수는 getDumpScore에서.
+  var pdSig = getPDSignatures(ydata);
+  if(pdSig.hits >= 2){
+    r.action='BLOCK';
+    r.blockers.push('[P&D] 시그니처 다중 히트 ('+pdSig.hits+'개): '+pdSig.reasons.join(' + '));
+    r.momo_type = momoType;
+    r.marketCap_b = capB;
+    return r;
+  }
+  // 단일 시그니처라도 강력한 것은 즉시 차단
+  if(pdSig.nasdaq_deficiency && gap > 30){
+    r.action='BLOCK';
+    r.blockers.push('[P&D] 상장 요건 이슈 종목 + 갭 +'+gap.toFixed(0)+'% — 마지막 펌프 전형');
+    r.momo_type = momoType;
+    r.marketCap_b = capB;
+    return r;
+  }
+  if(pdSig.dilution_risk && pdSig.microcap_wire_pump){
+    r.action='BLOCK';
+    r.blockers.push('[P&D] 희석 이벤트 + 마이크로캡 와이어 펌프 — 조작성 급등 확실');
+    r.momo_type = momoType;
+    r.marketCap_b = capB;
+    return r;
   }
 
   // ── 2. SPY 시장 게이트 ──
@@ -5146,6 +5312,11 @@ function _hydrateResult(result, ydata){
   result.vwap_pct       = ydata.vwap_pct       !== undefined ? ydata.vwap_pct : null;
   result.fiftyTwoWeekHigh = ydata.fiftyTwoWeekHigh || null;
   result.fiftyTwoWeekLow  = ydata.fiftyTwoWeekLow  || null;
+  // B안: 뉴스 Tier 분류
+  result.news_tier1       = ydata.news_tier1       || 0;
+  result.news_tier2       = ydata.news_tier2       || 0;
+  result.news_tier3       = ydata.news_tier3       || 0;
+  result.news_wire_only   = ydata.news_wire_only   || false;
   return result;
 }
 
@@ -5962,7 +6133,9 @@ function cardHTML(r, mode){
 
   // 태그
   var tags='';
-  if(r.news_quality==='factual')   tags+='<span class="tag tg">팩트뉴스</span>';
+  if(r.news_quality==='factual' && !r.news_wire_only) tags+='<span class="tag tg">팩트뉴스</span>';
+  else if(r.news_quality==='factual' && r.news_wire_only) tags+='<span class="tag ta">⚠ 와이어 팩트</span>';
+  if(r.news_wire_only)             tags+='<span class="tag tr">Wire-only</span>';
   if(r.float_m&&r.float_m<10)     tags+='<span class="tag tg">Low Float</span>';
   if(r.short_pct&&r.short_pct>20) tags+='<span class="tag tr">SI '+r.short_pct.toFixed(0)+'%</span>';
   if(r.rvol&&r.rvol>8)            tags+='<span class="tag tb">RVol '+r.rvol+'x</span>';
@@ -8012,6 +8185,598 @@ setInterval(checkMarketRegime, 3*60*1000);
 
 
 holdRender();
+</script>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// BABYLON ENGINE — CORE 베이비 자이언트 엔진 (2026-04-24 추가)
+// ═══════════════════════════════════════════════════════════════════
+
+window.babylonEngine = (function() {
+
+const SEC_PROXY_BASE = 'https://dart.minon.kr/sec';
+
+const CONFIG = {
+  ACCEL_THRESHOLD_PP: 10,
+  ACCEL_MIN_YOY: 10,
+  ACCEL_CONSEC_QUARTERS: 2,
+  ACCEL_STRONG_JUMP: 20,
+  TURNAROUND_MIN_POSITIVE: 5,
+  TURNAROUND_MIN_IMPROVEMENT: 15,
+  UPTREND_CONSEC: 3,
+  UPTREND_MIN_TOTAL: 10,
+  IPO_MIN_YOY: 50,
+  MIN_MARKET_CAP: 500_000_000,
+  PENNY_STOCK_PRICE: 5,
+  MARGIN_IMPROVEMENT_PP: 3,
+  B1_NEGATIVE_REV_QUARTERS: 2,
+  B2_PULL_FORWARD_PEAK: 200,
+  B2_PULL_FORWARD_DECEL: 30,
+  B4_MARGIN_COLLAPSE_PP: 10,
+  B4_MARGIN_COLLAPSE_QUARTERS: 3,
+  W1_CONCURRENT_THRESHOLD: 100,
+  W3_MARGIN_DECLINE_QUARTERS: 3,
+  W3_MARGIN_DECLINE_PP: 2
+};
+
+const REVENUE_TAGS = ['Revenues','RevenueFromContractWithCustomerExcludingAssessedTax','SalesRevenueNet','RevenueFromContractWithCustomerIncludingAssessedTax','SalesRevenueGoodsNet'];
+const IFRS_REVENUE_TAGS = ['Revenue','RevenueFromContractsWithCustomers','RevenueFromSaleOfGoods'];
+const GROSS_PROFIT_TAGS = ['GrossProfit'];
+const OP_INCOME_TAGS = ['OperatingIncomeLoss','OperatingIncome'];
+
+let tickerCIKCache = null;
+const factsCache = new Map();
+
+async function loadTickerCIKMap() {
+  if (tickerCIKCache) return tickerCIKCache;
+  const res = await fetch(`${SEC_PROXY_BASE}/files/company_tickers.json`);
+  if (!res.ok) throw new Error(`Ticker map fetch failed: HTTP ${res.status}`);
+  const data = await res.json();
+  const map = {};
+  for (const key in data) {
+    const e = data[key];
+    map[e.ticker.toUpperCase()] = { cik: String(e.cik_str).padStart(10, '0'), title: e.title };
+  }
+  tickerCIKCache = map;
+  return map;
+}
+
+async function tickerToCIK(ticker) {
+  const map = await loadTickerCIKMap();
+  const entry = map[ticker.toUpperCase()];
+  if (!entry) throw new Error(`CIK not found: ${ticker}`);
+  return entry;
+}
+
+async function fetchCompanyFacts(ticker) {
+  const key = ticker.toUpperCase();
+  if (factsCache.has(key)) return factsCache.get(key);
+  const { cik, title } = await tickerToCIK(ticker);
+  const url = `${SEC_PROXY_BASE}/api/xbrl/companyfacts/CIK${cik}.json`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Facts fetch failed for ${ticker}: HTTP ${res.status}`);
+  const data = await res.json();
+  const result = { cik, title, facts: data.facts };
+  factsCache.set(key, result);
+  return result;
+}
+
+function extractAllRevenueData(facts, preferredUnit = null) {
+  const namespaces = ['us-gaap', 'ifrs-full'];
+  const allResults = [];
+  let unitUsed = null;
+  for (const ns of namespaces) {
+    if (!facts[ns]) continue;
+    const tagList = ns === 'us-gaap' ? REVENUE_TAGS : IFRS_REVENUE_TAGS;
+    for (const tag of tagList) {
+      const units = facts[ns][tag]?.units;
+      if (!units) continue;
+      let selectedUnit = null;
+      if (preferredUnit && units[preferredUnit]) selectedUnit = preferredUnit;
+      else if (units.USD && units.USD.length > 0) selectedUnit = 'USD';
+      else {
+        const available = Object.keys(units).filter(u => units[u] && units[u].length > 0 && u !== 'pure' && u !== 'shares');
+        if (available.length > 0) selectedUnit = available.sort((a, b) => units[b].length - units[a].length)[0];
+      }
+      if (!selectedUnit) continue;
+      const unitData = units[selectedUnit];
+      if (unitData && unitData.length > 0) {
+        if (!unitUsed) unitUsed = selectedUnit;
+        allResults.push({
+          tag, namespace: ns, unit: selectedUnit,
+          data: unitData.map(r => ({ ...r, _sourceTag: tag, _namespace: ns, _unit: selectedUnit }))
+        });
+      }
+    }
+  }
+  if (allResults.length === 0) return null;
+  return {
+    tag: allResults.map(r => `${r.tag}[${r.unit}]`).join('+'),
+    unit: unitUsed,
+    data: allResults.flatMap(r => r.data)
+  };
+}
+
+function extractTagData(facts, tags, unit = 'USD') {
+  for (const ns of ['us-gaap', 'ifrs-full']) {
+    if (!facts[ns]) continue;
+    for (const tag of tags) {
+      const unitData = facts[ns][tag]?.units?.[unit];
+      if (unitData && unitData.length > 0) return { tag, namespace: ns, data: unitData };
+    }
+  }
+  return null;
+}
+
+function filterByDate(data, asOfDate) {
+  const cutoff = new Date(asOfDate);
+  const filtered = data.filter(r => {
+    const filed = r.filed ? new Date(r.filed) : new Date(r.end);
+    return filed <= cutoff;
+  });
+  function getDurationDays(r) {
+    if (!r.start || !r.end) return null;
+    return Math.round((new Date(r.end) - new Date(r.start)) / 86400000);
+  }
+  const isTrueQuarter = r => { const d = getDurationDays(r); return d !== null && d >= 80 && d <= 100; };
+  const isAnnual = r => { const d = getDurationDays(r); return d !== null && d >= 350 && d <= 380; };
+  return {
+    quarterly: dedupByEnd(filtered.filter(isTrueQuarter)),
+    annual: dedupByEnd(filtered.filter(isAnnual))
+  };
+}
+
+function dedupByEnd(records) {
+  const map = new Map();
+  for (const r of records) {
+    const existing = map.get(r.end);
+    if (!existing || new Date(r.filed) < new Date(existing.filed)) map.set(r.end, r);
+  }
+  return Array.from(map.values()).sort((a, b) => new Date(a.end) - new Date(b.end));
+}
+
+function computeYoYSeries(quarters) {
+  const result = [];
+  for (const q of quarters) {
+    const qEnd = new Date(q.end);
+    const priorYear = quarters.find(p => {
+      if (p === q) return false;
+      const d = Math.round((qEnd - new Date(p.end)) / 86400000);
+      return d >= 320 && d <= 410;
+    });
+    let yoy = null;
+    if (priorYear && priorYear.val > 0) yoy = ((q.val - priorYear.val) / priorYear.val) * 100;
+    result.push({
+      period: `FY${q.fy} ${q.fp}`, fy: q.fy, fp: q.fp,
+      end: q.end, val: q.val, filed: q.filed, yoy,
+      sourceTag: q._sourceTag
+    });
+  }
+  return result;
+}
+
+async function getRecentQuartersRevenue(ticker, asOfDate, n = 10) {
+  const { facts } = await fetchCompanyFacts(ticker);
+  const revData = extractAllRevenueData(facts);
+  if (!revData) return { quarters: [], noData: true };
+  const { quarterly } = filterByDate(revData.data, asOfDate);
+  const withYoY = computeYoYSeries(quarterly);
+  return { tag: revData.tag, unit: revData.unit, quarters: withYoY.slice(-n) };
+}
+
+async function getMarginData(ticker, asOfDate) {
+  const { facts } = await fetchCompanyFacts(ticker);
+  const revData = extractAllRevenueData(facts);
+  if (!revData) return { error: 'no revenue data' };
+  const revFiltered = filterByDate(revData.data, asOfDate);
+  const gpData = extractTagData(facts, GROSS_PROFIT_TAGS);
+  const gpFiltered = gpData ? filterByDate(gpData.data, asOfDate) : { quarterly: [] };
+  const opData = extractTagData(facts, OP_INCOME_TAGS);
+  const opFiltered = opData ? filterByDate(opData.data, asOfDate) : { quarterly: [] };
+  return {
+    revenue: revFiltered.quarterly,
+    grossProfit: gpFiltered.quarterly,
+    opIncome: opFiltered.quarterly
+  };
+}
+
+function computeQuarterlyMargins(marginData) {
+  const result = [];
+  for (const rev of marginData.revenue || []) {
+    const gp = (marginData.grossProfit || []).find(g => g.end === rev.end);
+    const op = (marginData.opIncome || []).find(o => o.end === rev.end);
+    const grossMargin = (gp && rev.val > 0) ? (gp.val / rev.val) * 100 : null;
+    const opMargin = (op && rev.val > 0) ? (op.val / rev.val) * 100 : null;
+    result.push({
+      period: `FY${rev.fy} ${rev.fp}`, fy: rev.fy, fp: rev.fp, end: rev.end,
+      revenue: rev.val, grossMargin, opMargin
+    });
+  }
+  return result;
+}
+
+function detectAcceleration(quarters) {
+  if (quarters.length < 2) return { accelerating: false, reason: 'insufficient_data', details: { quarter_count: quarters.length } };
+  const withYoY = quarters.filter(q => q.yoy !== null);
+  
+  if (withYoY.length >= 2) {
+    const allHigh = withYoY.every(q => q.yoy >= CONFIG.IPO_MIN_YOY);
+    if (allHigh) {
+      return {
+        accelerating: true, reason: 'ipo_momentum',
+        details: {
+          path: 'ipo_momentum',
+          quarters: withYoY.map(q => ({ period: q.period, end: q.end, revenue_m: Math.round(q.val / 1e6), yoy_pct: Number(q.yoy.toFixed(1)) })),
+          min_yoy: Math.min(...withYoY.map(q => q.yoy))
+        }
+      };
+    }
+  }
+  
+  if (quarters.length >= 3 && withYoY.length < 3) {
+    const recent = quarters.slice(-3);
+    const qoq1 = (recent[1].val - recent[0].val) / recent[0].val * 100;
+    const qoq2 = (recent[2].val - recent[1].val) / recent[1].val * 100;
+    if (qoq1 >= 15 && qoq2 >= 15) {
+      return {
+        accelerating: true, reason: 'ipo_early_qoq',
+        details: {
+          path: 'ipo_early_qoq',
+          quarters: recent.map(q => ({ period: q.period, end: q.end, revenue_m: Math.round(q.val / 1e6), yoy_pct: q.yoy !== null ? Number(q.yoy.toFixed(1)) : null })),
+          qoq_1: Number(qoq1.toFixed(1)), qoq_2: Number(qoq2.toFixed(1))
+        }
+      };
+    }
+  }
+  
+  if (withYoY.length < 3) return { accelerating: false, reason: 'insufficient_yoy_data', details: { yoy_count: withYoY.length } };
+  
+  const recent = withYoY.slice(-4);
+  const q_latest = recent[recent.length - 1];
+  const q_minus1 = recent[recent.length - 2];
+  const q_minus2 = recent.length >= 3 ? recent[recent.length - 3] : null;
+  const q_minus3 = recent.length >= 4 ? recent[recent.length - 4] : null;
+  
+  const latestJump = q_latest.yoy - q_minus1.yoy;
+  const prevJump = q_minus2 ? q_minus1.yoy - q_minus2.yoy : null;
+  const consecAccel = prevJump !== null && latestJump >= CONFIG.ACCEL_THRESHOLD_PP && prevJump >= CONFIG.ACCEL_THRESHOLD_PP;
+  const strongLatest = latestJump >= CONFIG.ACCEL_STRONG_JUMP;
+  const latestWithTrend = prevJump !== null && latestJump >= CONFIG.ACCEL_THRESHOLD_PP && prevJump >= 3;
+  
+  let turnaroundRecovery = false;
+  if (q_minus2 !== null) {
+    const wasNegative = q_minus2.yoy < 0 || q_minus1.yoy < 0;
+    const nowPositive = q_latest.yoy >= CONFIG.TURNAROUND_MIN_POSITIVE;
+    const totalImp = q_latest.yoy - q_minus2.yoy;
+    turnaroundRecovery = wasNegative && nowPositive && totalImp >= CONFIG.TURNAROUND_MIN_IMPROVEMENT;
+  }
+  
+  let sustainedUptrend = false;
+  if (q_minus2 !== null && q_minus3 !== null) {
+    const allAsc = q_latest.yoy > q_minus1.yoy && q_minus1.yoy > q_minus2.yoy && q_minus2.yoy > q_minus3.yoy;
+    const totalGain = q_latest.yoy - q_minus3.yoy;
+    sustainedUptrend = allAsc && totalGain >= CONFIG.UPTREND_MIN_TOTAL;
+  }
+  
+  const solidYoY = q_latest.yoy >= CONFIG.ACCEL_MIN_YOY;
+  const accelerating = ((consecAccel || strongLatest || latestWithTrend) && solidYoY) || turnaroundRecovery || sustainedUptrend;
+  
+  let path = 'none';
+  if (consecAccel && solidYoY) path = 'consec_accel';
+  else if (strongLatest && solidYoY) path = 'strong_latest';
+  else if (latestWithTrend && solidYoY) path = 'latest_with_trend';
+  else if (turnaroundRecovery) path = 'turnaround_recovery';
+  else if (sustainedUptrend) path = 'sustained_uptrend';
+  
+  return {
+    accelerating,
+    reason: accelerating ? path : 'no_acceleration',
+    details: {
+      path,
+      quarters: recent.map(q => ({ period: q.period, end: q.end, revenue_m: Math.round(q.val / 1e6), yoy_pct: q.yoy !== null ? Number(q.yoy.toFixed(1)) : null })),
+      latest_jump_pp: Number(latestJump.toFixed(1)),
+      prev_jump_pp: prevJump !== null ? Number(prevJump.toFixed(1)) : null
+    }
+  };
+}
+
+function detectMarginImprovement(margins) {
+  if (!margins || margins.length < 6) return { improved: false, reason: 'insufficient_data' };
+  const recent = margins.slice(-3);
+  let grossImproved = 0, opImproved = 0;
+  for (const recQ of recent) {
+    const priorQ = margins.find(m => {
+      const d = Math.round((new Date(recQ.end) - new Date(m.end)) / 86400000);
+      return d >= 320 && d <= 410;
+    });
+    if (!priorQ) continue;
+    if (recQ.grossMargin !== null && priorQ.grossMargin !== null && recQ.grossMargin - priorQ.grossMargin >= CONFIG.MARGIN_IMPROVEMENT_PP) grossImproved++;
+    if (recQ.opMargin !== null && priorQ.opMargin !== null && recQ.opMargin - priorQ.opMargin >= 5) opImproved++;
+  }
+  const improved = grossImproved >= 2 || opImproved >= 2;
+  let reason = 'no_margin_improvement';
+  if (grossImproved >= 2 && opImproved >= 2) reason = 'both_margin_improvement';
+  else if (opImproved >= 2) reason = 'operating_margin_improvement';
+  else if (grossImproved >= 2) reason = 'gross_margin_improvement';
+  return { improved, reason, details: { grossImproved, opImproved } };
+}
+
+function detectRevenueCollapse(quarters) {
+  if (quarters.length < 5) return { collapsing: false };
+  const withYoY = quarters.filter(q => q.yoy !== null);
+  if (withYoY.length < 5) return { collapsing: false };
+  const recent = withYoY.slice(-5);
+  const q_minus2 = recent[2], q_minus1 = recent[3], q_latest = recent[4];
+  const latestDecel = q_minus1.yoy - q_latest.yoy;
+  const prevDecel = q_minus2.yoy - q_minus1.yoy;
+  const consecSevere = latestDecel >= 30 && prevDecel >= 30;
+  const peakYoY = Math.max(...recent.map(q => q.yoy));
+  const deltaFromPeak = peakYoY - q_latest.yoy;
+  const peakFromHigh = peakYoY >= 100;
+  const postPeakCollapse = peakFromHigh && deltaFromPeak >= 50 && (latestDecel >= 30 || prevDecel >= 30);
+  const collapsing = consecSevere || postPeakCollapse;
+  return {
+    collapsing,
+    reason: collapsing ? (postPeakCollapse ? 'post_peak_collapse' : 'consecutive_decel') : 'stable',
+    latest_decel_pp: Number(latestDecel.toFixed(1)),
+    peak_yoy: Number(peakYoY.toFixed(1))
+  };
+}
+
+function detectOneTimeDemand(quarters) {
+  if (quarters.length < 4) return false;
+  const withYoY = quarters.filter(q => q.yoy !== null);
+  if (withYoY.length < 3) return false;
+  const recent6 = withYoY.slice(-6);
+  const peakYoY = Math.max(...recent6.map(q => q.yoy));
+  const latest = recent6[recent6.length - 1];
+  const peakIdx = recent6.findIndex(q => q.yoy === peakYoY);
+  const extremePeak = peakYoY >= 200;
+  let postPeakDecel = false, deltaFromPeak = 0;
+  if (peakIdx < recent6.length - 1) {
+    deltaFromPeak = peakYoY - latest.yoy;
+    postPeakDecel = peakYoY >= 150 && deltaFromPeak >= 30;
+  }
+  if (extremePeak || postPeakDecel) {
+    return {
+      suspicious: true,
+      peak_yoy: Number(peakYoY.toFixed(1)),
+      latest_yoy: Number(latest.yoy.toFixed(1)),
+      delta_from_peak: Number(deltaFromPeak.toFixed(1))
+    };
+  }
+  return false;
+}
+
+function checkWarnings({ quarters, margins }) {
+  const warnings = [];
+  if (quarters && quarters.length >= 4) {
+    const ot = detectOneTimeDemand(quarters);
+    if (ot && ot.suspicious) {
+      warnings.push({
+        type: 'W1_ONE_TIME_DEMAND_SUSPECTED', severity: 'high',
+        message: `매출 peak +${ot.peak_yoy}% → 현재 +${ot.latest_yoy}%`,
+        details: ot
+      });
+    }
+  }
+  if (margins && margins.length >= 6) {
+    const recent = margins.slice(-3);
+    let decline = 0;
+    for (const recQ of recent) {
+      const priorQ = margins.find(m => {
+        const d = Math.round((new Date(recQ.end) - new Date(m.end)) / 86400000);
+        return d >= 320 && d <= 410;
+      });
+      if (priorQ && recQ.opMargin !== null && priorQ.opMargin !== null && priorQ.opMargin - recQ.opMargin >= CONFIG.W3_MARGIN_DECLINE_PP) decline++;
+    }
+    if (decline >= CONFIG.W3_MARGIN_DECLINE_QUARTERS) {
+      warnings.push({ type: 'W3_MARGIN_DETERIORATION', severity: 'medium', message: `영업이익률 ${decline}분기 YoY 악화` });
+    }
+  }
+  return warnings;
+}
+
+function checkBlocks({ quarters, margins }) {
+  const blocks = [];
+  if (quarters && quarters.length >= 3) {
+    const withYoY = quarters.filter(q => q.yoy !== null);
+    if (withYoY.length >= 2) {
+      const latest = withYoY[withYoY.length - 1];
+      const prev = withYoY[withYoY.length - 2];
+      if (latest.yoy < 0 && prev.yoy < 0) {
+        blocks.push({ type: 'B1_NEGATIVE_REVENUE_2Q', message: `매출 2분기 연속 YoY 감소 (${prev.yoy.toFixed(1)}%, ${latest.yoy.toFixed(1)}%)` });
+      }
+    }
+  }
+  if (quarters && quarters.length >= 4) {
+    const withYoY = quarters.filter(q => q.yoy !== null);
+    if (withYoY.length >= 4) {
+      const recent = withYoY.slice(-4);
+      const q_minus2 = recent[1], q_minus1 = recent[2], q_latest = recent[3];
+      const recent6 = withYoY.slice(-6);
+      const peakYoY = Math.max(...recent6.map(q => q.yoy));
+      const peakInRange = peakYoY >= CONFIG.B2_PULL_FORWARD_PEAK && peakYoY < 500;
+      const stillHigh = q_latest.yoy >= 30;
+      if (peakInRange && !stillHigh) {
+        const latestDecel = q_minus1.yoy - q_latest.yoy;
+        const prevDecel = q_minus2.yoy - q_minus1.yoy;
+        if (latestDecel >= CONFIG.B2_PULL_FORWARD_DECEL && prevDecel >= CONFIG.B2_PULL_FORWARD_DECEL) {
+          blocks.push({ type: 'B2_PULL_FORWARD_CONFIRMED', message: `Pull-forward 확정: peak +${peakYoY.toFixed(0)}% → 현재 +${q_latest.yoy.toFixed(1)}%` });
+        }
+      }
+    }
+  }
+  if (margins && margins.length >= 6) {
+    const recent = margins.slice(-3);
+    let severe = 0;
+    for (const recQ of recent) {
+      const priorQ = margins.find(m => {
+        const d = Math.round((new Date(recQ.end) - new Date(m.end)) / 86400000);
+        return d >= 320 && d <= 410;
+      });
+      if (priorQ && recQ.opMargin !== null && priorQ.opMargin !== null && recQ.opMargin - priorQ.opMargin < -CONFIG.B4_MARGIN_COLLAPSE_PP) severe++;
+    }
+    if (severe >= CONFIG.B4_MARGIN_COLLAPSE_QUARTERS) {
+      blocks.push({ type: 'B4_MARGIN_COLLAPSE', message: `Op Margin ${severe}분기 연속 -10%p+ 악화` });
+    }
+  }
+  return blocks;
+}
+
+function makeFinalDecision({ blocks, acceleration, marginImprovement, revenueCollapse, warnings }) {
+  if (blocks.length > 0) {
+    return { verdict: 'BLOCK', reason: 'hard_block', details: { blocks, position_size_pct: 0, sizing_rule: 'F_NO_ENTRY' } };
+  }
+  const hasGrowthSignal = acceleration.accelerating || marginImprovement?.improved;
+  if (!hasGrowthSignal) {
+    return { verdict: 'WATCH_WEAK', reason: 'no_acceleration_no_margin_improvement', details: { acceleration, marginImprovement, position_size_pct: 0, sizing_rule: 'E_WATCH_ONLY' } };
+  }
+  const highCount = warnings.filter(w => w.severity === 'high').length;
+  const mediumCount = warnings.filter(w => w.severity === 'medium').length;
+  const collapseFlag = revenueCollapse?.collapsing ? 1 : 0;
+  const mediumGroup = mediumCount >= 2 ? 1 : 0;
+  const totalRisk = highCount + collapseFlag + mediumGroup;
+  
+  if (totalRisk === 0) {
+    return {
+      verdict: 'ENTER', reason: acceleration.accelerating ? acceleration.reason : 'margin_improvement',
+      details: {
+        growth_path: acceleration.accelerating ? acceleration.details.path : 'margin_improvement',
+        position_size_pct: 100, sizing_rule: 'A_FULL_CLEAN', note: '신호 명확, 풀 매수 가능'
+      }
+    };
+  }
+  if (totalRisk === 1) {
+    return {
+      verdict: 'ENTER', reason: 'growth_with_context_warnings',
+      details: {
+        growth_path: acceleration.accelerating ? acceleration.details.path : 'margin_improvement',
+        warning_flags: warnings.map(w => ({ type: w.type, severity: w.severity })),
+        position_size_pct: 50, sizing_rule: 'B_HALF_WITH_WARNING', note: 'Warning 1개, 50% 시작'
+      }
+    };
+  }
+  return {
+    verdict: 'WATCH_CLAUDE', reason: 'multiple_risk_signals',
+    details: {
+      high_warnings: warnings.filter(w => w.severity === 'high').map(w => w.type),
+      revenue_collapsing: collapseFlag > 0,
+      position_size_pct: 30, sizing_rule: 'C_QUARTER_CLAUDE_CHECK', note: 'Claude 정성 판단 필요'
+    }
+  };
+}
+
+function detectExitSignals(quarters, margins) {
+  const signals = [];
+  if (!quarters || quarters.length < 4) return { signals: [], severity: 'insufficient_data' };
+  const withYoY = quarters.filter(q => q.yoy !== null);
+  if (withYoY.length < 3) return { signals: [], severity: 'insufficient_data' };
+  const recent = withYoY.slice(-5);
+  const q_latest = recent[recent.length - 1];
+  const q_minus1 = recent[recent.length - 2];
+  const q_minus2 = recent.length >= 3 ? recent[recent.length - 3] : null;
+  
+  if (q_minus2) {
+    const latestDecel = q_minus1.yoy - q_latest.yoy;
+    const prevDecel = q_minus2.yoy - q_minus1.yoy;
+    if (latestDecel >= 10 && prevDecel >= 10) {
+      signals.push({ type: 'EXIT_1_DECEL_2Q', severity: 'warn', message: `매출 2분기 연속 감속 (${prevDecel.toFixed(1)}%p, ${latestDecel.toFixed(1)}%p)` });
+    }
+  }
+  if (q_latest.yoy < 0) {
+    signals.push({ type: 'EXIT_2_NEGATIVE_YOY', severity: 'exit', message: `매출 YoY 감소 (${q_latest.yoy.toFixed(1)}%)` });
+  }
+  const recent6 = withYoY.slice(-6);
+  const peakYoY = Math.max(...recent6.map(q => q.yoy));
+  const deltaFromPeak = peakYoY - q_latest.yoy;
+  if (peakYoY >= 30 && deltaFromPeak >= 50) {
+    signals.push({ type: 'EXIT_3_PEAK_COLLAPSE', severity: 'exit', message: `Peak +${peakYoY.toFixed(1)}% → 현재 +${q_latest.yoy.toFixed(1)}%` });
+  }
+  if (margins && margins.length >= 6) {
+    const recent3 = margins.slice(-3);
+    let decline = 0;
+    for (const recQ of recent3) {
+      const priorQ = margins.find(m => {
+        const d = Math.round((new Date(recQ.end) - new Date(m.end)) / 86400000);
+        return d >= 320 && d <= 410;
+      });
+      if (priorQ && recQ.opMargin !== null && priorQ.opMargin !== null && recQ.opMargin - priorQ.opMargin < -2) decline++;
+    }
+    if (decline >= 3) signals.push({ type: 'EXIT_4_MARGIN_DETERIORATION', severity: 'warn', message: `영업이익률 3분기 YoY 악화` });
+  }
+  if (q_minus2) {
+    const peakHigh = peakYoY >= 150;
+    const latestDecel = q_minus1.yoy - q_latest.yoy;
+    const prevDecel = q_minus2.yoy - q_minus1.yoy;
+    if (peakHigh && latestDecel > 0 && prevDecel > 0) {
+      signals.push({ type: 'EXIT_5_PULL_FORWARD_CONFIRMED', severity: 'exit', message: `Pull-forward 확정 (peak +${peakYoY.toFixed(1)}%)` });
+    }
+  }
+  let overallSeverity = 'clean';
+  if (signals.some(s => s.severity === 'exit')) overallSeverity = 'exit';
+  else if (signals.some(s => s.severity === 'warn')) overallSeverity = 'warn';
+  else if (signals.length > 0) overallSeverity = 'watch';
+  return { signals, severity: overallSeverity, signal_count: signals.length };
+}
+
+async function analyze(ticker, options = {}) {
+  const asOfDate = options.asOfDate || new Date().toISOString().slice(0, 10);
+  const result = { ticker: ticker.toUpperCase(), asOfDate, timestamp: new Date().toISOString(), stages: {} };
+  try {
+    const [revData, marginData] = await Promise.all([
+      getRecentQuartersRevenue(ticker, asOfDate, 10).catch(e => ({ error: e.message, quarters: [] })),
+      getMarginData(ticker, asOfDate).catch(e => ({ error: e.message }))
+    ]);
+    if (!revData.quarters || revData.quarters.length === 0) {
+      result.verdict = 'NO_DATA';
+      result.reason = 'sec_data_insufficient';
+      result.error = revData.error;
+      return result;
+    }
+    result.stages.fundamentals = { revenue_quarters: revData.quarters.length, tag: revData.tag, unit: revData.unit };
+    const margins = !marginData.error ? computeQuarterlyMargins(marginData) : [];
+    const acceleration = detectAcceleration(revData.quarters);
+    const marginImprovement = detectMarginImprovement(margins);
+    const revenueCollapse = detectRevenueCollapse(revData.quarters);
+    const warnings = checkWarnings({ quarters: revData.quarters, margins });
+    const blocks = checkBlocks({ quarters: revData.quarters, margins });
+    
+    result.stages.acceleration = acceleration;
+    result.stages.margin_improvement = marginImprovement;
+    result.stages.revenue_collapse = revenueCollapse;
+    result.stages.warnings = warnings;
+    result.stages.blocks = blocks;
+    result.stages.quarters = revData.quarters;
+    result.stages.margins = margins;
+    
+    const decision = makeFinalDecision({ blocks, acceleration, marginImprovement, revenueCollapse, warnings });
+    result.verdict = decision.verdict;
+    result.reason = decision.reason;
+    result.decision_details = decision.details;
+    
+    if (options.isHolding) {
+      result.exit_signals = detectExitSignals(revData.quarters, margins);
+    }
+    return result;
+  } catch (e) {
+    result.verdict = 'ERROR';
+    result.reason = 'exception';
+    result.error = e.message;
+    return result;
+  }
+}
+
+function clearCache() {
+  tickerCIKCache = null;
+  factsCache.clear();
+}
+
+return { analyze, clearCache, fetchCompanyFacts, getRecentQuartersRevenue, detectAcceleration, detectExitSignals, CONFIG };
+
+})();
+
+console.log('[Babylon] CORE 베이비 자이언트 엔진 로드 완료. 사용: await babylonEngine.analyze("NVDA")');
 </script>
 </body>
 </html>
