@@ -6185,6 +6185,26 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
   r.core_detail       = coreData.condition_detail || [];
   r.core_stage        = coreData.stage ? 'Stage '+coreData.stage : null;
 
+  // ── 점수 산출 근거 보존 (카드 breakdown 표시용) ──
+  r._scoreBreakdown = {
+    ad_line_slope:        coreData.ad_line_slope,
+    obv_bullish_div:      coreData.obv_bullish_div,
+    rs_trend:             coreData.rs_trend,
+    rs_13w:               coreData.rs_13w,
+    rs_declining:         coreData.rs_declining,
+    higher_lows:          coreData.higher_lows,
+    up_down_vol_ratio:    coreData.up_down_vol_ratio,
+    down_vol_exhaustion:  coreData.down_vol_exhaustion,
+    base_weeks:           coreData.base_weeks,
+    base_tightening:      coreData.base_tightening,
+    vol_dry_in_base:      coreData.vol_dry_in_base,
+    base_position:        coreData.base_position,
+    stage:                coreData.stage,
+    ma50_slope:           coreData.ma50_slope,
+    price_above_ma50:     coreData.price_above_ma50,
+    ma_aligned:           coreData.ma_aligned
+  };
+
   // ── 펀더멘털 게이트 (선행) ──
   if(fundData){
     r.fund_score   = fundData.fund_score   || 0;
@@ -6623,6 +6643,7 @@ function _buildSnapshot(result, mode){
     setup:                 result.setup                  || null,
     synthesis:             result.synthesis              || null,
     position_size_pct:     result.position_size_pct      ?? null,
+    _scoreBreakdown:       result._scoreBreakdown        || null,
     _ts: Date.now()
   };
 }
@@ -8153,6 +8174,89 @@ function cardHTML(r, mode){
       downStr = ' <span style="font-family:var(--mono);font-size:9px;color:var(--a);background:rgba(255,170,0,.12);padding:1px 5px;border-radius:3px">raw: '+sxRaw+' −'+sxDown+'</span>';
     }
 
+    // ── 점수 breakdown (✓/✗ + 가중치) ──
+    // 데이터: r._scoreBreakdown (coreEngine에서 보존)
+    var breakdownHtml = '';
+    var sb = r._scoreBreakdown;
+    if(sb){
+      // 매집 항목 (10점 만점)
+      var accumItems = [
+        { ok: sb.ad_line_slope !== null && sb.ad_line_slope !== undefined && sb.ad_line_slope > 0,
+          weight: 2, label: 'A/D Line 상승',
+          detail: sb.ad_line_slope !== null && sb.ad_line_slope !== undefined ? '('+sb.ad_line_slope+'%)' : '(데이터 부족)' },
+        { ok: sb.obv_bullish_div === true, weight: 2, label: 'OBV 불리시 다이버전스', detail: '' },
+        { ok: sb.rs_trend === true, weight: 2, label: 'RS 상승 트렌드', detail: '' },
+        { ok: sb.rs_13w !== null && sb.rs_13w !== undefined && sb.rs_13w > 1.0,
+          weight: 1, label: 'RS 13주 > 1.0',
+          detail: sb.rs_13w !== null && sb.rs_13w !== undefined ? '('+sb.rs_13w+'x)' : '' },
+        { ok: sb.higher_lows === true, weight: 1, label: 'Higher Lows', detail: '' },
+        { ok: sb.up_down_vol_ratio !== null && sb.up_down_vol_ratio !== undefined && sb.up_down_vol_ratio >= 1.2,
+          weight: 1, label: 'Up/Down Vol ≥ 1.2',
+          detail: sb.up_down_vol_ratio !== null && sb.up_down_vol_ratio !== undefined ? '('+sb.up_down_vol_ratio+'x)' : '' },
+        { ok: sb.down_vol_exhaustion === true, weight: 1, label: '하락일 거래량 고갈', detail: '' }
+      ];
+      var accumPenalty = sb.rs_declining === true;
+
+      // 타이밍 항목 (10점 만점)
+      var timingItems = [
+        { ok: sb.base_weeks !== null && sb.base_weeks !== undefined && sb.base_weeks >= 6,
+          weight: 2, label: '베이스 6주+',
+          detail: sb.base_weeks !== null && sb.base_weeks !== undefined ? '('+sb.base_weeks+'주)' : '' },
+        { ok: sb.base_weeks !== null && sb.base_weeks !== undefined && sb.base_weeks >= 3 && sb.base_weeks < 6,
+          weight: 1, label: '베이스 3-5주', detail: '' },
+        { ok: sb.base_tightening === true, weight: 2, label: 'VCP 감지', detail: '' },
+        { ok: sb.vol_dry_in_base === true, weight: 2, label: '베이스 거래량 고갈', detail: '' },
+        { ok: sb.stage === '1→2 전환' || sb.stage === '2 초입',
+          weight: 2, label: '최적 Stage',
+          detail: sb.stage ? '('+sb.stage+')' : '' },
+        { ok: sb.base_position !== null && sb.base_position !== undefined && sb.base_position < 0.4,
+          weight: 1, label: '베이스 저점 근처',
+          detail: sb.base_position !== null && sb.base_position !== undefined ? '('+Math.round(sb.base_position*100)+'%)' : '' },
+        { ok: sb.ma50_slope !== null && sb.ma50_slope !== undefined && sb.ma50_slope > 0,
+          weight: 1, label: 'MA50 상향', detail: '' },
+        { ok: sb.price_above_ma50 === true, weight: 1, label: '가격 MA50 위', detail: '' },
+        { ok: sb.ma_aligned === true, weight: 1, label: 'MA 정배열', detail: '' }
+      ];
+
+      // 항목 한 줄 렌더 (✓ 진녹색 / ✗ 회색)
+      function renderItem(it){
+        var sym = it.ok ? '✓' : '✗';
+        var symColor = it.ok ? 'var(--g)' : 'var(--t3)';
+        var labelColor = it.ok ? 'var(--t)' : 'var(--t3)';
+        var pts = it.ok ? '+'+it.weight : '0';
+        var ptsColor = it.ok ? 'var(--g)' : 'var(--t3)';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0">'+
+          '<span style="font-family:var(--mono);font-size:10px"><span style="color:'+symColor+';margin-right:4px">'+sym+'</span><span style="color:'+labelColor+'">'+it.label+'</span>'+(it.detail?' <span style="color:var(--t3);font-size:9px">'+it.detail+'</span>':'')+'</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:'+ptsColor+'">'+pts+'</span>'+
+        '</div>';
+      }
+
+      var accumHtml = accumItems.map(renderItem).join('') +
+        (accumPenalty ?
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;margin-top:2px;border-top:1px dashed rgba(255,45,78,.2)">'+
+            '<span style="font-family:var(--mono);font-size:10px;color:var(--r)"><span style="margin-right:4px">⚠</span>RS 하락 중 (페널티)</span>'+
+            '<span style="font-family:var(--mono);font-size:10px;color:var(--r)">−3</span>'+
+          '</div>' : '');
+
+      var timingHtml = timingItems.map(renderItem).join('');
+
+      // 토글 영역 (collapsed by default)
+      var bdId = 'sbd_'+r.ticker+'_'+(r._ts||0);
+      breakdownHtml =
+        '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed '+sxBorder+'">'+
+          '<div onclick="(function(el){var d=document.getElementById(\''+bdId+'\');if(d){d.style.display=d.style.display===\'none\'?\'block\':\'none\';el.querySelector(\'.bd-arrow\').textContent=d.style.display===\'none\'?\'▼\':\'▲\';}})(this)" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none">'+
+            '<span style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.05em">점수 산출 근거</span>'+
+            '<span class="bd-arrow" style="font-family:var(--mono);font-size:9px;color:var(--t3)">▼</span>'+
+          '</div>'+
+          '<div id="'+bdId+'" style="display:none;margin-top:8px">'+
+            '<div style="font-family:var(--mono);font-size:10px;color:'+(r.accum_score>=6?'var(--pu)':'var(--t2)')+';margin-bottom:4px;font-weight:700">매집 '+r.accum_score+'/10</div>'+
+            accumHtml+
+            '<div style="font-family:var(--mono);font-size:10px;color:'+(r.timing_score>=5?'var(--pu)':'var(--t2)')+';margin-top:10px;margin-bottom:4px;font-weight:700">타이밍 '+r.timing_score+'/10</div>'+
+            timingHtml+
+          '</div>'+
+        '</div>';
+    }
+
     setupBanner =
       '<div style="background:'+sxBg+';border:1px solid '+sxBorder+';border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
@@ -8170,6 +8274,7 @@ function cardHTML(r, mode){
           '<span>섹터 '+sectorStr+'</span>'+
           '<span>트리거 <span style="color:'+(r.entry_trigger && r.entry_trigger !== 'NONE' ? 'var(--g)' : 'var(--t3)')+'">'+triggerKr+'</span></span>'+
         '</div>'+
+        breakdownHtml+
       '</div>';
   }
 
