@@ -797,8 +797,8 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     설정
   </button>
-  <!-- 스크리너 탭: SWING 모드에서만 표시 -->
-  <button class="btab" id="btabScreener" onclick="switchSubTab('screener')" style="display:none">
+  <!-- 스크리너 탭: MOMO에선 숨김, SWING/CORE 표시 (switchMode/switchSubTab에서 제어) -->
+  <button class="btab" id="btabScreener" onclick="switchSubTab('screener')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="3"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
     발굴
   </button>
@@ -7394,6 +7394,301 @@ function getPMZone(r){
 // ═══════════════════════════════════════
 // 카드 HTML
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// CORE 전용 분석 카드 헬퍼 (cardHTML에서 호출)
+// 입력:
+//   r: 분석 결과 객체 (synthesis, setup, babylon, signals 등)
+//   mode: 'core'
+//   synthesisBanner/babylonBanner/setupBanner/holdBanner: cardHTML에서 이미 계산한 HTML
+// ─────────────────────────────────────────────────────────────
+// CORE 철학 반영:
+//   - 손절 없음 (펀더 무너질 때만 청산)
+//   - T1/T2 익절 없음 (단기 개념)
+//   - 분할 매집 중심 (matrix_cell 기반 단계별 진입)
+//   - 청산 조건은 펀더/차트 기반 신호
+// ═══════════════════════════════════════════════════════════════
+function renderCoreCard(r, mode, synthesisBanner, babylonBanner, setupBanner, holdBanner, cardC, ac){
+  var sy = r.synthesis || {};
+  var sx = r.setup || {};
+  var bb = r.babylon || {};
+  var syCell = sy.matrix_cell || 'WATCH';
+  var syPct = sy.position_size_pct || 0;
+  var sxLabel = sx.label || 'EARLY';
+
+  // ── 헤더 (ticker / 가격 / 변동 / CORE 배지 / action) ──
+  var priceStr = r.price ? '$'+r.price.toFixed(2) : '--';
+  var gapColor = r.gap_pct >= 0 ? 'var(--g)' : 'var(--r)';
+  var gapStr = (r.gap_pct !== undefined && r.gap_pct !== null)
+    ? '<span style="background:'+(r.gap_pct>=0?'rgba(0,240,122,.15)':'rgba(255,45,78,.15)')+';color:'+gapColor+';padding:3px 10px;border-radius:6px;font-family:var(--mono);font-size:13px;margin-left:8px;vertical-align:middle">'+(r.gap_pct>=0?'+':'')+r.gap_pct.toFixed(1)+'%</span>'
+    : '';
+  var tsStr = r._ts ? new Date(r._ts).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'}) : '';
+
+  var actionColor = ac==='ENTER'?'var(--g)':ac==='BLOCK'?'var(--r)':'var(--t2)';
+  var actionLabel = ac==='ENTER'?'진입':ac==='BLOCK'?'차단':'관망';
+
+  var headerHtml =
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px">'+
+      '<div style="flex:1;min-width:0">'+
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">'+
+          '<span class="card-ticker" style="font-size:20px">'+r.ticker+'</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--pu);background:rgba(159,122,255,.1);border:1px solid rgba(159,122,255,.35);padding:2px 7px;border-radius:5px;letter-spacing:.1em;font-weight:700">CORE</span>'+
+          (tsStr?'<span style="font-family:var(--mono);font-size:10px;color:var(--t3)">'+tsStr+'</span>':'')+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:26px;color:var(--t);font-weight:700;line-height:1.2">'+priceStr+gapStr+'</div>'+
+      '</div>'+
+      '<div style="text-align:right;flex-shrink:0">'+
+        '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);letter-spacing:.1em;margin-bottom:2px">ACTION</div>'+
+        '<div style="font-family:var(--mono);font-size:18px;color:'+actionColor+';font-weight:700">'+actionLabel+'</div>'+
+        (syPct>0?'<div style="font-family:var(--mono);font-size:13px;color:'+actionColor+';margin-top:2px;font-weight:700">'+syPct+'%</div>':'')+
+      '</div>'+
+    '</div>';
+
+  // ── 진입 계획 (matrix_cell 기반 분할 매집) ──
+  // BLOCK/WATCH_REJECT/WATCH_CLAUDE_REQUIRED 는 진입 계획 대신 다른 안내
+  var entryPlanHtml = '';
+  if(ac === 'BLOCK'){
+    entryPlanHtml =
+      '<div style="background:rgba(255,45,78,.06);border:1px solid rgba(255,45,78,.2);border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'+
+          '<span style="font-size:13px">🛑</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--r);font-weight:700;letter-spacing:.1em">진입 금지</span>'+
+        '</div>'+
+        (r.blockers && r.blockers.length ?
+          r.blockers.slice(0,3).map(function(b){ return '<div style="font-family:var(--mono);font-size:11px;color:var(--t);margin-top:4px">• '+b+'</div>'; }).join('') : '')+
+      '</div>';
+  } else if(syCell === 'WATCH_REJECT'){
+    entryPlanHtml =
+      '<div style="background:rgba(255,45,78,.06);border:1px solid rgba(255,45,78,.25);border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'+
+          '<span style="font-size:13px">⚠️</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--r);font-weight:700;letter-spacing:.1em">CORE 전략 대상 아님</span>'+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:11px;color:var(--t);margin-top:4px">재무 가속 없음 — MOMO/SWING 엔진으로 확인 권장</div>'+
+      '</div>';
+  } else if(syCell === 'WATCH_CLAUDE'){
+    entryPlanHtml =
+      '<div style="background:rgba(255,170,0,.08);border:1px solid rgba(255,170,0,.3);border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'+
+          '<span style="font-size:13px">🧠</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--a);font-weight:700;letter-spacing:.1em">Claude 분석 필요</span>'+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:11px;color:var(--t);margin-top:4px">복합 위험 신호 감지 — 정성 분석 후 진입 여부 결정</div>'+
+      '</div>';
+  } else if(syCell === 'WATCH' || syCell === 'WATCH_NO_BABYLON' || syCell === 'WATCH_ERROR'){
+    entryPlanHtml =
+      '<div style="background:rgba(90,122,149,.06);border:1px solid rgba(90,122,149,.2);border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'+
+          '<span style="font-size:13px">⏸</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--t2);font-weight:700;letter-spacing:.1em">관망</span>'+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:11px;color:var(--t);margin-top:4px">'+(sy.note || '셋업 BUILDING 이상 될 때까지 대기')+'</div>'+
+      '</div>';
+  } else if(ac === 'ENTER'){
+    // 분할 매집 계획 매트릭스
+    var planMap = {
+      'ENTER_100': {
+        color:'var(--g)', bg:'rgba(0,240,122,.1)', border:'rgba(0,240,122,.35)', icon:'💎',
+        title:'풀 진입 (100%)', sub:'이상적 조합 — 추가 매집 불필요',
+        steps:[{pct:100, label:'지금 즉시 진입', trigger:'트리거 발동 + 셋업 READY', primary:true}]
+      },
+      'ENTER_75': {
+        color:'var(--g)', bg:'rgba(0,240,122,.08)', border:'rgba(0,240,122,.25)', icon:'🎯',
+        title:'큰 비중 진입 (75%)', sub:'셋업 완성 시 남은 25% 추가',
+        steps:[
+          {pct:75, label:'1차 진입 (지금)', trigger:'현재 시점 — 셋업 IMMINENT 이상', primary:true},
+          {pct:25, label:'2차 진입', trigger:'셋업 READY (트리거 발동) 확인 후', primary:false}
+        ]
+      },
+      'ENTER_50': {
+        color:'var(--a)', bg:'rgba(255,170,0,.08)', border:'rgba(255,170,0,.25)', icon:'📐',
+        title:'본격 진입 (50%)', sub:'셋업 단계별 분할 매집',
+        steps:[
+          {pct:50, label:'1차 진입 (지금)', trigger:'현재 시점', primary:true},
+          {pct:25, label:'2차 진입', trigger:'셋업 IMMINENT 진입 시', primary:false},
+          {pct:25, label:'3차 진입', trigger:'셋업 READY + 트리거 발동', primary:false}
+        ]
+      },
+      'ENTER_25': {
+        color:'var(--a)', bg:'rgba(255,170,0,.08)', border:'rgba(255,170,0,.25)', icon:'🔍',
+        title:'탐색 진입 (25%)', sub:'경고 + 셋업 중 — 소량 탐색',
+        steps:[
+          {pct:25, label:'1차 탐색 진입 (지금)', trigger:'경고 감안 소량', primary:true},
+          {pct:25, label:'2차 진입', trigger:'셋업 IMMINENT + 경고 해소', primary:false},
+          {pct:50, label:'3차 본격 진입', trigger:'셋업 READY + 트리거 발동', primary:false}
+        ]
+      },
+      'ENTER_30_EXPLORATORY': {
+        color:'var(--a)', bg:'rgba(255,170,0,.08)', border:'rgba(255,170,0,.25)', icon:'🔍',
+        title:'탐색 진입 (30%)', sub:'베이비 신호 강력 + 셋업 초기 — 먼저 잡기',
+        steps:[
+          {pct:30, label:'1차 탐색 진입 (지금)', trigger:'펀더 강력, 셋업 EARLY', primary:true},
+          {pct:20, label:'2차 진입', trigger:'셋업 BUILDING 진입 시', primary:false},
+          {pct:20, label:'3차 진입', trigger:'셋업 IMMINENT 진입 시', primary:false},
+          {pct:30, label:'4차 본격 진입', trigger:'셋업 READY + 트리거 발동', primary:false}
+        ]
+      }
+    };
+    var plan = planMap[syCell] || planMap['ENTER_50'];
+
+    var stepsHtml = plan.steps.map(function(s){
+      var sColor = s.primary ? plan.color : 'var(--t2)';
+      var sBg = s.primary ? 'rgba(255,255,255,.04)' : 'transparent';
+      var stepIcon = s.primary ? '▶' : '○';
+      return '<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 8px;background:'+sBg+';border-radius:6px;margin-top:4px">'+
+        '<span style="color:'+sColor+';font-size:11px;margin-top:1px">'+stepIcon+'</span>'+
+        '<div style="flex:1">'+
+          '<div style="font-family:var(--mono);font-size:11px;color:'+sColor+';font-weight:'+(s.primary?'700':'400')+'">'+
+            s.label+' · <span style="color:'+(s.primary?plan.color:'var(--t3)')+'">'+s.pct+'%</span>'+
+          '</div>'+
+          '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-top:2px">'+s.trigger+'</div>'+
+        '</div>'+
+      '</div>';
+    }).join('');
+
+    entryPlanHtml =
+      '<div style="background:'+plan.bg+';border:1px solid '+plan.border+';border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'+
+          '<div style="display:flex;align-items:center;gap:6px">'+
+            '<span style="font-size:13px">'+plan.icon+'</span>'+
+            '<span style="font-family:var(--mono);font-size:10px;color:'+plan.color+';font-weight:700;letter-spacing:.1em">진입 계획</span>'+
+            '<span style="font-family:var(--mono);font-size:12px;color:'+plan.color+';font-weight:700">'+plan.title+'</span>'+
+          '</div>'+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);margin-bottom:4px">'+plan.sub+'</div>'+
+        '<div style="margin-top:6px">'+stepsHtml+'</div>'+
+      '</div>';
+  }
+
+  // ── 청산 조건 (펀더 기반 — CORE 철학) ──
+  // Jim 명시: 손절/T1/T2 대신 "펀더 무너질 때 청산"
+  // Babylon exit_signals 있으면 (보유 중) 실시간 신호 우선 표시
+  var exitHtml = '';
+  var hasExitSignals = bb.exit_signals && bb.exit_signals.signals && bb.exit_signals.signals.length > 0;
+
+  if(hasExitSignals){
+    // 보유 중 + 실시간 청산 신호 감지
+    var exitSignals = bb.exit_signals.signals;
+    var exitSeverity = bb.exit_signals.severity || 'watch';
+    var exitColor = exitSeverity === 'exit' ? 'var(--r)' : 'var(--a)';
+    var exitBg = exitSeverity === 'exit' ? 'rgba(255,45,78,.08)' : 'rgba(255,170,0,.08)';
+    var exitBorder = exitSeverity === 'exit' ? 'rgba(255,45,78,.3)' : 'rgba(255,170,0,.3)';
+    exitHtml =
+      '<div style="background:'+exitBg+';border:1px solid '+exitBorder+';border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'+
+          '<span style="font-size:13px">🚪</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:'+exitColor+';font-weight:700;letter-spacing:.1em">청산 신호 감지</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:'+exitColor+'">('+exitSeverity+')</span>'+
+        '</div>'+
+        exitSignals.map(function(s){
+          var sCol = s.severity === 'exit' ? 'var(--r)' : 'var(--a)';
+          return '<div style="font-family:var(--mono);font-size:11px;color:'+sCol+';margin-top:3px">• '+s.message+'</div>';
+        }).join('')+
+      '</div>';
+  } else {
+    // 진입 전 or 보유 중이지만 청산 신호 없음 — 청산 조건 안내
+    var exitConditions = [
+      'Babylon 엔진이 BLOCK 또는 WATCH_WEAK 으로 전환',
+      '매출 성장 2분기 연속 YoY 둔화 (가속 소멸)',
+      'Stage 3 분배 구간 전환 감지',
+      '주봉 MA50 아래 2주 연속 종가',
+      'RS + A/D Line 동시 하락 지속'
+    ];
+    exitHtml =
+      '<div style="background:rgba(90,122,149,.04);border:1px solid rgba(90,122,149,.15);border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'+
+          '<span style="font-size:13px">🔄</span>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--t2);font-weight:700;letter-spacing:.1em">청산 조건 (펀더 악화 시)</span>'+
+        '</div>'+
+        '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-bottom:4px">다음 중 하나 발생 시 전량 청산:</div>'+
+        exitConditions.map(function(c){
+          return '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);margin-top:3px;padding-left:4px">• '+c+'</div>';
+        }).join('')+
+      '</div>';
+  }
+
+  // ── 카탈리스트 / 뉴스 (Claude 해석) ──
+  var newsHtml = '';
+  if(r.news_one_line || r.catalyst_calendar || r.conviction_note || r.risk_note){
+    newsHtml = '<div style="background:rgba(43,159,255,.04);border:1px solid rgba(43,159,255,.15);border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
+      (r.news_one_line ?
+        '<div style="display:flex;gap:6px;margin-bottom:'+(r.catalyst_calendar||r.conviction_note||r.risk_note?'6px':'0')+'">'+
+          '<span style="font-size:11px;flex-shrink:0">📰</span>'+
+          '<div style="font-family:var(--mono);font-size:11px;color:var(--t);line-height:1.5;flex:1">'+r.news_one_line+'</div>'+
+        '</div>' : '')+
+      (r.catalyst_calendar ?
+        '<div style="display:flex;gap:6px;margin-top:4px">'+
+          '<span style="font-size:11px;flex-shrink:0">📅</span>'+
+          '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);line-height:1.5;flex:1">'+r.catalyst_calendar+'</div>'+
+        '</div>' : '')+
+      (r.conviction_note ?
+        '<div style="display:flex;gap:6px;margin-top:4px">'+
+          '<span style="font-size:11px;flex-shrink:0">💡</span>'+
+          '<div style="font-family:var(--mono);font-size:10px;color:var(--bl);line-height:1.5;flex:1">'+r.conviction_note+'</div>'+
+        '</div>' : '')+
+      (r.risk_note ?
+        '<div style="display:flex;gap:6px;margin-top:4px">'+
+          '<span style="font-size:11px;flex-shrink:0">⚠️</span>'+
+          '<div style="font-family:var(--mono);font-size:10px;color:var(--a);line-height:1.5;flex:1">'+r.risk_note+'</div>'+
+        '</div>' : '')+
+      '</div>';
+  }
+
+  // ── 주요 신호 (Babylon pathway + 펀더 signals) ──
+  var signalsHtml = '';
+  var coreSignals = (r.signals || []).filter(function(s){
+    // 매트릭스 기록은 synthesisBanner에 이미 있음 — 중복 제거
+    return !s.startsWith('📐');
+  }).slice(0, 4);
+  if(coreSignals.length > 0){
+    signalsHtml =
+      '<div style="margin-bottom:10px">'+
+        coreSignals.map(function(s){
+          return '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);padding:3px 0;display:flex;align-items:flex-start;gap:5px">'+
+            '<span style="color:var(--g);flex-shrink:0">✓</span><span style="flex:1">'+s+'</span>'+
+          '</div>';
+        }).join('')+
+      '</div>';
+  }
+
+  // ── 경고 ──
+  var warningsHtml = '';
+  if(r.warnings && r.warnings.length > 0){
+    warningsHtml =
+      '<div style="margin-bottom:10px">'+
+        r.warnings.slice(0, 3).map(function(w){
+          return '<div style="font-family:var(--mono);font-size:10px;color:var(--a);padding:3px 0;display:flex;align-items:flex-start;gap:5px">'+
+            '<span style="flex-shrink:0">⚠</span><span style="flex:1">'+w+'</span>'+
+          '</div>';
+        }).join('')+
+      '</div>';
+  }
+
+  // ── 버튼 ──
+  var buttonsHtml =
+    '<div style="display:flex;gap:6px;margin-top:10px">'+
+      '<button onclick="openTradeLog(\''+r.ticker+'\','+(r.price||0)+')" style="flex:1;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--g);cursor:pointer">+ 거래 기록</button>'+
+      '<button onclick="holdFromAnalysis(event,\''+r.ticker+'\',\''+mode+'\','+(r.price||0)+')" style="flex:1;background:rgba(255,106,0,.08);border:1px solid rgba(255,106,0,.25);border-radius:8px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--gold);cursor:pointer">📌 보유</button>'+
+      '<button onclick="rerunCard(\''+r.ticker+'\',\'core\')" style="flex:1;background:none;border:1px solid var(--b);border-radius:8px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--t2);cursor:pointer">↻ 재분석</button>'+
+      (ac !== 'BLOCK' ?
+        '<button onclick="copyCoreClaude(event,\''+r.ticker+'\','+(r.accum_score||0)+','+(r.timing_score||0)+','+(r.fund_score||0)+',\''+r.fund_gate+'\',\''+encodeURIComponent(r.core_stage||'--')+'\',\''+encodeURIComponent(r.entry_trigger||'NONE')+'\')" style="flex:1;background:rgba(159,122,255,.08);border:1px solid rgba(159,122,255,.25);border-radius:8px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--pu);cursor:pointer">🔍 파도/오해</button>'
+      : '')+
+    '</div>';
+
+  return '<div class="stock-card '+cardC+'">'+
+    headerHtml+
+    synthesisBanner+
+    babylonBanner+
+    setupBanner+
+    holdBanner+
+    entryPlanHtml+
+    exitHtml+
+    newsHtml+
+    signalsHtml+
+    warningsHtml+
+    buttonsHtml+
+  '</div>';
+}
+
 function cardHTML(r, mode){
   var ac  = r.action||'WATCH';
   var abC = {'ENTER':'ab-enter','WATCH':'ab-watch','BLOCK':'ab-block'}[ac];
@@ -7898,6 +8193,16 @@ function cardHTML(r, mode){
           '<span>'+ot.date+'</span>'+
         '</div>'+
       '</div>';
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // CORE 전용 분석 카드 (옵션 C — 분할 매집 + 펀더 청산 철학)
+  // 기존 배너 재활용: synthesisBanner / babylonBanner / setupBanner / holdBanner
+  // 제거: 손절, T1/T2 익절, 추가매수 가격, 프리마켓 블록, VWAP, intraday 태그
+  // 추가: 분할 매집 계획, 펀더 청산 조건, 간소 뉴스
+  // ═══════════════════════════════════════════════════════════════
+  if(r._mode === 'core' && r.mode !== 'hold'){
+    return renderCoreCard(r, mode, synthesisBanner, babylonBanner, setupBanner, holdBanner, cardC, ac);
   }
 
   // ── 보유 모드 카드 (hold) ──
