@@ -5707,18 +5707,33 @@ function deriveSetupLabel(coreData, fundData, sectorData){
   var fundGate   = (fundData && fundData.fund_gate)     || 'UNKNOWN';
   var sectorGate = (sectorData && sectorData.sector_gate) || 'UNKNOWN';
 
-  // ── FAIL 게이트: 펀더멘털 BLOCK (최상위) ──
-  if(fundGate === 'BLOCK'){
-    path.push('fund_gate=BLOCK → FAIL');
+  // ── FAIL 게이트 (최상위) ──
+  // 1. 펀더멘털 BLOCK
+  // 2. 차트 hard block 4종 (옵션 C — coreEngine에서 흡수)
+  //    - Stage 3 분배: 기관 분배 구간, 진입 금지
+  //    - RS+A/D 동시 하락: 기관 매도 + 매집 신호 부재
+  //    - 베이스 깊이 < -40%: 수급 손상 과다
+  //    - 베이스 없는 과확장: 진입 자리 부재
+  function failResult(reason){
+    path.push(reason);
     return {
       label: 'FAIL',
       raw_label: 'FAIL',
       downgrade_steps: 0,
       confidence: 'full',
       decision_path: path,
+      fail_reason: reason,
       inputs: { accum: accum, timing: timing, trigger: trigger, fundGate: fundGate, sectorGate: sectorGate }
     };
   }
+
+  if(fundGate === 'BLOCK')                               return failResult('fund_gate=BLOCK → FAIL');
+  if(coreData.stage === '3 분배')                         return failResult('Stage 3 분배 → FAIL (기관 분배 구간)');
+  if(coreData.rs_declining && coreData.ad_bullish_div === false) return failResult('RS+A/D 동시 하락 → FAIL (기관 매도)');
+  if(coreData.base_depth_pct !== null && coreData.base_depth_pct !== undefined && coreData.base_depth_pct < -40)
+                                                          return failResult('베이스 깊이 '+coreData.base_depth_pct+'% → FAIL (수급 손상)');
+  if(coreData.overextended === true && coreData.base_tightening !== true)
+                                                          return failResult('베이스 없는 과확장 → FAIL (진입 자리 부재)');
 
   // ── Raw 라벨 산출 ──
   var rawLabel;
@@ -5802,6 +5817,22 @@ function runSetupLabelTests(){
     { name:'FAIL: fund_gate=BLOCK (다른 조건 무시)',
       cd:{accum_score:8,timing_score:8,entry_trigger:'MA50_BREAKOUT'}, fd:{fund_gate:'BLOCK'}, sd:{sector_gate:'STRONG'},
       vix:'CALM', expected:'FAIL' },
+    // ── 옵션 C 차트 hard block 4종 ──
+    { name:'FAIL: Stage 3 분배',
+      cd:{accum_score:8,timing_score:7,entry_trigger:'MA50_BREAKOUT',stage:'3 분배'}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'STRONG'},
+      vix:'CALM', expected:'FAIL' },
+    { name:'FAIL: RS+A/D 동시 하락',
+      cd:{accum_score:8,timing_score:7,entry_trigger:'NONE',rs_declining:true,ad_bullish_div:false}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'NEUTRAL'},
+      vix:'CALM', expected:'FAIL' },
+    { name:'FAIL: 베이스 깊이 -45%',
+      cd:{accum_score:7,timing_score:5,entry_trigger:'NONE',base_depth_pct:-45}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'NEUTRAL'},
+      vix:'CALM', expected:'FAIL' },
+    { name:'FAIL: 과확장 + 베이스 없음 (MRVL 케이스)',
+      cd:{accum_score:7,timing_score:4,entry_trigger:'NONE',overextended:true,base_tightening:false}, fd:{fund_gate:'WATCH'}, sd:{sector_gate:'STRONG'},
+      vix:'CALM', expected:'FAIL' },
+    { name:'NOT FAIL: 과확장 BUT 베이스 형성됨 (VCP)',
+      cd:{accum_score:7,timing_score:5,entry_trigger:'MA50_BREAKOUT',overextended:true,base_tightening:true}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'STRONG'},
+      vix:'CALM', expected:'READY' },
     { name:'EARLY: 둘 다 낮음',
       cd:{accum_score:2,timing_score:1,entry_trigger:'NONE',conditions_met:2}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'NEUTRAL'},
       vix:'CALM', expected:'EARLY' },
@@ -6246,19 +6277,17 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
   r.synthesis = synthesizeVerdict(babylonResult, r.setup);
   r.position_size_pct = r.synthesis.position_size_pct;
 
-  // ── HARD BLOCK ──
-  if(coreData.stage==='3 분배'){
-    r.action='BLOCK'; r.blockers.push('[CORE] Stage 3 분배 구간 — 진입 금지'); return r;
+  // ── 차트 hard block 흡수 (옵션 C) ──
+  // Stage 3 / RS+A/D / 베이스 깊이 / 과확장 4종은 deriveSetupLabel에서 FAIL로 매핑됨
+  // → 매트릭스가 자동으로 BLOCK 결정 (모든 Babylon × FAIL = BLOCK)
+  // 여기선 fail_reason을 blockers에 추가만 (사용자 안내용)
+  if(r.setup && r.setup.label === 'FAIL' && r.setup.fail_reason){
+    // fund_gate=BLOCK은 이미 위에서 처리됨 (early return) — 여기 도달 안 함
+    // 차트 기반 FAIL인 경우만 처리
+    r.blockers.push('[CORE] '+r.setup.fail_reason.replace(/ → FAIL.*$/, ''));
   }
-  if(coreData.rs_declining&&coreData.ad_bullish_div===false){
-    r.action='BLOCK'; r.blockers.push('[CORE] RS+A/D 동시 하락 — 기관 분배 구간'); return r;
-  }
-  if(coreData.base_depth_pct!==null&&coreData.base_depth_pct<-40){
-    r.action='BLOCK'; r.blockers.push('[CORE] 베이스 깊이 '+coreData.base_depth_pct+'% — 수급 손상 과다'); return r;
-  }
-  if(coreData.overextended&&!coreData.base_tightening){
-    r.action='BLOCK'; r.blockers.push('[CORE] 베이스 없이 과확장 — 베이스 형성 후 재진입'); return r;
-  }
+
+  // ── 매집 신호 부족 (차트 hard block과는 별개 — 점수 기반) ──
   if(r.accum_score<3){
     r.action='BLOCK'; r.blockers.push('[CORE] 매집 신호 부족 ('+r.accum_score+'/10) — 기관 수급 미확인'); return r;
   }
@@ -6408,19 +6437,19 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
 
   // ═══════════════════════════════════════════
   // 옵션 C Step 3: 매트릭스 합성 결과를 최종 action에 반영
-  // (setup/synthesis는 함수 앞부분에서 이미 계산됨 — BLOCK 분기에서도 보존)
   //
-  // 설계 원칙:
-  //   - 기존 CORE hard block (Stage 3 분배, RS+A/D, 매집 부족 등 차트 기반) 보존
-  //   - Babylon/Setup 축은 synthesis로 최종 판정
+  // 설계 (옵션 C 차트 hard block 흡수):
+  //   - 차트 hard block 4종(Stage 3, RS+A/D, 베이스 깊이, 과확장)은 setup FAIL로 매핑
+  //   - 매트릭스에서 모든 Babylon × FAIL = BLOCK으로 자동 결정
+  //   - 매집 신호 부족(<3)만 별도 early return (점수 게이트)
   //   - WATCH_REJECT / WATCH_CLAUDE_REQUIRED 는 action='WATCH' 로 호환 매핑
   // ═══════════════════════════════════════════
   var synthesis = r.synthesis;
   var matrixNote = '📐 매트릭스 ['+synthesis.babylon_row+']['+synthesis.setup_label+'] → '+synthesis.matrix_cell;
 
   if(r.action === 'BLOCK'){
-    // 기존 CORE hard block 유지 (이 분기는 위 early return에서 도달 안 함, 안전망)
-    r.signals.unshift(matrixNote+' (기존 CORE BLOCK 유지)');
+    // 매집 부족 BLOCK (위 early return에서 도달 안 함, 안전망)
+    r.signals.unshift(matrixNote+' (점수 BLOCK 유지)');
   } else {
     // synthesis로 최종 action 결정
     var synAction = synthesis.action;
@@ -8006,11 +8035,8 @@ function cardHTML(r, mode){
       confBadge = '<span style="font-family:var(--mono);font-size:9px;color:var(--r);background:rgba(255,45,78,.15);padding:1px 5px;border-radius:3px;margin-left:4px">데이터 없음</span>';
     }
 
-    // "기존 CORE BLOCK 유지" 오버라이드 표시
+    // 옵션 C: 차트 hard block은 setup FAIL로 흡수됨 → "덮어씀" 경고 더 이상 필요 없음
     var overrideNote = '';
-    if(r.action === 'BLOCK' && sAction !== 'BLOCK'){
-      overrideNote = '<div style="font-family:var(--mono);font-size:10px;color:var(--r);margin-top:4px">⚠ 차트 기반 CORE hard block으로 매트릭스 판정 덮어씀</div>';
-    }
 
     synthesisBanner =
       '<div style="background:'+syBg+';border:1px solid '+syBorder+';border-radius:10px;padding:10px 12px;margin-bottom:10px">'+
@@ -8151,7 +8177,15 @@ function cardHTML(r, mode){
       sxIcon='⏸'; sxDesc='초기 단계 (매집/타이밍 부족)';
     } else if(sxLabel === 'FAIL'){
       sxColor='var(--r)'; sxBg='rgba(255,45,78,.08)'; sxBorder='rgba(255,45,78,.25)';
-      sxIcon='🛑'; sxDesc='펀더멘털 게이트 실패';
+      sxIcon='🛑';
+      // fail_reason에서 동적으로 메시지 추출
+      var failReason = sx.fail_reason || '';
+      if(failReason.indexOf('fund_gate') >= 0) sxDesc = '펀더멘털 게이트 실패';
+      else if(failReason.indexOf('Stage 3') >= 0) sxDesc = 'Stage 3 분배 — 기관 분배 구간';
+      else if(failReason.indexOf('RS+A/D') >= 0) sxDesc = 'RS+A/D 동시 하락 — 기관 매도';
+      else if(failReason.indexOf('베이스 깊이') >= 0) sxDesc = '베이스 깊이 손상 — 수급 훼손';
+      else if(failReason.indexOf('과확장') >= 0) sxDesc = '베이스 없는 과확장 — 진입 자리 부재';
+      else sxDesc = '진입 게이트 실패';
     } else {
       sxColor='var(--t3)'; sxBg='rgba(45,74,96,.06)'; sxBorder='rgba(45,74,96,.15)';
       sxIcon='—'; sxDesc=sxLabel;
