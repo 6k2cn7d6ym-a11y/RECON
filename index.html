@@ -6214,6 +6214,10 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     if(fundData.fund_gate==='BLOCK'){
       r.action='BLOCK';
       r.blockers.push('[FUND] '+(fundData.fund_blockers[0]||'펀더멘털 기준 미달'));
+      // setup/synthesis 채워서 카드 표시 일관성 유지
+      r.setup = deriveSetupLabel(coreData, fundData, sectorData);
+      r.synthesis = synthesizeVerdict(babylonResult, r.setup);
+      r.position_size_pct = r.synthesis.position_size_pct;
       return r;
     }
     // WATCH 다운그레이드 메모
@@ -6229,12 +6233,18 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     r.sector_score = sectorData.sector_score || 0;
     var vixFear = typeof G!=='undefined'&&(G.vixRegime==='FEAR'||G.vixRegime==='STRESS');
     if(sectorData.sector_gate==='WEAK'&&!vixFear){
-      // 공포 구간 아닌데 섹터 약하면 WATCH 메모 (BLOCK은 아님 — 종목이 섹터 선행할 수 있음)
       r.warnings.push('[섹터] '+sectorData.etf+' 약세 — 섹터 전환 확인 후 진입');
     } else if(sectorData.sector_gate==='STRONG'){
       r.signals.push('🏆 섹터 강세 ('+sectorData.etf+' RS+'+(sectorData.etf_rs_vs_spy||0)+'%)');
     }
   }
+
+  // ── 옵션 C 셋업/매트릭스 선행 계산 ──
+  // 모든 HARD BLOCK 분기보다 먼저 계산 → BLOCK 카드에서도 setup/synthesis 표시 가능
+  // 이후 BLOCK 분기는 r.action 만 'BLOCK'으로 덮어씀 (setup/synthesis 데이터는 유지)
+  r.setup = deriveSetupLabel(coreData, fundData, sectorData);
+  r.synthesis = synthesizeVerdict(babylonResult, r.setup);
+  r.position_size_pct = r.synthesis.position_size_pct;
 
   // ── HARD BLOCK ──
   if(coreData.stage==='3 분배'){
@@ -6397,40 +6407,30 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
   }
 
   // ═══════════════════════════════════════════
-  // 옵션 C Step 3: 매트릭스 합성으로 최종 action + position_size_pct 결정
-  // 
+  // 옵션 C Step 3: 매트릭스 합성 결과를 최종 action에 반영
+  // (setup/synthesis는 함수 앞부분에서 이미 계산됨 — BLOCK 분기에서도 보존)
+  //
   // 설계 원칙:
-  //   - 기존 CORE hard block (Stage 3 분배, RS+A/D 분배 등 차트 기반) 보존
+  //   - 기존 CORE hard block (Stage 3 분배, RS+A/D, 매집 부족 등 차트 기반) 보존
   //   - Babylon/Setup 축은 synthesis로 최종 판정
-  //   - WATCH_REJECT / WATCH_CLAUDE_REQUIRED 는 action='WATCH' 로 호환 매핑 + 특수 메타
-  //   - synthesis 정보는 항상 저장 (카드 표시용)
+  //   - WATCH_REJECT / WATCH_CLAUDE_REQUIRED 는 action='WATCH' 로 호환 매핑
   // ═══════════════════════════════════════════
-  var setupResult = deriveSetupLabel(coreData, fundData, sectorData);
-  r.setup = setupResult;
-
-  var synthesis = synthesizeVerdict(babylonResult, setupResult);
-  r.synthesis = synthesis;
-  r.position_size_pct = synthesis.position_size_pct;
-
+  var synthesis = r.synthesis;
   var matrixNote = '📐 매트릭스 ['+synthesis.babylon_row+']['+synthesis.setup_label+'] → '+synthesis.matrix_cell;
 
   if(r.action === 'BLOCK'){
-    // 기존 CORE hard block 유지 (Stage 3 분배, RS+A/D, 차트 RED 등)
-    // synthesis 결과는 기록만 — 카드에서 두 신호 모두 보이게
+    // 기존 CORE hard block 유지 (이 분기는 위 early return에서 도달 안 함, 안전망)
     r.signals.unshift(matrixNote+' (기존 CORE BLOCK 유지)');
   } else {
     // synthesis로 최종 action 결정
     var synAction = synthesis.action;
     if(synAction === 'WATCH_REJECT'){
-      // 재무 가속 없음 — CORE 전략 대상 아님
       r.action = 'WATCH';
       r.blockers.push('[전략] '+synthesis.note);
     } else if(synAction === 'WATCH_CLAUDE_REQUIRED'){
-      // 복합 위험 — Claude 정성 분석 필요
       r.action = 'WATCH';
       r.warnings.unshift('🧠 Claude 분석 필수 — '+synthesis.note);
     } else {
-      // ENTER / WATCH / BLOCK 직접 반영
       r.action = synAction;
     }
     r.signals.unshift(matrixNote+(synthesis.special ? ' ['+synthesis.special+']' : ''));
