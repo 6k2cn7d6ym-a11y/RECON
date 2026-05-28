@@ -1261,9 +1261,10 @@ function closeOpenPosition(tradeId){
   // 감시 포지션(holdPositions)에서도 같은 ticker 제거 + Worker KV 동기화
   try {
     holdLoad();
-    var before = holdPositions.length;
-    holdPositions = holdPositions.filter(function(p){ return p.ticker !== trade.ticker; });
-    if(holdPositions.length < before){
+    var before = holdPositions.findIndex(function(p){ return p.ticker === trade.ticker && !p.deleted; });
+    if(before >= 0){
+      holdPositions[before].deleted = true;
+      holdPositions[before].deletedAt = Date.now();
       localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
       if(typeof holdRender === 'function') holdRender();
       if(typeof holdSync === 'function') holdSync(); // Worker KV 동기화 → 크론 알림 중단
@@ -1342,7 +1343,7 @@ function switchSubTab(sub){
   // 보유 패널 표시/숨김
   var holdPanel = document.getElementById('holdPanelWrap');
   if(holdPanel) holdPanel.style.display = (sub === 'hold') ? '' : 'none';
-  if(sub === 'hold') holdRender();
+  if(sub === 'hold'){ holdRender(); if(typeof holdPull==='function') holdPull(); }
 
   // 스크리너 탭: SWING + CORE 모드에서 표시 (MOMO는 프리마켓 급등후보가 대신)
   var scrTab = document.getElementById('btabScreener');
@@ -4663,9 +4664,10 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
       posInfo + dataStr +
       '이 포지션을 장기 보유 관점에서 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
       'CORE 포지션 관리 기준 (장기 추세 우선, 단기 노이즈 무시):\n' +
-      '- HOLD: 투자 논거(성장 가속/턴어라운드/추세)가 유효하고 장기 추세(200SMA 위 등)가 살아 있으면 기본값. 단기 -10~20% 출렁임은 보유 유지\n' +
+      '- HOLD: 투자 논거(성장 가속/턴어라운드/추세)가 유효하고 장기 추세(200SMA 위 등)가 살아 있으면 기본값. 단기 -10~20% 출렁임도, 단기 급등·고점 근접도 모두 노이즈로 보고 보유 유지\n' +
+      '- ★중요: "단지 많이 올랐다 / 52주 고점 근처 / 단기 과열"만으로는 절대 매도를 권하지 말 것. 고점 근접·단기 급등은 그 자체로 매도 사유가 아님 (CORE는 길게 보유하는 포지션)\n' +
       '- ADD(분할매수): 논거 유효 + 장기 지지선/이평 눌림 + 펀더멘털 훼손 신호 없음일 때만\n' +
-      '- SELL_HALF: 1차 목표가 도달 또는 단기 과열(고점 대비 급등)로 비중 축소가 필요할 때\n' +
+      '- SELL_HALF(일부 익절 후 재진입): 단순 과열이 아니라 "실질적 위험신호"가 있을 때만. 즉 (a) 내부자 대규모 연속 매도, (b) 펀더멘털 균열 조짐(마진 악화/성장 둔화/가이던스 하향), (c) 핵심 논거를 흔드는 악재 — 이런 실제 신호가 단기 과열과 겹칠 때만 비중 일부를 줄이고 더 낮은 가격(add_price)에서 재진입을 노린다. 위험신호 없이 과열만 있으면 SELL_HALF 금지, HOLD로 둘 것\n' +
       '- SELL_ALL: 투자 논거 붕괴(매출 역성장 지속/마진 붕괴/성장 둔화 등 펀더멘털 훼손) 또는 장기 추세 이탈 확정\n' +
       '- STOP_LOSS: 논거 무효 + 장기 추세선 종가 이탈이 명확할 때만 (단기 급락 단독으로는 손절 금지)\n\n' +
       '{"hold_action":"ADD"|"SELL_HALF"|"SELL_ALL"|"HOLD"|"STOP_LOSS",'+
@@ -4673,7 +4675,7 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
       '"add_price":추가매수가(숫자,없으면null),'+
       '"t1":1차목표가(숫자,없으면null),"t2":장기목표가(숫자,없으면null),"stop":논거붕괴손절가(숫자,없으면null),'+
       '"current_pnl_pct":현재수익률,'+
-      '"reason":"행동 근거 두 줄 이내 (논거 유효성 중심)",'+
+      '"reason":"행동 근거 두 줄 이내 (논거 유효성 중심. SELL_HALF면 반드시 어떤 실질적 위험신호 때문인지 명시)",'+
       '"signals":["긍정신호들"],"warnings":["위험신호들"],'+
       '"summary":"한줄 행동 지침"}\n\n' +
       '알수없음 항목은 알고 있는 정보로 최대한 분석';
@@ -6788,6 +6790,155 @@ function _hydrateResult(result, ydata){
   return result;
 }
 
+// ═══════════════════════════════════════════
+// RECON 시그널 추적 (TRACK) — 분석(클릭)한 ENTER 시그널의 품질 검증
+//  · 기록: momoEngine/swingEngine ENTER 시그널 생성 시 자동 (추가 API 호출 0)
+//  · 검증: MOMO 당일(P1)+다음날(P2), SWING +2주(P1)+1달(P2) — /us-quote 가격으로 T1/손절 판정
+//  · 저장: localStorage + Worker /recon/track 동기화 (모바일·PC 통합)
+//  · journal(실제 매매 기록)과 별개 — 이건 "시그널이 맞았나" 객관 검증
+// ═══════════════════════════════════════════
+var G_reconTrack = JSON.parse(localStorage.getItem('reconTrack')||'[]');
+
+// 모드별 검증 시점 (ms)
+var TRACK_WINDOWS = {
+  momo:  { p1: 0,                 p2: 1*24*3600*1000 },   // 당일, +1일(갭)
+  swing: { p1: 14*24*3600*1000,   p2: 30*24*3600*1000 }   // +2주, +1달
+};
+
+// 시그널 캡처 — 분석 완료 시 호출. ENTER만, 신규 진입만.
+function captureReconSignal(result, mode){
+  if(mode !== 'momo' && mode !== 'swing') return;
+  if(result.action !== 'ENTER') return;
+  if(!result.ticker || !result.price) return;
+  var nowMs = Date.now();
+  var id = mode+'_'+result.ticker+'_'+nowMs;
+  // 같은 종목 같은 날 중복 기록 방지 (모드+티커+날짜)
+  var dayKey = new Date(nowMs).toISOString().slice(0,10);
+  var dup = G_reconTrack.find(function(t){
+    return t.mode===mode && t.ticker===result.ticker && (t.scannedAt? new Date(t.scannedAt).toISOString().slice(0,10):'')===dayKey;
+  });
+  if(dup) return;
+  G_reconTrack.unshift({
+    id: id, ticker: result.ticker, mode: mode,
+    scannedAt: nowMs,
+    refPrice: result.price,                 // 시그널 시점 가격 (수익률 기준)
+    entry:    result.entry   || null,
+    stop:     result.stop    || null,
+    target1:  result.target1 || null,
+    target2:  result.target2 || null,
+    score:    result.score   ?? null,
+    p1: null, p2: null, status: 'pending'
+  });
+  if(G_reconTrack.length > 500) G_reconTrack = G_reconTrack.slice(0, 500);
+  localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
+  syncReconTrack(mode);  // 백그라운드 동기화 (await 안 함)
+}
+
+// Worker 동기화 (양방향 머지)
+async function syncReconTrack(mode){
+  try{
+    var mine = G_reconTrack.filter(function(t){ return t.mode===mode; });
+    var resp = await fetch(WORKER_URL+'/recon/track', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ mode: mode, track: mine })
+    });
+    var data = await resp.json();
+    if(data && data.ok && Array.isArray(data.track)){
+      // 클라우드 머지 결과로 해당 모드 교체
+      var others = G_reconTrack.filter(function(t){ return t.mode!==mode; });
+      G_reconTrack = others.concat(data.track);
+      localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
+    }
+  }catch(e){ /* 오프라인이어도 로컬엔 남음 */ }
+}
+
+// 검증 — 만기 도래한 pending 레코드의 가격을 따서 p1/p2 채움
+async function verifyReconTrack(){
+  var now = Date.now();
+  var pending = G_reconTrack.filter(function(t){
+    if(t.status === 'complete') return false;
+    var w = TRACK_WINDOWS[t.mode]; if(!w) return false;
+    var p1Due = !t.p1 && (now - t.scannedAt) >= w.p1;
+    var p2Due = !t.p2 && (now - t.scannedAt) >= w.p2;
+    return p1Due || p2Due;
+  });
+  if(!pending.length) return 0;
+
+  var verified = 0;
+  for(var i=0;i<pending.length;i++){
+    var t = pending[i];
+    try{
+      var resp = await fetch(WORKER_URL+'/us-quote?symbol='+encodeURIComponent(t.ticker));
+      var q = await resp.json();
+      if(!q || q.error) continue;
+      var price = q.active_price || q.price;
+      var high  = q.high || price;
+      var low   = q.low  || price;
+      if(!price) continue;
+      var w = TRACK_WINDOWS[t.mode];
+
+      var checkpoint = function(){
+        var ret = t.refPrice>0 ? (price - t.refPrice)/t.refPrice*100 : null;
+        // MOMO: 당일/다음날 고저로 터치 판정 / SWING: 체크포인트 가격 기준
+        var hitT1   = t.target1 ? (high >= t.target1) : null;
+        var hitT2   = t.target2 ? (high >= t.target2) : null;
+        var hitStop = t.stop    ? (low  <= t.stop)    : null;
+        return {
+          date: new Date(now).toISOString().slice(0,10),
+          price: price, high: high, low: low,
+          ret_pct: ret!==null ? Number(ret.toFixed(2)) : null,
+          hitT1: hitT1, hitT2: hitT2, hitStop: hitStop
+        };
+      };
+
+      if(!t.p1 && (now - t.scannedAt) >= w.p1){ t.p1 = checkpoint(); verified++; }
+      if(!t.p2 && (now - t.scannedAt) >= w.p2){ t.p2 = checkpoint(); verified++; }
+      if(t.p2) t.status = 'complete';
+      else if(t.p1) t.status = 'p1_done';
+
+      // 원본 배열에 반영
+      var idx = G_reconTrack.findIndex(function(x){ return x.id===t.id; });
+      if(idx>=0) G_reconTrack[idx] = t;
+    }catch(e){ /* skip */ }
+  }
+  if(verified){
+    localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
+    syncReconTrack('momo'); syncReconTrack('swing');
+  }
+  return verified;
+}
+
+// 시그널 성과 통계 패널 (모드별)
+function buildTrackStatsPanel(mode){
+  var recs = G_reconTrack.filter(function(t){ return t.mode===mode && (t.p1 || t.p2); });
+  if(!recs.length){
+    var pendCount = G_reconTrack.filter(function(t){ return t.mode===mode; }).length;
+    return '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);background:var(--bg2);border-radius:8px;padding:9px 11px;margin-bottom:10px">'+
+      '🎯 시그널 성과 — '+(pendCount? '검증 대기 '+pendCount+'건 ('+(mode==='momo'?'당일~다음날':'2주~1달')+' 후 자동 채워짐)' : '기록 없음 — 분석한 ENTER 시그널이 여기 쌓여요')+'</div>';
+  }
+  // P2 우선, 없으면 P1로 판정
+  var win=0, loss=0, t1=0, t2=0, sumRet=0, n=0;
+  recs.forEach(function(t){
+    var c = t.p2 || t.p1; if(!c) return;
+    n++;
+    if(c.ret_pct!==null) sumRet += c.ret_pct;
+    if(c.hitT1) t1++;
+    if(c.hitT2) t2++;
+    // 승=T1 도달, 패=손절 터치(그리고 T1 미도달)
+    if(c.hitT1) win++;
+    else if(c.hitStop) loss++;
+  });
+  var t1Rate = n? Math.round(t1/n*100):0;
+  var stopRate = n? Math.round(loss/n*100):0;
+  var avgRet = n? (sumRet/n).toFixed(1):'0';
+  var col = t1Rate>=60?'var(--g)':t1Rate>=40?'var(--a)':'var(--r)';
+  return '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);background:var(--bg2);border-radius:8px;padding:9px 11px;margin-bottom:10px;line-height:1.7">'+
+    '<div style="color:'+(mode==='momo'?'var(--a)':'var(--bl)')+';font-weight:700;margin-bottom:3px">🎯 시그널 성과 ('+mode.toUpperCase()+', 검증 '+n+'건)</div>'+
+    '<div>T1 도달률: <span style="color:'+col+'">'+t1Rate+'%</span> · T2 도달: '+t2+'건 · 손절 터치: <span style="color:var(--r)">'+stopRate+'%</span></div>'+
+    '<div style="color:var(--t3)">평균 수익률(기준가 대비): '+(avgRet>=0?'+':'')+avgRet+'%'+(mode==='swing'?' · ⚠ 체크포인트 가격 기준 (기간 중 터치는 향후 보강)':'')+'</div>'+
+  '</div>';
+}
+
 // ── 거래 기록용 카드 스냅샷 빌더 ──
 function _buildSnapshot(result, mode){
   return {
@@ -7236,6 +7387,8 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     if(mode === 'swing' && !openTrade && (result.action === 'ENTER' || result.action === 'WATCH')){
       addSwingCandidate(ticker, result.action, result.score, result.swing_type || null);
     }
+    // 시그널 추적 캡처 (MOMO/SWING ENTER, 신규 진입만)
+    if(!openTrade) captureReconSignal(result, mode);
     // 거래 기록용 스냅샷 저장 (진입 시 카드 상황 보존)
     G_cardSnapshots[mode+'_'+ticker] = _buildSnapshot(result, mode);
     analyzeEl.innerHTML = '';
@@ -7279,6 +7432,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
         localStorage.setItem('momoTodayCards', JSON.stringify(G_momoTodayCards));
       }
       G_cardSnapshots[mode+'_'+ticker] = _buildSnapshot(fb, mode);
+      if(!openTrade) captureReconSignal(fb, mode);
       resultEl.innerHTML = cardHTML(fb, mode);
       if(mode === 'momo') renderMomoTodayCards();
       return;
@@ -9084,9 +9238,10 @@ function confirmPartialSell(tradeId){
   if(trade.remaining<=0){
     try {
       holdLoad();
-      var _before = holdPositions.length;
-      holdPositions = holdPositions.filter(function(p){ return p.ticker !== trade.ticker; });
-      if(holdPositions.length < _before){
+      var _before = holdPositions.findIndex(function(p){ return p.ticker === trade.ticker && !p.deleted; });
+      if(_before >= 0){
+        holdPositions[_before].deleted = true;
+        holdPositions[_before].deletedAt = Date.now();
         localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
         if(typeof holdRender === 'function') holdRender();
         if(typeof holdSync === 'function') holdSync(); // Worker KV 동기화 → 크론 알림 중단
@@ -9315,11 +9470,12 @@ function holdRender() {
   holdLoad();
   var list = document.getElementById('holdList');
   if (!list) return;
-  if (!holdPositions.length) {
+  var visible = holdPositions.filter(function(p){ return !p.deleted; });
+  if (!visible.length) {
     list.innerHTML = '<div class="hold-empty">등록된 종목 없음</div>';
     return;
   }
-  list.innerHTML = holdPositions.map(function(p, i) {
+  list.innerHTML = visible.map(function(p, i) {
     var levelsHtml = '';
     if(p.stop || p.t1 || p.t2){
       levelsHtml = '<div style="display:flex;gap:6px;margin-top:4px;font-family:var(--mono);font-size:9px">' +
@@ -9336,7 +9492,7 @@ function holdRender() {
       '</div>' +
       '<div class="hold-item-right">' +
         '<span class="hold-item-price">' + (p.entryPrice ? '$' + Number(p.entryPrice).toFixed(2) : '─') + '</span>' +
-        '<span class="hold-item-del" onclick="holdDelete(' + i + ')">✕</span>' +
+        '<span class="hold-item-del" onclick="holdDelete(\'' + p.ticker + '\')">✕</span>' +
       '</div>' +
     '</div>';
   }).join('');
@@ -9352,10 +9508,13 @@ function holdAdd() {
   var stop = (document.getElementById('holdStop') || {}).value || '';
   var t1   = (document.getElementById('holdT1')   || {}).value || '';
   var t2   = (document.getElementById('holdT2')   || {}).value || '';
-  holdPositions.push({
+  var _ex = holdPositions.findIndex(function(p){ return p.ticker === ticker; });
+  var _np = {
     ticker: ticker, name: name.trim(), entryPrice: parseFloat(price) || 0,
-    stop: parseFloat(stop) || 0, t1: parseFloat(t1) || 0, t2: parseFloat(t2) || 0
-  });
+    stop: parseFloat(stop) || 0, t1: parseFloat(t1) || 0, t2: parseFloat(t2) || 0,
+    updatedAt: Date.now()
+  };
+  if(_ex >= 0) holdPositions[_ex] = _np; else holdPositions.push(_np);
   localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
   document.getElementById('holdTicker').value = '';
   document.getElementById('holdName').value   = '';
@@ -9370,7 +9529,7 @@ function holdAutoAdd(ticker, name, entry, stop, t1, t2) {
   holdLoad();
   // 이미 등록된 종목이면 업데이트
   var idx = holdPositions.findIndex(function(p){ return p.ticker === ticker; });
-  var pos = { ticker: ticker, name: name, entryPrice: entry || 0, stop: stop || 0, t1: t1 || 0, t2: t2 || 0 };
+  var pos = { ticker: ticker, name: name, entryPrice: entry || 0, stop: stop || 0, t1: t1 || 0, t2: t2 || 0, updatedAt: Date.now() };
   if(idx >= 0) { holdPositions[idx] = pos; }
   else { holdPositions.push(pos); }
   localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
@@ -9380,12 +9539,48 @@ function holdAutoAdd(ticker, name, entry, stop, t1, t2) {
   holdSync();
 }
 
-function holdDelete(i) {
+function holdDelete(ticker) {
   holdLoad();
-  holdPositions.splice(i, 1);
+  var idx = holdPositions.findIndex(function(p){ return p.ticker === ticker; });
+  if(idx >= 0){
+    // 즉시 제거 대신 삭제표시(tombstone) → 양쪽 기기 동기화 시 되살아나지 않음
+    holdPositions[idx].deleted = true;
+    holdPositions[idx].deletedAt = Date.now();
+  }
   localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
   holdRender();
   holdSync();
+}
+
+// ── 포지션 기기간 동기화 머지 (ticker 기준, updatedAt/deletedAt 최신 승) ──
+function _holdStamp(p){ return Math.max(p.updatedAt||0, p.deletedAt||0); }
+function holdMergeServer(serverList){
+  if(!Array.isArray(serverList)) return;
+  var byT = {};
+  holdPositions.forEach(function(p){ byT[p.ticker] = p; });
+  serverList.forEach(function(p){
+    var ex = byT[p.ticker];
+    if(!ex || _holdStamp(p) >= _holdStamp(ex)) byT[p.ticker] = p;
+  });
+  var now = Date.now();
+  // 30일 지난 tombstone 청소
+  holdPositions = Object.values(byT).filter(function(p){
+    return !(p.deleted && p.deletedAt && (now - p.deletedAt > 30*24*3600*1000));
+  });
+  localStorage.setItem(holdGetKey(), JSON.stringify(holdPositions));
+}
+
+// 앱/뷰 진입 시 서버에서 당겨와 머지 (다른 기기 변경 반영)
+async function holdPull(){
+  holdLoad();
+  try{
+    var resp = await fetch(WORKER_URL + '/recon/positions?mode=' + (G.currentMode||'momo'));
+    var data = await resp.json();
+    if(data && Array.isArray(data.positions)){
+      holdMergeServer(data.positions);
+      holdRender();
+    }
+  }catch(e){ /* 오프라인이면 로컬 유지 */ }
 }
 
 function holdShowStatus(msg, type) {
@@ -9410,6 +9605,7 @@ async function holdSync() {
     });
     var data = await resp.json();
     if (data.ok) {
+      if(Array.isArray(data.positions)){ holdMergeServer(data.positions); holdRender(); }
       holdShowStatus('✅ 저장 완료 — 장 중 5분마다 자동 감시', 'ok');
     } else {
       throw new Error('저장 실패');
@@ -9510,6 +9706,8 @@ function getFilteredJournal(mode){
 }
 
 function renderJournal(mode){
+  // 시그널 추적: 만기 검증 시도(백그라운드) + 통계 패널
+  verifyReconTrack().then(function(v){ if(v>0) renderJournal(mode); });
   var trades  = getFilteredJournal(mode);
   var closed  = trades.filter(function(t){return t.status!=='open';});
   var wins    = closed.filter(function(t){return t.status==='win';});
@@ -9518,14 +9716,16 @@ function renderJournal(mode){
 
   var statsEl = document.getElementById('journalStats-'+mode);
   if(statsEl){
+    var _trackPanel = (mode==='momo'||mode==='swing') ? buildTrackStatsPanel(mode) : '';
     if(!closed.length){
-      statsEl.innerHTML = '<div style="color:var(--t3);font-size:13px;text-align:center;padding:8px">거래 기록 없음</div>';
+      statsEl.innerHTML = _trackPanel + '<div style="color:var(--t3);font-size:13px;text-align:center;padding:8px">거래 기록 없음</div>';
     } else {
       var wr = (wins.length/closed.length*100).toFixed(0);
       var avgWin  = wins.length ? wins.reduce(function(s,t){return s+(t.pnl||0);},0)/wins.length : 0;
       var losses  = closed.filter(function(t){return t.status==='loss';});
       var avgLoss = losses.length ? losses.reduce(function(s,t){return s+(t.pnl||0);},0)/losses.length : 0;
       statsEl.innerHTML =
+        _trackPanel +
         '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">'+
         '<div><div style="font-size:9px;color:var(--t2);margin-bottom:4px">거래수</div><div style="font-family:var(--mono);font-size:18px;color:var(--t)">'+closed.length+'</div></div>'+
         '<div><div style="font-size:9px;color:var(--t2);margin-bottom:4px">승률</div><div style="font-family:var(--mono);font-size:18px;color:'+(parseInt(wr)>=50?'var(--g)':'var(--r)')+'">'+wr+'%</div></div>'+
@@ -10928,7 +11128,6 @@ return { analyze, clearCache, fetchCompanyFacts, getRecentQuartersRevenue, detec
 
 })();
 
-console.log('[Babylon] CORE 베이비 자이언트 엔진 로드 완료. 사용: await babylonEngine.analyze("NVDA")');
 </script>
 </body>
 </html>
