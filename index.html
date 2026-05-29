@@ -6804,7 +6804,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
         momo_type: preType,
         action:'BLOCK', score:0, blockers:earlyBlock.map(function(b){return '[하드필터] '+b;}),
         signals:[], warnings:[], summary:'조건 미충족', news:ydata.newsText||'', news_quality:'none',
-        entry:null, stop:null, target1:null, rr:null, _hardBlocked:true, _dumpScore:99,
+        entry:null, stop:null, target1:null, rr:null, _hardBlocked:true, _dumpScore:0,   // ★ FIX 2026-05: 하드필터 BLOCK 시 99 하드코딩 → 0 (P&D 평가와 무관)
         _date:new Date().toLocaleDateString('ko-KR'), _ts:Date.now(), _mode:mode};
       analyzeEl.innerHTML='';
       saveToHistory(mode, rb);
