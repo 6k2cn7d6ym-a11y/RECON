@@ -1339,12 +1339,151 @@ function journalUnwatch(ticker, mode){
 }
 
 // ═══════════════════════════════════════
+// 옛 감시 정리도구 (KV에 살아있지만 일지엔 없는 고아 포지션 인스펙터)
+//   - 일지가 단일 진실이 되도록, 4단계 전 잔여 KV 감시 청소용
+//   - 순수 조회/정리, 일지 변경 안 함
+// ═══════════════════════════════════════
+async function getHoldOrphans(mode){
+  // 워커 GET → 일지 open/partial과 안 겹치고 tombstone 아닌 항목만
+  try{
+    var res = await fetch(WORKER_URL + '/recon/positions?mode=' + encodeURIComponent(mode));
+    if(!res.ok) return [];
+    var data = await res.json();
+    var positions = (data && data.positions) || [];
+    var openTickers = {};
+    (G_journal || []).forEach(function(t){
+      if(!t || !t.ticker) return;
+      if((t.mode || 'momo') !== mode) return;
+      if((t.status === 'open' || t.status === 'partial') && t.watch !== false && !t.deleted){
+        openTickers[t.ticker] = true;
+      }
+    });
+    return positions.filter(function(p){
+      return p && p.ticker && !p.deleted && !openTickers[p.ticker];
+    });
+  }catch(e){ return []; }
+}
+
+function _orphanBannerId(mode){ return 'orphanBanner_' + mode; }
+
+async function renderOrphanBanner(mode){
+  var el = document.getElementById(mode + 'OpenArea');
+  if(!el) return;
+  // 기존 배너 제거
+  var prev = document.getElementById(_orphanBannerId(mode));
+  if(prev) prev.remove();
+  var orphans = await getHoldOrphans(mode);
+  if(!orphans.length) return;
+  var banner = document.createElement('div');
+  banner.id = _orphanBannerId(mode);
+  banner.style.cssText = 'margin:6px 0;padding:8px 10px;background:rgba(255,106,0,.08);border:1px solid rgba(255,106,0,.25);border-radius:8px;font-family:var(--mono);font-size:11px;color:var(--gold);cursor:pointer;display:flex;align-items:center;justify-content:space-between';
+  banner.innerHTML = '<span>🔍 일지 외 감시 ' + orphans.length + '개 있음</span><span style="font-size:10px;color:var(--t2)">확인 →</span>';
+  banner.onclick = function(){ openOrphanInspector(); };
+  el.insertBefore(banner, el.firstChild);
+}
+
+async function openOrphanInspector(){
+  // 모든 모드 고아 수집
+  var modes = ['momo','swing','core'];
+  var all = await Promise.all(modes.map(function(m){ return getHoldOrphans(m).then(function(list){ return {mode:m, list:list}; }); }));
+  var total = all.reduce(function(s,g){ return s + g.list.length; }, 0);
+  var modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;display:flex;align-items:flex-end;justify-content:center';
+  var rowsHtml = '';
+  all.forEach(function(g){
+    if(!g.list.length) return;
+    rowsHtml += '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.1em;margin:14px 0 6px">' + g.mode.toUpperCase() + ' · ' + g.list.length + '개</div>';
+    g.list.forEach(function(p){
+      var name = (p.name || p.ticker || '').replace(/"/g,'&quot;').replace(/'/g,'');
+      var entry = p.entryPrice || p.entry || 0;
+      var stop = p.stop || 0, t1 = p.t1 || 0, t2 = p.t2 || 0;
+      rowsHtml +=
+        '<div style="display:flex;gap:6px;align-items:center;padding:8px;background:var(--bg2);border:1px solid var(--b);border-radius:8px;margin-bottom:6px">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-family:var(--mono);font-size:13px;color:var(--t);font-weight:700">' + p.ticker + '</div>' +
+            '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);margin-top:2px">진입 $' + entry + ' · 손절 $' + stop + ' · T1 $' + t1 + ' · T2 $' + t2 + '</div>' +
+          '</div>' +
+          '<button data-act="log" data-mode="' + g.mode + '" data-ticker="' + p.ticker + '" data-name="' + name + '" data-stop="' + stop + '" data-t1="' + t1 + '" data-t2="' + t2 + '" style="padding:8px 10px;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.25);border-radius:6px;font-family:var(--mono);font-size:10px;color:var(--g);cursor:pointer">+ 거래</button>' +
+          '<button data-act="trash" data-mode="' + g.mode + '" data-ticker="' + p.ticker + '" style="padding:8px 10px;background:rgba(255,80,80,.08);border:1px solid rgba(255,80,80,.25);border-radius:6px;font-size:12px;cursor:pointer">🗑️</button>' +
+        '</div>';
+    });
+  });
+  if(!total) rowsHtml = '<div style="padding:24px;text-align:center;color:var(--t2);font-size:13px">일지 외 감시 없음 ✓</div>';
+  modal.innerHTML =
+    '<div style="width:100%;max-width:520px;max-height:80vh;overflow-y:auto;background:var(--bg1);border-radius:20px 20px 0 0;padding:20px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+        '<div style="font-family:var(--mono);font-size:14px;color:var(--t)">옛 감시 정리 (' + total + ')</div>' +
+        '<button data-act="close" style="background:none;border:none;color:var(--t2);font-size:20px;cursor:pointer">×</button>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--t2);line-height:1.5;margin-bottom:10px">일지엔 없지만 워커가 감시 중인 종목입니다. [+ 거래]로 일지에 재등록하거나, 🗑️로 감시만 해제하세요.</div>' +
+      (total ? '<button data-act="purgeAll" style="width:100%;padding:10px;background:rgba(255,80,80,.08);border:1px solid rgba(255,80,80,.25);border-radius:8px;color:#ff5050;font-family:var(--mono);font-size:11px;cursor:pointer;margin-bottom:10px">전체 정리 (' + total + '개 모두 감시 해제)</button>' : '') +
+      rowsHtml +
+    '</div>';
+  document.body.appendChild(modal);
+  modal.onclick = function(e){
+    var t = e.target;
+    if(t === modal){ modal.remove(); return; }
+    var act = t.getAttribute && t.getAttribute('data-act');
+    if(!act) return;
+    if(act === 'close'){ modal.remove(); return; }
+    if(act === 'log'){
+      var ticker = t.getAttribute('data-ticker');
+      var mode = t.getAttribute('data-mode');
+      if(typeof G !== 'undefined') G.currentMode = mode;  // 새 거래가 올바른 모드로 저장되게
+      modal.remove();
+      openTradeLog(ticker, 0, {
+        name: t.getAttribute('data-name'),
+        stop: parseFloat(t.getAttribute('data-stop')) || 0,
+        t1:   parseFloat(t.getAttribute('data-t1'))   || 0,
+        t2:   parseFloat(t.getAttribute('data-t2'))   || 0
+      });
+      return;
+    }
+    if(act === 'trash'){
+      var ticker2 = t.getAttribute('data-ticker');
+      var mode2 = t.getAttribute('data-mode');
+      if(!confirm(ticker2 + ' (' + mode2.toUpperCase() + ') 감시를 해제할까요?')) return;
+      var now = Date.now();
+      fetch(WORKER_URL + '/recon/positions', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ mode:mode2, positions:[{ ticker:ticker2, deleted:true, deletedAt:now, updatedAt:now }] })
+      }).then(function(){
+        showToast(ticker2 + ' 감시 해제됨');
+        modal.remove();
+        openOrphanInspector();   // 갱신
+        if(typeof G !== 'undefined') renderOrphanBanner(G.currentMode);
+      }).catch(function(){ showToast('해제 실패 — 다시 시도'); });
+      return;
+    }
+    if(act === 'purgeAll'){
+      if(!confirm(total + '개 감시를 모두 해제할까요? (일지는 영향 없음)')) return;
+      var now2 = Date.now();
+      Promise.all(all.map(function(g){
+        if(!g.list.length) return Promise.resolve();
+        var tombstones = g.list.map(function(p){ return { ticker:p.ticker, deleted:true, deletedAt:now2, updatedAt:now2 }; });
+        return fetch(WORKER_URL + '/recon/positions', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ mode:g.mode, positions:tombstones })
+        });
+      })).then(function(){
+        showToast('전체 정리 완료 (' + total + ')');
+        modal.remove();
+        if(typeof G !== 'undefined') renderOrphanBanner(G.currentMode);
+      }).catch(function(){ showToast('정리 중 오류'); });
+    }
+  };
+}
+
+// ═══════════════════════════════════════
 // 보유 포지션 고정 렌더링
 // ═══════════════════════════════════════
 function renderOpenPositions(mode){
   var el = document.getElementById(mode+'OpenArea');
   if(!el) return;
   scheduleJournalSync(mode);
+  // 잠시 후(sync 디바운스 끝난 뒤) 고아 배너 갱신 — sync로 정리될 수 있는 것 반영
+  setTimeout(function(){ renderOrphanBanner(mode); }, 1200);
   var openTrades = G_journal.filter(function(t){
     return (t.status==='open'||t.status==='partial') && (t.mode===mode||(t.mode==='momo'&&mode==='momo')||(!t.mode&&mode==='momo'));
   });
