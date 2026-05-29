@@ -1256,7 +1256,8 @@ function closeOpenPosition(tradeId){
   if(!trade) return;
   if(!confirm(trade.ticker+' 포지션을 보유아님으로 처리할까요? (일지 + 감시 모두 제거)')) return;
   G_journal = G_journal.filter(function(t){return t.id!==tradeId;});
-  localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+  saveJournal();
+  journalUnwatch(trade.ticker, trade.mode);
 
   // 감시 포지션(holdPositions)에서도 같은 ticker 제거 + Worker KV 동기화
   try {
@@ -1277,11 +1278,73 @@ function closeOpenPosition(tradeId){
 }
 
 // ═══════════════════════════════════════
+// 일지 → 감시 투영 (open 일지를 position 모양으로 us_positions_* 에 동기화)
+//   - 워커 무수정: 기존 /recon/positions + mergePositions(ticker별 최신 승) 재사용
+//   - 감시 대상 = status open/partial & watch!==false & !deleted
+//   - 청산(win/loss) 등은 tombstone 으로 보내 크론 감시 중단
+// ═══════════════════════════════════════
+var _jwTimer = null;
+function scheduleJournalSync(mode){
+  if(_jwTimer) clearTimeout(_jwTimer);
+  var m = mode || (typeof G!=='undefined' && G.currentMode) || 'momo';
+  _jwTimer = setTimeout(function(){ syncJournalWatch(m); }, 800);
+}
+function saveJournal(){
+  localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+  scheduleJournalSync(G.currentMode);
+}
+async function syncJournalWatch(mode){
+  mode = mode || (typeof G!=='undefined' && G.currentMode) || 'momo';
+  var byT = {};
+  (G_journal || []).forEach(function(t){
+    if(!t || !t.ticker) return;
+    if((t.mode || 'momo') !== mode) return;
+    var stamp = t.updatedAt || t.id || Date.now();
+    var live = (t.status === 'open' || t.status === 'partial') && t.watch !== false && !t.deleted;
+    var ex = byT[t.ticker];
+    if(live){
+      var pos = { ticker:t.ticker, name:t.name || t.ticker, entryPrice:t.entry || 0,
+                  stop:t.stop || 0, t1:t.t1 || 0, t2:t.t2 || 0, updatedAt:stamp };
+      if(!ex || ex.deleted || stamp >= (ex.updatedAt || 0)) byT[t.ticker] = pos;
+    } else {
+      // 청산/비활성 → tombstone (단, 같은 ticker에 live가 이미 잡혀있으면 유지)
+      if(!ex) byT[t.ticker] = { ticker:t.ticker, deleted:true, deletedAt:stamp, updatedAt:stamp };
+    }
+  });
+  var positions = Object.values(byT);
+  if(!positions.length) return;
+  try{
+    await fetch(WORKER_URL + '/recon/positions', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ mode:mode, positions:positions })
+    });
+  }catch(e){ /* 오프라인이면 다음 변경 때 재시도 */ }
+}
+function journalUnwatch(ticker, mode){
+  if(!ticker) return;
+  mode = mode || (typeof G!=='undefined' && G.currentMode) || 'momo';
+  // 같은 ticker에 아직 live 거래가 남아있으면 감시 해제하지 않음 (두 로트 중 하나만 정리 시 오발 방지)
+  var stillLive = (G_journal || []).some(function(t){
+    return t && t.ticker === ticker && (t.mode || 'momo') === mode &&
+           (t.status === 'open' || t.status === 'partial') && t.watch !== false && !t.deleted;
+  });
+  if(stillLive) return;
+  var now = Date.now();
+  try{
+    fetch(WORKER_URL + '/recon/positions', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ mode:mode, positions:[{ ticker:ticker, deleted:true, deletedAt:now, updatedAt:now }] })
+    });
+  }catch(e){ /* 무시 */ }
+}
+
+// ═══════════════════════════════════════
 // 보유 포지션 고정 렌더링
 // ═══════════════════════════════════════
 function renderOpenPositions(mode){
   var el = document.getElementById(mode+'OpenArea');
   if(!el) return;
+  scheduleJournalSync(mode);
   var openTrades = G_journal.filter(function(t){
     return (t.status==='open'||t.status==='partial') && (t.mode===mode||(t.mode==='momo'&&mode==='momo')||(!t.mode&&mode==='momo'));
   });
@@ -2017,10 +2080,15 @@ function computeBabylonScore(babylon){
   var flags = (hasW1?1:0) + (hasW3?1:0) + (collapsing?1:0);
   var combo = flags >= 2 ? -30 : 0;
 
-  var total = lvl + spd + base + margin + qoq + combo;
+  // 7) 흑자전환 보너스 — 영업이익 첫 흑자 변곡점 (보너스만, 게이트 아님)
+  //    detectProfitTurnaround가 3분기 패턴(최신 OP>0 + 직전 2분기 OP≤0)으로 엄격하게 잡음
+  var pt = st.profit_turnaround || {};
+  var turnaround = pt.turned_profitable ? 20 : 0;
+
+  var total = lvl + spd + base + margin + qoq + combo + turnaround;
   return {
     total: total,
-    breakdown: { level: lvl, speed: spd, base: base, margin: margin, qoq: qoq, combo: combo }
+    breakdown: { level: lvl, speed: spd, base: base, margin: margin, qoq: qoq, combo: combo, turnaround: turnaround }
   };
 }
 
@@ -3797,6 +3865,90 @@ async function fetchYahooData(ticker){
 }
 
 // ── SWING 전용: 일봉 200일 데이터 계산 ──
+// ═══════════════════════════════════════════════════════════════
+// 저항 사다리 (피봇 고점 기반) + 거래량 가중 + 일봉 근사 매물대  [Yahoo 일봉 only]
+// ─────────────────────────────────────────────────────────────
+// 입력: bars = [{h,l,c,v}...] 날짜 정합·오래된→최근, vol20avg
+// 출력: { levels:[{price,touches,relVol,hvn,strong}...오름차순], vpoc }
+// 기본값: 피봇 좌우 L=5 · 룩백 9개월(189봉) · 존 병합 ±1.5%
+//   (A) 피봇일 상대거래량(v/vol20avg)으로 존 강도 가중
+//   (B-1) 일봉 거래량을 고가~저가에 균등 분산 → 매물대 히스토그램 + VPOC, HVN으로 존 보강
+// ═══════════════════════════════════════════════════════════════
+function findResistanceLevels(bars, vol20avg, opts){
+  opts = opts || {};
+  var L        = opts.pivotL     || 5;     // 피봇 좌우폭
+  var lookback = opts.lookback   || 189;   // 9개월 ≈ 189 거래일
+  var tol      = opts.zoneTolPct || 1.5;   // 존 병합 허용 %
+  var nBins    = opts.profileBins|| 60;    // 매물대 빈 수
+  var hvnRatio = opts.hvnRatio   || 0.70;  // VPOC 대비 이 비율↑ = HVN(고거래 매물대)
+
+  var out = { levels: [], vpoc: null };
+  if(!bars || bars.length < (L*2+5)) return out;
+
+  var seg = bars.slice(-Math.min(bars.length, lookback + L));
+  var nseg = seg.length;
+  var avgV = (vol20avg && vol20avg>0) ? vol20avg : null;
+
+  // ── (B-1) 일봉 근사 매물대 히스토그램 ──
+  var segLow = Infinity, segHigh = -Infinity;
+  for(var i=0;i<nseg;i++){ if(seg[i].l<segLow) segLow=seg[i].l; if(seg[i].h>segHigh) segHigh=seg[i].h; }
+  var profile=null, binW=0, isHVN=function(){return false;};
+  if(isFinite(segLow)&&isFinite(segHigh)&&segHigh>segLow){
+    binW=(segHigh-segLow)/nBins;
+    profile=new Array(nBins); for(var b=0;b<nBins;b++) profile[b]=0;
+    for(var i=0;i<nseg;i++){
+      var lo=seg[i].l, hi=seg[i].h, vv=seg[i].v;
+      if(!(vv>0)) continue;
+      if(!(hi>lo)){ var bx=Math.min(nBins-1,Math.max(0,Math.floor((seg[i].c-segLow)/binW))); profile[bx]+=vv; continue; }
+      var bLo=Math.max(0,Math.floor((lo-segLow)/binW));
+      var bHi=Math.min(nBins-1,Math.floor((hi-segLow)/binW));
+      var per=vv/(bHi-bLo+1);
+      for(var b=bLo;b<=bHi;b++) profile[b]+=per;
+    }
+    var maxV=0,maxI=0; for(var b=0;b<nBins;b++){ if(profile[b]>maxV){maxV=profile[b];maxI=b;} }
+    out.vpoc=parseFloat((segLow+(maxI+0.5)*binW).toFixed(2));
+    var hvnT=maxV*hvnRatio;
+    isHVN=function(price){ if(!isFinite(price)) return false; var bi=Math.min(nBins-1,Math.max(0,Math.floor((price-segLow)/binW))); return profile[bi]>=hvnT; };
+  }
+
+  // ── 피봇 고점 검출 (우측 L봉 확인 필요 → 최근 L봉은 미확정) ──
+  var pivots=[];
+  for(var i=L;i<nseg-L;i++){
+    var hi=seg[i].h; if(!(hi>0)) continue;
+    var isMax=true;
+    for(var j=i-L;j<=i+L;j++){ if(j!==i && seg[j].h>=hi){ isMax=false; break; } }
+    if(isMax && seg[i].h>seg[i-1].h && seg[i].h>seg[i+1].h){
+      var rv=avgV?(seg[i].v/avgV):1;
+      pivots.push({ price:hi, relVol:parseFloat((rv||1).toFixed(2)) });
+    }
+  }
+  if(pivots.length===0) return out;
+
+  // ── 존 병합 (가격 오름차순, ±tol%, 거래량 가중 평균가) ──
+  pivots.sort(function(a,b){return a.price-b.price;});
+  var zones=[], cur=null;
+  for(var p=0;p<pivots.length;p++){
+    var pv=pivots[p];
+    if(cur && (pv.price-cur.ref)/cur.ref*100<=tol){
+      cur.members.push(pv);
+      var sw_=0,sp_=0; for(var m=0;m<cur.members.length;m++){ var w=cur.members[m].relVol||1; sw_+=w; sp_+=cur.members[m].price*w; }
+      cur.ref=sp_/sw_;
+    } else { if(cur) zones.push(cur); cur={ ref:pv.price, members:[pv] }; }
+  }
+  if(cur) zones.push(cur);
+
+  // ── 강도 산출 (터치횟수 + 합산 상대거래량 + HVN) ──
+  for(var z=0;z<zones.length;z++){
+    var zo=zones[z], touches=zo.members.length, volStr=0;
+    for(var m=0;m<zo.members.length;m++) volStr+=(zo.members[m].relVol||1);
+    var price=parseFloat(zo.ref.toFixed(2)), hvn=isHVN(price);
+    var strong=(touches>=2)||(volStr>=3.0)||hvn;  // 2회+ 터치 OR 거래량 3배+ OR 고거래 매물대
+    out.levels.push({ price:price, touches:touches, relVol:parseFloat(volStr.toFixed(2)), hvn:hvn, strong:strong });
+  }
+  out.levels.sort(function(a,b){return a.price-b.price;});
+  return out;
+}
+
 async function fetchSwingData(ticker){
   var sw = {
     ma5:null, ma20:null, ma60:null, ma200:null,
@@ -4019,6 +4171,18 @@ async function fetchSwingData(ticker){
     var isTypeB = !!(sw.near_high20 && sw.base_weeks>=3 && c2 && (sw.vol_ratio||0)>=1.5);
     var isTypeC = !!(sw.ma200_recently_crossed && sw.macd_hist!==null && sw.macd_hist>0 && sw.vol_dry_on_down);
     sw.swing_type = isTypeA ? 'A' : isTypeB ? 'B' : isTypeC ? 'C' : null;
+
+    // ── 저항 사다리 + 거래량 가중 + 매물대 (Yahoo 일봉 only) ──
+    // O/H/L/C/V 정합 테이블: 한 봉이라도 비면 행 통째 제외 → 가격·거래량 인덱스 일치
+    var _bh=q.high||[], _bl=q.low||[], _bc=q.close||[], _bv=q.volume||[];
+    var _blen=Math.min(_bh.length,_bl.length,_bc.length,_bv.length), _bars=[];
+    for(var bi=0; bi<_blen; bi++){
+      var H=_bh[bi], Lo=_bl[bi], C=_bc[bi], V=_bv[bi];
+      if(H>0 && Lo>0 && C>0 && V>0 && H>=Lo) _bars.push({ h:H, l:Lo, c:C, v:V });
+    }
+    var _resMap = findResistanceLevels(_bars, sw.vol20avg, {});
+    sw.resistanceLevels = _resMap.levels;  // [{price,touches,relVol,hvn,strong}...] 오름차순
+    sw.vpoc             = _resMap.vpoc;     // 매물대 최대거래 가격 (참고용 자석레벨)
 
   }catch(e){ console.warn('[SwingData]',ticker,e.message); }
   return sw;
@@ -5697,32 +5861,41 @@ function swingEngine(ydata, swingData){
     // 철학: 타겟은 손절과 무관하게 "시장 저항/변동성/신고가"로만 결정.
     // R 배수 폴백은 손절에 종속되므로 스윙 철학(추세추종)과 충돌.
 
-    // T1: 가장 가까운 저항 — MIN(20일 고점, 50일 고점 — 각 entry×1.05 이상만)
-    var t1Candidates = [];
-    if(swingData.high20 && swingData.high20 > sEntry*1.05)
-      t1Candidates.push(parseFloat((swingData.high20*0.99).toFixed(2)));
-    if(swingData.high50 && swingData.high50 > sEntry*1.05)
-      t1Candidates.push(parseFloat((swingData.high50*0.99).toFixed(2)));
-    var sT1;
-    if(t1Candidates.length > 0){
-      sT1 = Math.min.apply(null, t1Candidates);
-    } else {
-      // 폴백: ATR × 3 (변동성 3일치) or entry × 1.10, 중 큰 값
-      var atrT1 = swingData.atr20 ? parseFloat((sEntry + swingData.atr20*3).toFixed(2)) : 0;
-      var pctT1 = parseFloat((sEntry*1.10).toFixed(2));
-      sT1 = Math.max(atrT1, pctT1);
+    // T1/T2: 실제 저항 사다리(피봇+거래량 가중)에서 진입가 위 존 선택
+    // 폴백: 머리 위 저항 없음(blue-sky) → 측정된 움직임(ATR/%), t*_src='est' 라벨
+    var _levels = swingData.resistanceLevels || [];
+    var _dMin = 0.02;  // T1 최소거리 +2%
+    var _sMin = 0.05;  // T1↔T2 최소간격 +5%
+    var _above = [];
+    for(var li=0; li<_levels.length; li++){
+      if(_levels[li].price > sEntry*(1+_dMin)) _above.push(_levels[li]);
     }
-
-    // T2: 확장 목표 — MAX(52주 고점, ATR × 8, entry × 1.25)
-    var t2Candidates = [];
-    if(ydata.fiftyTwoWeekHigh && ydata.fiftyTwoWeekHigh > sT1*1.02)
-      t2Candidates.push(parseFloat(ydata.fiftyTwoWeekHigh.toFixed(2)));
-    if(swingData.atr20)
-      t2Candidates.push(parseFloat((sEntry + swingData.atr20*8).toFixed(2)));
-    t2Candidates.push(parseFloat((sEntry*1.25).toFixed(2)));
-    var sT2 = Math.max.apply(null, t2Candidates);
-    // T2는 T1보다 최소 10% 위여야 의미 있음
+    var sT1, sT2, t1Src='resistance', t2Src='resistance', t1Strong=false, t2Strong=false;
+    if(_above.length > 0){
+      var _z1 = _above[0];
+      sT1 = parseFloat((_z1.price*0.99).toFixed(2));   // 저항 바로 아래서 익절
+      t1Strong = !!_z1.strong;
+      var _z2 = null;
+      for(var li=1; li<_above.length; li++){
+        if(_above[li].price >= _z1.price*(1+_sMin)){ _z2=_above[li]; break; }
+      }
+      if(_z2){ sT2 = parseFloat((_z2.price*0.99).toFixed(2)); t2Strong = !!_z2.strong; }
+      else {   // 위에 다음 저항 없음 → T2만 측정된 움직임 추정
+        var _atr2 = swingData.atr20 ? parseFloat((sEntry + swingData.atr20*8).toFixed(2)) : 0;
+        sT2 = Math.max(_atr2, parseFloat((sT1*1.12).toFixed(2))); t2Src='est';
+      }
+    } else {
+      // blue-sky: 머리 위 저항 자체 없음(신고가권) → 측정된 움직임 (est 라벨)
+      t1Src='est'; t2Src='est';
+      var _a3 = swingData.atr20 ? parseFloat((sEntry + swingData.atr20*3).toFixed(2)) : 0;
+      sT1 = Math.max(_a3, parseFloat((sEntry*1.10).toFixed(2)));
+      var _a8 = swingData.atr20 ? parseFloat((sEntry + swingData.atr20*8).toFixed(2)) : 0;
+      sT2 = Math.max(_a8, parseFloat((sEntry*1.25).toFixed(2)));
+    }
+    // T2는 T1보다 최소 10% 위여야 의미 있음 (기존 가드 유지)
     if(sT2 < sT1 * 1.10) sT2 = parseFloat((sT1*1.15).toFixed(2));
+    r.t1_src=t1Src; r.t2_src=t2Src; r.t1_strong=t1Strong; r.t2_strong=t2Strong;
+    r.vpoc = swingData.vpoc || null;
 
     // R:R 참고용 (카드에 표시 안 함 — 삭제 방침이지만 다른 코드 호환 위해 유지)
     var sRR  = sRisk>0 ? parseFloat(((sT1-sEntry)/sRisk).toFixed(1)) : null;
@@ -5770,12 +5943,19 @@ function swingEngine(ydata, swingData){
   if(swingData.ma20_gap_pct!==null&&swingData.ma20_gap_pct>15) r.warnings.push('MA20 이격 '+swingData.ma20_gap_pct+'% — 눌림목 대기 권고');
   if(swingData.vol_ratio!==null&&swingData.vol_ratio<0.8)      r.warnings.push('거래량 평균比 '+swingData.vol_ratio+'x — 약한 거래량');
 
-  // ── BLOCK 조건 (엔진이 처리 — 나머지는 Claude 판단) ──
-  // BLOCK: T1 절대 상승률 기준 (R:R 대신)
-  // 스윙 철학: "이 거래가 스윙치고 충분한 상방을 가지는가"만 판단. 손절 크기는 무관.
+  // ── T1 상방 필터 (하드 BLOCK → 강등) ──
+  // 변경(2026-05): T1은 MIN(20/50일 고점) 기반 *기계적 추정 천장*일 뿐이라,
+  // 모멘텀 돌파 종목(가까운 고점=돌파 전제)의 상방을 과소평가함.
+  // → 거부권(BLOCK) 대신 감점+경고로 강등하고 ENTER/WATCH 최종판단은 Claude에 위임.
+  // → 단, T1·T2가 모두 협소하면 정말 상방 자체가 없는 것이므로 그때만 하드 BLOCK 유지.
   if(r.target1_pct!==null && r.target1_pct!==undefined && r.target1_pct<swingMinT1Pct){
-    r.blockers.push('[SWING] T1 상승폭 +'+r.target1_pct+'% — 최소 '+swingMinT1Pct+'% 미만 (스윙 기대 수익 부족)');
-    r.action='BLOCK'; return r;
+    var _t2Narrow = (r.target2_pct===null || r.target2_pct===undefined || r.target2_pct<swingMinT1Pct);
+    if(_t2Narrow){
+      r.blockers.push('[SWING] T1 +'+r.target1_pct+'% · T2 +'+(r.target2_pct!=null?r.target2_pct:'-')+'% — 상방 전 구간 협소 (스윙 기대 수익 부족)');
+      r.action='BLOCK'; return r;
+    }
+    r.warnings.push('[SWING] T1 상방 +'+r.target1_pct+'% 협소 (최소 '+swingMinT1Pct+'% 미만) — 가까운 저항, 눌림 대기 권고 / T2 +'+r.target2_pct+'%');
+    r.score = Math.max(0, (r.score||0) - 10);
   }
   if(r.conditions_met<=1){
     r.blockers.push('[SWING] 조건 '+r.conditions_met+'/8 — 최소 기준 미달');
@@ -5888,7 +6068,9 @@ function deriveSetupLabel(coreData, fundData, sectorData){
     };
   }
 
-  if(fundGate === 'BLOCK')                               return failResult('fund_gate=BLOCK → FAIL');
+  // [removed 2026-05-29] fund_gate=BLOCK → setup FAIL 비토 제거
+  //   사유: 펀더멘털 판정은 BABYLON(SEC) 단일 주인, matrix BLOCK row에서 이미 처리됨
+  //   야후 fund_gate는 데이터 공백으로 BLOCK 떨어지는 일이 잦아 가짜 FAIL의 원흉이었음
   if(coreData.stage === '3 분배')                         return failResult('Stage 3 분배 → FAIL (기관 분배 구간)');
   if(coreData.rs_declining && coreData.ad_bullish_div === false) return failResult('RS+A/D 동시 하락 → FAIL (기관 매도)');
   if(coreData.base_depth_pct !== null && coreData.base_depth_pct !== undefined && coreData.base_depth_pct < -40)
@@ -5924,10 +6106,8 @@ function deriveSetupLabel(coreData, fundData, sectorData){
   var downgradeSteps = 0;
   var vixFear = typeof G !== 'undefined' && (G.vixRegime === 'FEAR' || G.vixRegime === 'STRESS');
 
-  if(fundGate === 'WATCH'){
-    downgradeSteps++;
-    path.push('fund_gate=WATCH → 다운그레이드 +1');
-  }
+  // [removed 2026-05-29] fund_gate=WATCH → 다운그레이드 제거
+  //   사유: 펀더멘털 강도는 BABYLON row가 결정, setup 축은 순수 타이밍/기술만 담당
   if(sectorGate === 'WEAK'){
     if(!vixFear){
       downgradeSteps++;
@@ -5953,7 +6133,8 @@ function deriveSetupLabel(coreData, fundData, sectorData){
 
   // ── confidence ──
   var confidence = 'full';
-  if(fundGate === 'UNKNOWN' || sectorGate === 'UNKNOWN') confidence = 'missing';
+  // [removed 2026-05-29] fund_gate=UNKNOWN → confidence missing 제거 (setup 축에서 분리)
+  if(sectorGate === 'UNKNOWN') confidence = 'missing';
   if(coreData.conditions_met === 0) confidence = 'missing';
 
   return {
@@ -5975,9 +6156,10 @@ window.deriveSetupLabel = deriveSetupLabel;
 function runSetupLabelTests(){
   var cases = [
     // ── 기본 라벨 ──
-    { name:'FAIL: fund_gate=BLOCK (다른 조건 무시)',
+    // [updated 2026-05-29] fund_gate가 setup 축에서 분리됨 — 아래 케이스들은 새 동작 검증
+    { name:'READY: fund_gate=BLOCK 무시됨 (setup 축은 펀더 안 봄)',
       cd:{accum_score:8,timing_score:8,entry_trigger:'MA50_BREAKOUT'}, fd:{fund_gate:'BLOCK'}, sd:{sector_gate:'STRONG'},
-      vix:'CALM', expected:'FAIL' },
+      vix:'CALM', expected:'READY' },
     // ── 옵션 C 차트 hard block 4종 ──
     { name:'FAIL: Stage 3 분배',
       cd:{accum_score:8,timing_score:7,entry_trigger:'MA50_BREAKOUT',stage:'3 분배'}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'STRONG'},
@@ -6012,25 +6194,28 @@ function runSetupLabelTests(){
     { name:'READY: 둘 다 충족, 트리거 있음',
       cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'STRONG'},
       vix:'CALM', expected:'READY' },
-    // ── 다운그레이드 ──
-    { name:'다운그레이드: READY → IMMINENT (fund WATCH)',
+    // ── 다운그레이드 (sector만, fund 없음) ──
+    { name:'fund WATCH 무시 → READY 유지 (fund 다운그레이드 제거됨)',
       cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'WATCH'}, sd:{sector_gate:'NEUTRAL'},
-      vix:'CALM', expected:'IMMINENT' },
-    { name:'다운그레이드: READY → BUILDING (fund WATCH + sector WEAK)',
+      vix:'CALM', expected:'READY' },
+    { name:'sector WEAK만 다운그레이드 → READY -1 → IMMINENT',
       cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'WATCH'}, sd:{sector_gate:'WEAK'},
-      vix:'CALM', expected:'BUILDING' },
-    { name:'다운그레이드 최하: IMMINENT -2 → EARLY',
+      vix:'CALM', expected:'IMMINENT' },
+    { name:'sector WEAK -1 → IMMINENT -1 → BUILDING',
       cd:{accum_score:7,timing_score:6,entry_trigger:'NONE',conditions_met:6}, fd:{fund_gate:'WATCH'}, sd:{sector_gate:'WEAK'},
-      vix:'CALM', expected:'EARLY' },
+      vix:'CALM', expected:'BUILDING' },
     { name:'VIX FEAR 면제: sector WEAK 무시 → READY 유지',
       cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'WEAK'},
       vix:'FEAR', expected:'READY' },
     { name:'VIX STRESS 도 면제',
       cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:7}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'WEAK'},
       vix:'STRESS', expected:'READY' },
-    // ── confidence ──
-    { name:'confidence missing: fund UNKNOWN',
+    // ── confidence (fund UNKNOWN 무시) ──
+    { name:'confidence full: fund UNKNOWN 무시 (sector STRONG)',
       cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:6}, fd:{fund_gate:'UNKNOWN'}, sd:{sector_gate:'STRONG'},
+      vix:'CALM', expected:'READY', expectedConfidence:'full' },
+    { name:'confidence missing: sector UNKNOWN',
+      cd:{accum_score:7,timing_score:6,entry_trigger:'MA50_BREAKOUT',conditions_met:6}, fd:{fund_gate:'PASS'}, sd:{sector_gate:'UNKNOWN'},
       vix:'CALM', expected:'READY', expectedConfidence:'missing' },
     { name:'coreData null → EARLY + unavailable',
       cd:null, fd:{fund_gate:'PASS'}, sd:{sector_gate:'STRONG'},
@@ -6397,24 +6582,17 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     ma_aligned:           coreData.ma_aligned
   };
 
-  // ── 펀더멘털 게이트 (선행) ──
+  // ── 펀더멘털 처리 ──
+  // [updated 2026-05-29] 야후 fund_gate 의존 제거
+  //   사유: 펀더멘털 판정은 BABYLON(SEC) 단일 주인. fundData는 null로 들어오는 게 정상.
+  //   BABYLON BLOCK은 이미 위 r.action='BLOCK' 분기에서 처리됨 (line 6486).
+  //   야후 fundData가 들어와도(레거시 호출) 카드 표시용 필드만 보존, 비토는 안 함.
   if(fundData){
     r.fund_score   = fundData.fund_score   || 0;
     r.fund_gate    = fundData.fund_gate    || 'UNKNOWN';
     r.fund_signals = fundData.fund_signals || [];
     r.fund_blockers= fundData.fund_blockers|| [];
-    if(fundData.fund_gate==='BLOCK'){
-      r.action='BLOCK';
-      r.blockers.push('[FUND] '+(fundData.fund_blockers[0]||'펀더멘털 기준 미달'));
-      // setup/synthesis 채워서 카드 표시 일관성 유지
-      r.setup = deriveSetupLabel(coreData, fundData, sectorData);
-      r.synthesis = synthesizeVerdict(babylonResult, r.setup);
-      r.position_size_pct = r.synthesis.position_size_pct;
-      return r;
-    }
-    // WATCH 다운그레이드 메모
-    if(fundData.fund_gate==='WATCH') r.warnings.push('[FUND] 펀더멘털 확인 필요 ('+fundData.fund_score+'/10)');
-    // 펀더멘털 신호 추가
+    // 시그널은 보조 정보로만 (BLOCK 비토 / WATCH 다운그레이드 제거)
     fundData.fund_signals.forEach(function(s){ r.signals.push('📊 '+s); });
   }
 
@@ -6490,7 +6668,16 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
   }
 
   // ── 종합 점수 ──
-  var fundW = fundData ? Math.round(r.fund_score*2) : 0;
+  // [updated 2026-05-29] fundW 출처를 야후 fund_score → BABYLON verdict 기반으로 치환
+  //   ENTER_100(클린) +20 / ENTER_50(경고있는) +12 / WATCH_* +6 / 그 외 0
+  var fundW = 0;
+  if(babylonResult && babylonResult.verdict){
+    var _bv = babylonResult.verdict;
+    var _bp = babylonResult.decision_details && babylonResult.decision_details.position_size_pct;
+    if(_bv === 'ENTER' && _bp === 100)                                 fundW = 20;
+    else if(_bv === 'ENTER')                                           fundW = 12;
+    else if(_bv === 'WATCH_WEAK' || _bv === 'WATCH_CLAUDE')            fundW = 6;
+  }
   r.score=Math.min(100, Math.round(r.accum_score*4 + r.timing_score*4 + fundW));
 
   // ── 신호 / 경고 빌드 ──
@@ -6537,11 +6724,13 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
   }
 
   // ── Conviction 레벨 계산 ──
-  var isStrongSector = sectorData&&sectorData.sector_gate==='STRONG';
-  var isPassFund     = fundData&&fundData.fund_gate==='PASS';
-  if(r.score>=75&&isPassFund&&isStrongSector&&hasTrigger){
+  // [updated 2026-05-29] isPassFund(야후) → isBabylonEnter(SEC) 치환
+  var isStrongSector  = sectorData && sectorData.sector_gate === 'STRONG';
+  var isBabylonEnter  = babylonResult && babylonResult.verdict === 'ENTER';
+  var isBabylonNotBad = babylonResult && babylonResult.verdict !== 'BLOCK' && babylonResult.verdict !== 'SKIP';
+  if(r.score>=75 && isBabylonEnter && isStrongSector && hasTrigger){
     r.conviction_level='HIGH';
-  } else if(r.score>=55&&(isPassFund||(fundData&&fundData.fund_gate!=='BLOCK'))&&r.sector_gate!=='WEAK'){
+  } else if(r.score>=55 && isBabylonNotBad && r.sector_gate!=='WEAK'){
     r.conviction_level='MEDIUM';
   } else {
     r.conviction_level='LOW';
@@ -6640,7 +6829,13 @@ function makeExplainPrompt(mode, ticker, ydata, decision){
     ? '갭: '+(decision.gap_pct!==undefined?decision.gap_pct+'%':'?')+' | RVol: '+(ydata.rvol||'?')+'x | Float: '+(ydata.float_m!==null?ydata.float_m+'M':'?')+' | 점수: '+decision.score+'pt'
     : mode==='swing'
     ? 'conditions: '+decision.conditions_met+'/8 | 점수: '+decision.score+'pt | T1 상승률: +'+(decision.target1_pct||'?')+'%'
-    : '매집: '+decision.accum_score+'/10 | 타이밍: '+decision.timing_score+'/10 | 펀더멘털: '+(decision.fund_score||0)+'/10 ('+decision.fund_gate+') | 점수: '+decision.score+'pt';
+    // [updated 2026-05-29] CORE: 야후 펀더 → BABYLON verdict로 치환
+    : (function(){
+        var bv = (decision.babylon && decision.babylon.verdict) || 'UNKNOWN';
+        var bp = (decision.babylon && decision.babylon.details && decision.babylon.details.position_size_pct);
+        var babStr = bv === 'ENTER' && bp ? 'BABYLON: ENTER '+bp+'%' : 'BABYLON: '+bv;
+        return '매집: '+decision.accum_score+'/10 | 타이밍: '+decision.timing_score+'/10 | '+babStr+' | 점수: '+decision.score+'pt';
+      })();
 
   // CORE: 촉매 캘린더 + conviction 포함 확장 프롬프트
   if(mode === 'core'){
@@ -7092,20 +7287,22 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       babylonResult = { verdict: 'ERROR', reason: 'babylon_fetch_failed', error: e.message };
     }
     
-    // ── Step 2: 기존 CORE 분석 (섹터 + 펀더멘털 + 물밑) ──
+    // ── Step 2: 기존 CORE 분석 (섹터 + 물밑) ──
+    // [updated 2026-05-29] 야후 fetchFundamentals 호출 제거
+    //   사유: 펀더멘털은 BABYLON(SEC) 단일 주인. 야후 quoteSummary는 데이터 공백·가짜 BLOCK 빈발.
+    //   fundData는 null로 두고 coreEngine 내부에서 안전 처리됨.
     analyzeEl.innerHTML =
       '<div class="analyzing-card"><div class="analyzing-spinner"></div>'+
       '<div><div class="analyzing-ticker">'+ticker+'</div>'+
-      '<div class="analyzing-text">📊 펀더멘털 + 물밑 지표 계산 중...</div></div></div>';
+      '<div class="analyzing-text">📊 섹터 + 물밑 지표 계산 중...</div></div></div>';
     // 병렬 호출로 속도 최적화
     var coreResults = await Promise.all([
       fetchCoreData(ticker),
-      fetchFundamentals(ticker),
       fetchSectorData(ticker)
     ]);
     coreData    = coreResults[0];
-    fundData    = coreResults[1];
-    sectorData  = coreResults[2];
+    sectorData  = coreResults[1];
+    // fundData = null (의도적)
   }
 
   // ── 엔진 / 프롬프트 분기 ──
@@ -7775,7 +7972,7 @@ function getPMZone(r){
 //   - 분할 매집 중심 (matrix_cell 기반 단계별 진입)
 //   - 청산 조건은 펀더/차트 기반 신호
 // ═══════════════════════════════════════════════════════════════
-function renderCoreCard(r, mode, synthesisBanner, babylonBanner, setupBanner, holdBanner, cardC, ac){
+function renderCoreCard(r, mode, synthesisBanner, babylonBanner, readinessBanner, setupBanner, holdBanner, cardC, ac){
   var sy = r.synthesis || {};
   var sx = r.setup || {};
   var bb = r.babylon || {};
@@ -7804,10 +8001,11 @@ function renderCoreCard(r, mode, synthesisBanner, babylonBanner, setupBanner, ho
         '</div>'+
         '<div style="font-family:var(--mono);font-size:26px;color:var(--t);font-weight:700;line-height:1.2">'+priceStr+gapStr+'</div>'+
       '</div>'+
+      // [updated 2026-05-29] 헤더 우측: 점수 + ENTER/WATCH/BLOCK 만 (포지션 % 는 body의 진입 계획으로 이동)
       '<div style="text-align:right;flex-shrink:0">'+
-        '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);letter-spacing:.1em;margin-bottom:2px">ACTION</div>'+
-        '<div style="font-family:var(--mono);font-size:18px;color:'+actionColor+';font-weight:700">'+actionLabel+'</div>'+
-        (syPct>0?'<div style="font-family:var(--mono);font-size:13px;color:'+actionColor+';margin-top:2px;font-weight:700">'+syPct+'%</div>':'')+
+        '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);letter-spacing:.1em;margin-bottom:2px">SCORE</div>'+
+        '<div style="font-family:var(--mono);font-size:24px;color:'+actionColor+';font-weight:700;line-height:1">'+(r.score||0)+'</div>'+
+        '<div style="font-family:var(--mono);font-size:13px;color:'+actionColor+';margin-top:4px;font-weight:700;letter-spacing:.05em">'+ac+'</div>'+
       '</div>'+
     '</div>';
 
@@ -8034,7 +8232,7 @@ function renderCoreCard(r, mode, synthesisBanner, babylonBanner, setupBanner, ho
   // ── 버튼 ──
   var buttonsHtml =
     '<div style="display:flex;gap:6px;margin-top:10px">'+
-      '<button onclick="openTradeLog(\''+r.ticker+'\','+(r.price||0)+')" style="flex:1;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--g);cursor:pointer">+ 거래 기록</button>'+
+      '<button onclick="openTradeLog(\''+r.ticker+'\','+(r.price||0)+',{name:\''+((r.displayName||r.shortName||r.ticker||'').replace(/'/g,''))+'\',stop:'+(r.stop||0)+',t1:'+(r.target1||0)+',t2:'+(r.target2||0)+'})" style="flex:1;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--g);cursor:pointer">+ 거래 기록</button>'+
       '<button onclick="holdFromAnalysis(event,\''+r.ticker+'\',\''+mode+'\','+(r.price||0)+')" style="flex:1;background:rgba(255,106,0,.08);border:1px solid rgba(255,106,0,.25);border-radius:8px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--gold);cursor:pointer">📌 보유</button>'+
       '<button onclick="rerunCard(\''+r.ticker+'\',\'core\')" style="flex:1;background:none;border:1px solid var(--b);border-radius:8px;padding:8px;font-family:var(--mono);font-size:10px;color:var(--t2);cursor:pointer">↻ 재분석</button>'+
       (ac !== 'BLOCK' ?
@@ -8046,6 +8244,7 @@ function renderCoreCard(r, mode, synthesisBanner, babylonBanner, setupBanner, ho
     headerHtml+
     synthesisBanner+
     babylonBanner+
+    readinessBanner+
     setupBanner+
     holdBanner+
     entryPlanHtml+
@@ -8471,6 +8670,37 @@ function cardHTML(r, mode){
       '</div>';
   }
 
+  // ── 진입 가능성 배지 (사용자 운영 규칙: babylon ENTER + 타이밍 7+) ──
+  // 펀더(좋은 베이비) AND 타이밍(살 자리) 두 축을 모두 충족했는지 시각화
+  // 엔진 판정은 안 건드림 — 시각 신호만
+  var readinessBanner = '';
+  if(r._mode === 'core'){
+    var _b = r.babylon || {};
+    var _isEnter = _b.verdict === 'ENTER';
+    var _tim = (r.setup && r.setup.inputs && r.setup.inputs.timing) || (r.coreData && r.coreData.timing_score) || (r.cd && r.cd.timing_score) || 0;
+    if(_isEnter && _tim >= 7){
+      readinessBanner =
+        '<div style="background:rgba(0,240,122,.10);border:1px solid rgba(0,240,122,.35);border-radius:10px;padding:9px 11px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">'+
+          '<div style="display:flex;align-items:center;gap:8px">'+
+            '<span style="font-size:14px">✅</span>'+
+            '<span style="font-family:var(--mono);font-size:11px;color:var(--g);font-weight:700">진입 가능</span>'+
+            '<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">펀더 + 자리 모두 충족</span>'+
+          '</div>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--g)">타이밍 '+_tim+'/10</span>'+
+        '</div>';
+    } else if(_isEnter && _tim < 7){
+      readinessBanner =
+        '<div style="background:rgba(255,170,0,.08);border:1px solid rgba(255,170,0,.3);border-radius:10px;padding:9px 11px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">'+
+          '<div style="display:flex;align-items:center;gap:8px">'+
+            '<span style="font-size:14px">⏳</span>'+
+            '<span style="font-family:var(--mono);font-size:11px;color:var(--a);font-weight:700">자리 대기</span>'+
+            '<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">베이비 맞음 · 타이밍 미충족 (기준 7)</span>'+
+          '</div>'+
+          '<span style="font-family:var(--mono);font-size:10px;color:var(--a)">타이밍 '+_tim+'/10</span>'+
+        '</div>';
+    }
+  }
+
   // ── 셋업 섹션 (옵션 C Step 3: 진입 타이밍 축) ──
   var setupBanner = '';
   if(r._mode === 'core' && r.setup){
@@ -8497,9 +8727,9 @@ function cardHTML(r, mode){
       sxColor='var(--r)'; sxBg='rgba(255,45,78,.08)'; sxBorder='rgba(255,45,78,.25)';
       sxIcon='🛑';
       // fail_reason에서 동적으로 메시지 추출
+      // [updated 2026-05-29] fund_gate FAIL 케이스 제거 (setup 축에서 fund_gate 비토 떨어짐)
       var failReason = sx.fail_reason || '';
-      if(failReason.indexOf('fund_gate') >= 0) sxDesc = '펀더멘털 게이트 실패';
-      else if(failReason.indexOf('Stage 3') >= 0) sxDesc = 'Stage 3 분배 — 기관 분배 구간';
+      if(failReason.indexOf('Stage 3') >= 0) sxDesc = 'Stage 3 분배 — 기관 분배 구간';
       else if(failReason.indexOf('RS+A/D') >= 0) sxDesc = 'RS+A/D 동시 하락 — 기관 매도';
       else if(failReason.indexOf('베이스 깊이') >= 0) sxDesc = '베이스 깊이 손상 — 수급 훼손';
       else if(failReason.indexOf('과확장') >= 0) sxDesc = '베이스 없는 과확장 — 진입 자리 부재';
@@ -8659,7 +8889,7 @@ function cardHTML(r, mode){
   // 추가: 분할 매집 계획, 펀더 청산 조건, 간소 뉴스
   // ═══════════════════════════════════════════════════════════════
   if(r._mode === 'core' && r.mode !== 'hold'){
-    return renderCoreCard(r, mode, synthesisBanner, babylonBanner, setupBanner, holdBanner, cardC, ac);
+    return renderCoreCard(r, mode, synthesisBanner, babylonBanner, readinessBanner, setupBanner, holdBanner, cardC, ac);
   }
 
   // ── 보유 모드 카드 (hold) ──
@@ -8763,28 +8993,18 @@ function cardHTML(r, mode){
 
     (function(){
       if(r._mode!=='core') return '';
-      var fg=r.fund_gate||'UNKNOWN', fs=r.fund_score||0;
+      // [updated 2026-05-29] 야후 펀더 chip + signals 제거 (BABYLON 정보는 babylonBanner가 별도 표시)
       var sg=r.sector_gate||'UNKNOWN';
-      if(fg==='UNKNOWN'&&sg==='UNKNOWN') return '';
-      var fgColor=fg==='PASS'?'var(--g)':fg==='WATCH'?'var(--a)':fg==='BLOCK'?'var(--r)':'var(--t3)';
-      var fgLabel=fg==='PASS'?'PASS':fg==='WATCH'?'확인필요':fg==='BLOCK'?'BLOCK':'--';
+      if(sg==='UNKNOWN' && !r.conviction_level) return '';
       var sgColor=sg==='STRONG'?'var(--g)':sg==='NEUTRAL'?'var(--a)':sg==='WEAK'?'var(--r)':'var(--t3)';
       var sgLabel=sg==='STRONG'?'강세':sg==='NEUTRAL'?'중립':sg==='WEAK'?'약세':'미확인';
       var convColor={'HIGH':'var(--g)','MEDIUM':'var(--a)','LOW':'var(--t3)'}[r.conviction_level||'LOW']||'var(--t3)';
-      var sigHtml=(r.fund_signals||[]).slice(0,3).map(function(s){
-        return '<span style="font-size:9px;color:var(--g);background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.15);border-radius:4px;padding:1px 5px">'+s+'</span>';
-      }).join(' ');
-      var blkHtml=(r.fund_blockers||[]).slice(0,1).map(function(s){
-        return '<span style="font-size:9px;color:var(--r);background:rgba(255,45,78,.08);border:1px solid rgba(255,45,78,.15);border-radius:4px;padding:1px 5px">'+s+'</span>';
-      }).join('');
       return '<div style="margin:8px 0 6px;padding:8px 10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:8px">'+
-        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:'+(sigHtml||blkHtml?'5px':'0')+'">'+
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
           '<span style="font-family:var(--mono);font-size:9px;color:var(--t3);letter-spacing:.06em">GATE</span>'+
-          '<span style="font-family:var(--mono);font-size:10px;color:'+fgColor+'">펀더 '+fgLabel+' ('+fs+'/10)</span>'+
-          (r.sector_etf?'<span style="font-family:var(--mono);font-size:10px;color:'+sgColor+'">섹터 '+sgLabel+' ('+r.sector_etf+')</span>':'')+
+          (r.sector_etf?'<span style="font-family:var(--mono);font-size:10px;color:'+sgColor+'">섹터 '+sgLabel+' ('+r.sector_etf+')</span>':'<span style="font-family:var(--mono);font-size:10px;color:var(--t3)">섹터 미매핑</span>')+
           '<span style="font-family:var(--mono);font-size:10px;color:'+convColor+'">확신 '+(r.conviction_level||'LOW')+'</span>'+
         '</div>'+
-        ((sigHtml||blkHtml)?'<div style="display:flex;flex-wrap:wrap;gap:3px">'+(sigHtml||blkHtml)+'</div>':'')+
       '</div>';
     })()+
     coreScoreHtml+
@@ -8831,7 +9051,7 @@ function cardHTML(r, mode){
       '<div class="levels" style="'+(r._mode!=='core'&&r.slippage_risk==='high'?'opacity:.7':'')+'">'+
         '<div class="lv lv-entry"><div class="lv-label">진입</div><div class="lv-val">'+(r.entry?'$'+r.entry:'--')+'</div></div>'+
         '<div class="lv lv-stop"><div class="lv-label">'+(r._mode==='core'?(r.entry&&r.stop?'손절('+((r.stop-r.entry)/r.entry*100).toFixed(0)+'%)':'손절'):r._mode==='swing'?(r.stop_type||'손절'):r.momo_type==='C'?'손절(-15%)':r.momo_type==='B'?'손절(-10%)':'손절(-7%)')+'</div><div class="lv-val">'+(r.stop?'$'+r.stop:'--')+'</div></div>'+
-        '<div class="lv lv-t1"><div class="lv-label">'+(r._mode==='core'?'익절1 (25%)':'T1(50%)')+'</div><div class="lv-val">'+(st?'$'+st.t1:r.target1?'$'+r.target1:'--')+'</div></div>'+
+        '<div class="lv lv-t1"><div class="lv-label">'+(r._mode==='core'?'익절1 (25%)':'T1(50%)')+(r._mode==='swing'?((r.t1_strong?' ★':'')+(r.t1_src==='est'?' <span style="color:var(--a);font-size:8px">추정</span>':'')):'')+'</div><div class="lv-val">'+(r._mode==='swing'?(r.target1?'$'+r.target1:'--'):(st?'$'+st.t1:r.target1?'$'+r.target1:'--'))+'</div></div>'+
         '<div class="lv lv-rr"><div class="lv-label">'+(r._mode==='core'?'익절1 상승률':r._mode==='swing'?'T1 상승률':'손익비')+'</div><div class="lv-val">'+
           (r._mode==='momo'
             ? (r.rr?r.rr+'R':'--')
@@ -8840,10 +9060,13 @@ function cardHTML(r, mode){
       '</div>'+
       ((r._mode==='swing')&&r.target2?
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:5px;padding:6px 10px;background:rgba(43,159,255,.06);border:1px solid rgba(43,159,255,.15);border-radius:8px">'+
-          '<span style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.08em">T2 최종목표 (잔량)</span>'+
+          '<span style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.08em">T2 최종목표 (잔량)'+(r.t2_strong?' ★':'')+(r.t2_src==='est'?' · 추정':'')+'</span>'+
           '<span style="font-family:var(--mono);font-size:13px;color:var(--bl)">$'+r.target2+'</span>'+
           (r.entry?'<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">+'+((r.target2-r.entry)/r.entry*100).toFixed(0)+'%</span>':'')+
         '</div>'
+      :'')+
+      ((r._mode==='swing')&&r.vpoc?
+        '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:3px;text-align:right">VPOC(매물대 자석) $'+r.vpoc+(r.t1_src==='est'&&r.t2_src==='est'?' · 머리 위 저항 없음(신고가권)':'')+'</div>'
       :'')+
       (r._mode==='core'&&r.target2&&ac!=='BLOCK'?
         '<div style="margin-top:5px;padding:8px 10px;background:rgba(159,122,255,.06);border:1px solid rgba(159,122,255,.2);border-radius:8px">'+
@@ -8916,7 +9139,7 @@ function cardHTML(r, mode){
     '<div style="font-size:11px;color:var(--t2);margin-top:8px">'+(r.summary||'')+'</div>'+
 
     '<div style="margin-top:10px;display:flex;gap:6px">'+
-      '<button onclick="openTradeLog(\''+r.ticker+'\','+(r.price||0)+')" '+
+      '<button onclick="openTradeLog(\''+r.ticker+'\','+(r.price||0)+',{name:\''+((r.displayName||r.shortName||r.ticker||'').replace(/'/g,''))+'\',stop:'+(r.stop||0)+',t1:'+(r.target1||st&&st.t1||0)+',t2:'+(r.target2||st&&st.t2||0)+'})" '+
         'style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">+ 거래 기록</button>'+
       '<button onclick="holdAutoAdd(\''+r.ticker+'\',\''+((r.displayName||r.shortName||r.ticker||'').replace(/'/g,''))+'\','+(r.entry||0)+','+(r.stop||0)+','+(r.target1||st&&st.t1||0)+','+(r.target2||st&&st.t2||0)+')" '+
         'style="flex:1;background:rgba(255,106,0,.08);border:1px solid rgba(255,106,0,.25);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--gold);cursor:pointer">📌 보유</button>'+
@@ -9078,7 +9301,12 @@ function holdCardHTML(r, mode, trade){
 // ═══════════════════════════════════════
 // 거래 일지 — 분할 매도 지원
 // ═══════════════════════════════════════
-function openTradeLog(ticker, price){
+function openTradeLog(ticker, price, opts){
+  opts = opts || {};
+  var _pName = (opts.name || '').replace(/"/g,'&quot;');
+  var _pStop = (opts.stop && opts.stop > 0) ? opts.stop : '';
+  var _pT1   = (opts.t1   && opts.t1   > 0) ? opts.t1   : '';
+  var _pT2   = (opts.t2   && opts.t2   > 0) ? opts.t2   : '';
   var modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:flex-end;justify-content:center';
   modal.innerHTML =
@@ -9091,6 +9319,15 @@ function openTradeLog(ticker, price){
           '<input id="tl_entry" type="number" step="0.01" value="'+(price||'')+'" placeholder="0.00" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
         '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">총 주수</div>'+
           '<input id="tl_shares" type="number" placeholder="100" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
+      '</div>'+
+      '<input id="tl_name" type="hidden" value="'+_pName+'">'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">'+
+        '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">손절</div>'+
+          '<input id="tl_stop" type="number" step="0.01" value="'+_pStop+'" placeholder="0.00" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
+        '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">T1</div>'+
+          '<input id="tl_t1" type="number" step="0.01" value="'+_pT1+'" placeholder="0.00" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
+        '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">T2</div>'+
+          '<input id="tl_t2" type="number" step="0.01" value="'+_pT2+'" placeholder="0.00" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:var(--mono);font-size:14px;color:var(--t);outline:none"></div>'+
       '</div>'+
       '<div><div style="font-size:11px;color:var(--t2);margin-bottom:4px">메모</div>'+
         '<input id="tl_memo" type="text" placeholder="예: ORB 브레이크아웃 진입" style="width:100%;background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:10px;font-size:13px;color:var(--t);outline:none"></div>'+
@@ -9107,23 +9344,31 @@ function saveTradeLog(ticker){
   var entry  = parseFloat(document.getElementById('tl_entry').value);
   var shares = parseInt(document.getElementById('tl_shares').value)||0;
   var memo   = document.getElementById('tl_memo').value.trim();
+  var stop   = parseFloat((document.getElementById('tl_stop')||{}).value) || 0;
+  var t1     = parseFloat((document.getElementById('tl_t1')  ||{}).value) || 0;
+  var t2     = parseFloat((document.getElementById('tl_t2')  ||{}).value) || 0;
+  var name   = ((document.getElementById('tl_name')||{}).value || '').trim();
   if(!entry){ showToast('진입가를 입력하세요'); return; }
   var record = {
     id: Date.now(), date: new Date().toLocaleDateString('ko-KR'),
     ticker: ticker,
+    name: name || ticker,   // 워커 알림 표시용
     entry: entry,       // 가중평균 진입가 (추가매수 시 자동 갱신)
     shares: shares,     // 총 매수 주수
     remaining: shares,
+    stop: stop, t1: t1, t2: t2,   // 감시 가격선 (워커 투영이 그대로 사용)
+    watch: true,                  // open이면 텔레그램 감시 대상
     buys: [{            // 매수 내역
       date: new Date().toLocaleDateString('ko-KR'),
       price: entry, shares: shares, memo: memo||'1차 진입'
     }],
     sells: [], exit: null, pnl: null, pnl_pct: null, memo: memo,
     mode: G.currentMode || 'momo', status: 'open',
+    updatedAt: Date.now(),        // ticker 기준 머지/투영용
     card_snapshot: G_cardSnapshots[(G.currentMode||'momo')+'_'+ticker] || null
   };
   G_journal.unshift(record);
-  localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+  saveJournal();
   document.querySelector('div[style*=fixed]')?.remove();
   showToast(ticker+' 진입 기록 완료 · $'+entry+(shares?' · '+shares+'주':''));
   renderJournal(G.currentMode);
@@ -9232,7 +9477,7 @@ function confirmPartialSell(tradeId){
     trade.status='partial';
     trade.pnl=parseFloat(trade.sells.reduce(function(s,sv){return s+sv.pnl;},0).toFixed(2));
   }
-  localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+  saveJournal();
 
   // 전량 매도 시 감시 포지션(holdPositions)도 정리 + Worker KV 동기화
   if(trade.remaining<=0){
@@ -9359,7 +9604,7 @@ function confirmPartialBuy(tradeId){
   trade.shares  = totalSh;
   trade.remaining = (trade.remaining||0) + shares;
 
-  localStorage.setItem('reconJournal', JSON.stringify(G_journal));
+  saveJournal();
   document.querySelector('div[style*=fixed]')?.remove();
   showToast(trade.ticker+' +'+shares+'주 추가 · 평균단가 $'+trade.entry);
   renderJournal(G.currentMode);
@@ -9523,6 +9768,7 @@ function holdAdd() {
   document.getElementById('holdT1').value     = '';
   document.getElementById('holdT2').value     = '';
   holdRender();
+  holdSync();
 }
 
 function holdAutoAdd(ticker, name, entry, stop, t1, t2) {
@@ -9878,6 +10124,7 @@ function renderJournal(mode){
 // 매도/매수 항목 수정·삭제
 // ═══════════════════════════════════════
 function recalcTrade(trade){
+  trade.updatedAt = Date.now();   // 변경 시각 갱신 (감시 투영/머지 타이밍)
   // ── 전체 매수 합산 (총 주수/총 금액)
   if(trade.buys&&trade.buys.length){
     var tv=trade.buys.reduce(function(s,b){return s+b.price*b.shares;},0);
@@ -9956,7 +10203,7 @@ function deleteSellEntry(tradeId, idx){
   if(!confirm('이 매도 기록을 삭제할까요?')) return;
   trade.sells.splice(idx,1);
   recalcTrade(trade);
-  localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+  saveJournal();
   renderJournal(G.currentMode);
   renderOpenPositions(G.currentMode);
   showToast('매도 기록 삭제됨');
@@ -9969,7 +10216,7 @@ function deleteBuyEntry(tradeId, idx){
   if(!confirm('이 매수 기록을 삭제할까요?')) return;
   trade.buys.splice(idx,1);
   recalcTrade(trade);
-  localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+  saveJournal();
   renderJournal(G.currentMode);
   renderOpenPositions(G.currentMode);
   showToast('매수 기록 삭제됨');
@@ -10006,7 +10253,7 @@ function editSellEntry(tradeId, idx){
     if(!price||!shares||price<=0||shares<=0){ showToast('가격과 수량을 확인하세요'); return; }
     s.price=price; s.shares=shares; s.memo=memo;
     recalcTrade(trade);
-    localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+    saveJournal();
     modal.remove();
     renderJournal(G.currentMode);
     renderOpenPositions(G.currentMode);
@@ -10046,7 +10293,7 @@ function editBuyEntry(tradeId, idx){
     if(!price||!shares||price<=0||shares<=0){ showToast('가격과 수량을 확인하세요'); return; }
     b.price=price; b.shares=shares; b.memo=memo;
     recalcTrade(trade);
-    localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+    saveJournal();
     modal.remove();
     renderJournal(G.currentMode);
     renderOpenPositions(G.currentMode);
@@ -10057,8 +10304,10 @@ function editBuyEntry(tradeId, idx){
 
 function deleteTradeLog(id){
   if(!confirm('이 거래 기록을 삭제할까요?')) return;
+  var _gone = G_journal.find(function(t){return t.id===id;});
   G_journal = G_journal.filter(function(t){return t.id!==id;});
-  localStorage.setItem('reconJournal',JSON.stringify(G_journal));
+  saveJournal();
+  if(_gone) journalUnwatch(_gone.ticker, _gone.mode);
   renderJournal(G.currentMode);
 }
 
@@ -10833,6 +11082,34 @@ function detectMarginImprovement(margins) {
   return { improved, reason, details: { grossImproved, opImproved } };
 }
 
+// 영업이익 흑자전환 감지 — '첫 흑자' 변곡점 포착용 (BABYLON 보너스 가점, 게이트 아님)
+// 기준: 최신분기 OP > 0 AND 직전 2분기 OP <= 0 (3분기 패턴으로 일회성 흑자 노이즈 차단)
+function detectProfitTurnaround(marginData) {
+  if (!marginData || marginData.error) return { turned_profitable: false, reason: 'no_data' };
+  const ops = (marginData.opIncome || []).filter(o => o && o.val !== null && o.val !== undefined);
+  if (ops.length < 3) return { turned_profitable: false, reason: 'insufficient_data', quarters_available: ops.length };
+  const sorted = ops.slice().sort((a, b) => new Date(a.end) - new Date(b.end));
+  const latest = sorted[sorted.length - 1];
+  const prev   = sorted[sorted.length - 2];
+  const prev2  = sorted[sorted.length - 3];
+
+  if (latest.val > 0 && prev.val <= 0 && prev2.val <= 0) {
+    return {
+      turned_profitable: true,
+      reason: 'first_op_profit',
+      method: 'operating_income',
+      latest_op_m: Math.round(latest.val / 1e6),
+      prev_op_m: Math.round(prev.val / 1e6),
+      latest_end: latest.end
+    };
+  }
+  return {
+    turned_profitable: false,
+    reason: latest.val > 0 ? 'already_profitable' : 'still_unprofitable',
+    latest_op_m: Math.round(latest.val / 1e6)
+  };
+}
+
 function detectRevenueCollapse(quarters) {
   if (quarters.length < 5) return { collapsing: false };
   const withYoY = quarters.filter(q => q.yoy !== null);
@@ -11090,12 +11367,14 @@ async function analyze(ticker, options = {}) {
     const margins = !marginData.error ? computeQuarterlyMargins(marginData) : [];
     const acceleration = detectAcceleration(revData.quarters);
     const marginImprovement = detectMarginImprovement(margins);
+    const profitTurnaround = detectProfitTurnaround(marginData);
     const revenueCollapse = detectRevenueCollapse(revData.quarters);
     const warnings = checkWarnings({ quarters: revData.quarters, margins });
     const blocks = checkBlocks({ quarters: revData.quarters, margins });
     
     result.stages.acceleration = acceleration;
     result.stages.margin_improvement = marginImprovement;
+    result.stages.profit_turnaround = profitTurnaround;
     result.stages.revenue_collapse = revenueCollapse;
     result.stages.warnings = warnings;
     result.stages.blocks = blocks;
