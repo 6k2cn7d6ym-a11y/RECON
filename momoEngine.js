@@ -90,8 +90,11 @@ function getPDSignatures(r){
 }
 
 function getDumpScore(r){
-  // ★ FIX 2026-05: 메가캡 가드 — $500M 이상은 P&D 평가 대상 아님 (Jim 발견 버그)
-  if (r.marketCap_b != null && r.marketCap_b >= 0.5) return 0;
+  // ★ FIX 2026-05: 시총 가드 — P&D는 마이크로캡 패턴이므로
+  //   (a) 시총 ≥ $500M (메가캡 아님)  또는
+  //   (b) 시총 불명 (Webull 캐시 미스 등)  →  평가 보류 (0 반환)
+  // "모르면 신호 안 냄"이 안전한 원칙. 진짜 마이크로캡은 Webull 랭킹에 들어와 시총 채워짐.
+  if (r.marketCap_b == null || r.marketCap_b >= 0.5) return 0;
   var score=0;
   var all=(r.warnings||[]).concat(r.blockers||[]).join(' ').toLowerCase();
   var news=(r.news||'').toLowerCase();
