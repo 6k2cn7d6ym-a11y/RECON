@@ -1435,7 +1435,10 @@ function renderOpenPositions(mode){
   if(!el) return;
   scheduleJournalSync(mode);
   // 잠시 후(sync 디바운스 끝난 뒤) 고아 배너 갱신 — sync로 정리될 수 있는 것 반영
-  setTimeout(function(){ renderOrphanBanner(mode); }, 1200);
+  // ★ 2026-05-30: step7 페이즈2 (일지 동기화) 검증 완료 전까지 임시 비활성.
+  //   사유: 폰에서 입력한 거래의 KV 투영을 PC가 고아로 오판 → 사용자가 삭제하면 폰 감시 끊김.
+  //   페이즈2(pullJournal/pushJournal)가 들어가면 다시 활성화 예정.
+  // setTimeout(function(){ renderOrphanBanner(mode); }, 1200);
   var openTrades = G_journal.filter(function(t){
     return (t.status==='open'||t.status==='partial') && (t.mode===mode||(t.mode==='momo'&&mode==='momo')||(!t.mode&&mode==='momo'));
   });
