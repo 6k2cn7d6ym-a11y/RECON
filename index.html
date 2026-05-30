@@ -1877,7 +1877,14 @@ function isWatchlistEntryValid(verdict){
   return verdict === 'ENTER' || verdict === 'WATCH_CLAUDE';
 }
 function isWatchlistEntryDegraded(verdict){
-  return verdict === 'WATCH_WEAK' || verdict === 'BLOCK' || verdict === 'NO_DATA' || verdict === 'ERROR';
+  // ★ FIX 2026-05 (Jim 발견): NO_DATA/ERROR 제외
+  //   SEC 일시 장애로 데이터를 못 받았을 뿐 펀더멘털 악화가 아님.
+  //   같은 통에 묶으면 다음 스캔에서 정상 응답이 와도 가짜 "복구" 신호가 생김.
+  return verdict === 'WATCH_WEAK' || verdict === 'BLOCK';
+}
+function isWatchlistEntryNoData(verdict){
+  // 데이터 부족 — 판정 보류 (악화도 복구도 아님)
+  return verdict === 'NO_DATA' || verdict === 'ERROR';
 }
 
 async function runCoreScanner(){
@@ -2034,7 +2041,7 @@ async function runCoreScanner(){
           keptStocks.push({ stock: r.stock, babylon: r.babylon, entry: existing, status: 'kept' });
         }
       } else if(existing && isDegraded){
-        // 기존 + 악화
+        // 기존 + 악화 (진짜 펀더멘털 악화)
         existing.babylon = r.babylon;
         existing.lastRefreshed = nowIso;
         existing.scanCount = (existing.scanCount || 0) + 1;
@@ -2043,6 +2050,17 @@ async function runCoreScanner(){
         if(existing.verdictHistory.length > 20) existing.verdictHistory = existing.verdictHistory.slice(-20);
         existing.lastWasDegraded = true;
         degradedStocks.push({ stock: r.stock, babylon: r.babylon, entry: existing, status: 'degraded' });
+      } else if(existing && isWatchlistEntryNoData(v)){
+        // ★ FIX 2026-05 (Jim 발견): 데이터 일시 누락
+        //   판정/점수 갱신 X, lastWasDegraded 그대로 유지
+        //   → 다음 스캔에 정상 응답이 와도 가짜 "복구" 신호가 안 생김.
+        //   stock/babylon 도 안 덮어씀 (마지막 유효 분석 결과를 그대로 유지).
+        existing.lastRefreshed = nowIso;
+        existing.scanCount = (existing.scanCount || 0) + 1;
+        existing.verdictHistory = existing.verdictHistory || [];
+        existing.verdictHistory.push({ ts: nowIso, verdict: v, reason: reason, pct: null, score: null, dataMiss: true });
+        if(existing.verdictHistory.length > 20) existing.verdictHistory = existing.verdictHistory.slice(-20);
+        // 카테고리 표시 안 함 (kept/degraded/improved 어디에도 안 넣음)
       }
       // 그 외 (신규 + 무효): 무시 (watchlist에 추가 안함)
     });
