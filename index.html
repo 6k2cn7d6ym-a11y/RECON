@@ -583,6 +583,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 
   <div class="sg-title">앱</div>
   <div class="sg-row"><div class="sg-label">RECON v3.1</div><div style="font-family:var(--mono);font-size:11px;color:var(--t2)">SWING 전략 강화</div></div>
+  <div class="sg-row"><div><div class="sg-label">강제 새로고침</div><div class="sg-sub">서비스워커·캐시 비우고 재로드</div></div><button onclick="forceRefresh()" style="background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:7px 14px;font-family:var(--mono);font-size:11px;color:var(--t);cursor:pointer">🔄 새로고침</button></div>
   <div class="sg-row" style="flex-direction:column;align-items:flex-start;gap:6px">
     <div class="sg-label">API 사용량</div>
     <div id="usageBar" style="font-family:var(--mono);font-size:12px;color:var(--bl)">-</div>
@@ -739,8 +740,10 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 <!-- CORE 설정 -->
 <div class="scroll" id="page-core-settings" style="display:none">
   <div class="settings">
-    <div class="sg-title">CORE 설정</div>
-    <div class="sg-row"><div><div class="sg-label">준비 중</div><div class="sg-sub">CORE 전용 조건식 업데이트 예정</div></div></div>
+    <div class="sg-title">CORE 스캔 필터</div>
+    <div class="sg-row"><div><div class="sg-label">최소 가격</div><div class="sg-sub">이하 종목 제외</div></div><div class="sg-val" id="coreFilterPrice" onclick="cycleCoreFilter('coreFilterPrice',['$5','$8','$10','$15','$20'])">$8</div></div>
+    <div class="sg-row"><div><div class="sg-label">최소 거래량</div><div class="sg-sub">일거래량 이하 제외</div></div><div class="sg-val" id="coreFilterVol" onclick="cycleCoreFilter('coreFilterVol',['5만','10만','30만','50만','100만'])">10만</div></div>
+    <div class="sg-row"><div><div class="sg-label">최소 시총</div><div class="sg-sub">이 미만 제외</div></div><div class="sg-val" id="coreFilterCap" onclick="cycleCoreFilter('coreFilterCap',['$1B','$5B','$10B','$20B','$50B','$100B'])">$10B</div></div>
     <div class="sg-title">공통 설정</div>
     <div class="sg-row"><div><div class="sg-label">API Key</div><div class="sg-sub">MOMO 설정에서 입력</div></div><div style="font-family:var(--mono);font-size:11px;color:var(--g)" id="coreKeyStatus">--</div></div>
   </div>
@@ -1849,6 +1852,9 @@ async function fetchKisMarketScreener(opts){
 async function coreScanFetchUniverse(onProgress){
   var pool = {};  // ticker → stock info (중복 제거)
   
+  // ★ 사용자 설정 읽기 (없으면 기본값)
+  var uf = (typeof getCoreFilters === 'function') ? getCoreFilters() : { priceMin:8, volMin:100000, capMin:10000000 };
+
   // KIS valx 단위 확인 (2026-04-24): $1,000 (천달러)
   // 검증: NVDA valx=4894316460 → $4.89T, MSFT valx=3128326584 → $3.13T
   //
@@ -1863,6 +1869,12 @@ async function coreScanFetchUniverse(onProgress){
     { min: 200000000,  max: 1000000000, label: '$200B~$1T' },
     { min: 1000000000, max: undefined,  label: '$1T+' },
   ];
+  // ★ 사용자 capMin 적용: capMin 아래 밴드 드롭 + 첫 살아남은 밴드의 min을 capMin으로 올림
+  capBands = capBands.filter(function(b){ return b.max === undefined || b.max > uf.capMin; });
+  if(capBands.length && capBands[0].min < uf.capMin){
+    capBands[0] = { min: uf.capMin, max: capBands[0].max, label: '$'+uf.capMinBillion+'B~'+(capBands[0].max ? '$'+(capBands[0].max/1000000)+'B' : '∞') };
+  }
+
   var excds = ['NAS', 'NYS'];  // AMS는 대부분 페니스탁, 베이비 자이언트 적어서 제외
   
   var total = capBands.length * excds.length;
@@ -1879,8 +1891,8 @@ async function coreScanFetchUniverse(onProgress){
           excd:     excd,
           capMin:   band.min,
           capMax:   band.max,
-          volMin:   100000,   // 10만주+ (일거래량)
-          priceMin: 10,       // $10+
+          volMin:   uf.volMin,
+          priceMin: uf.priceMin,
         });
         results.forEach(function(s){
           if(!pool[s.ticker]) pool[s.ticker] = s;
@@ -9365,6 +9377,73 @@ function cycle(id,vals){
   el.textContent=vals[(i+1)%vals.length];
 }
 
+// ═══════════════════════════════════════
+// ★ CORE 스캔 필터 (사용자 설정, localStorage 영속)
+//   - cycleCoreFilter: 값 변경 + 즉시 저장
+//   - loadCoreFilters: 페이지 로드 시 텍스트 복원
+//   - getCoreFilters: 스캐너에서 호출 (숫자값으로 변환해 반환)
+// ═══════════════════════════════════════
+function cycleCoreFilter(id, vals){
+  var el = document.getElementById(id);
+  if(!el) return;
+  var i = vals.indexOf(el.textContent);
+  el.textContent = vals[(i+1) % vals.length];
+  // 즉시 저장
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem('coreFilters') || '{}'); } catch(e){}
+  saved[id] = el.textContent;
+  localStorage.setItem('coreFilters', JSON.stringify(saved));
+}
+
+// ═══════════════════════════════════════
+// ★ 강제 새로고침: PWA 캐시·서비스워커 끊기
+//   홈앱(PWA)에서 강력 새로고침이 안 될 때 사용.
+// ═══════════════════════════════════════
+async function forceRefresh(){
+  if(!confirm('서비스워커·캐시를 비우고 새로고침합니다.\n진행 중이던 작업은 사라집니다. 계속?')) return;
+  try{
+    if('serviceWorker' in navigator){
+      var regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(function(r){ return r.unregister(); }));
+    }
+    if('caches' in window){
+      var keys = await caches.keys();
+      await Promise.all(keys.map(function(k){ return caches.delete(k); }));
+    }
+  }catch(e){ /* 일부 실패해도 reload는 진행 */ }
+  // ?_t= 쿼리로 캐시 우회
+  var u = location.href.split('?')[0] + '?_t=' + Date.now();
+  location.replace(u);
+}
+
+function loadCoreFilters(){
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem('coreFilters') || '{}'); } catch(e){ return; }
+  Object.keys(saved).forEach(function(id){
+    var el = document.getElementById(id);
+    if(el && saved[id]) el.textContent = saved[id];
+  });
+}
+
+function getCoreFilters(){
+  // 텍스트 값 → 스캐너가 쓸 숫자값으로 변환
+  // 기본값: priceMin $8, volMin 10만주, capMin $10B
+  var priceEl = document.getElementById('coreFilterPrice');
+  var volEl   = document.getElementById('coreFilterVol');
+  var capEl   = document.getElementById('coreFilterCap');
+  var priceTxt = (priceEl && priceEl.textContent) || '$8';
+  var volTxt   = (volEl   && volEl.textContent)   || '10만';
+  var capTxt   = (capEl   && capEl.textContent)   || '$10B';
+  // 파싱
+  var priceMin = parseInt(priceTxt.replace(/[^0-9]/g,''), 10) || 8;
+  var volMin   = parseInt(volTxt.replace(/[^0-9]/g,''),   10) || 10;
+  volMin = volTxt.indexOf('만') >= 0 ? volMin * 10000 : volMin;   // '5만' → 50000
+  var capB = parseInt(capTxt.replace(/[^0-9]/g,''), 10) || 10;     // '$10B' → 10
+  // KIS valx 단위: 천달러 ($1,000). $1B = 1,000,000 KIS units.
+  var capMinKis = capB * 1000000;
+  return { priceMin: priceMin, volMin: volMin, capMin: capMinKis, capMinBillion: capB };
+}
+
 function renderUsage(){
   var today=new Date().toLocaleDateString('ko-KR');
   if(G.usageDate!==today){ G.usageDate=today; G.apiUsage={calls:0,input:0,output:0,cost:0}; localStorage.setItem('apexUsageDate',today); localStorage.setItem('apexUsage',JSON.stringify(G.apiUsage)); }
@@ -10227,6 +10306,8 @@ async function checkMarketRegime(){
 
 // 대시보드 데이터 로드 (최초 1회)
 loadAllMarket();
+// ★ CORE 필터 사용자 설정 복원 (페이지 로드 시 텍스트 텍스트 복구)
+if(typeof loadCoreFilters === 'function') loadCoreFilters();
 // SPY 방향 3분마다 자동 갱신 (MOMO 필터 최신화)
 setInterval(checkMarketRegime, 3*60*1000);
 
@@ -10300,7 +10381,26 @@ const GROSS_PROFIT_TAGS = ['GrossProfit'];
 const OP_INCOME_TAGS = ['OperatingIncomeLoss','OperatingIncome'];
 
 let tickerCIKCache = null;
+// ★ 2026-05-31 (메모리 픽스): factsCache를 LRU 캐시로 전환
+//   - SEC company facts 응답은 종목당 1~5MB. 무한 누적 시 500종목 스캔에 500MB~2GB 폭증.
+//   - JS Map은 insertion order 보존하므로, set 시 size 초과면 oldest key delete.
+//   - 같은 종목 재방문 시(across-scan or rescan) hit하면 끝으로 이동(touch).
 const factsCache = new Map();
+const FACTS_CACHE_MAX = 20;
+function _factsCacheGet(key){
+  if(!factsCache.has(key)) return undefined;
+  const v = factsCache.get(key);
+  factsCache.delete(key); factsCache.set(key, v);  // touch → 끝으로
+  return v;
+}
+function _factsCacheSet(key, value){
+  if(factsCache.has(key)) factsCache.delete(key);  // 재삽입은 끝으로
+  factsCache.set(key, value);
+  if(factsCache.size > FACTS_CACHE_MAX){
+    const oldest = factsCache.keys().next().value;
+    factsCache.delete(oldest);
+  }
+}
 
 async function loadTickerCIKMap() {
   if (tickerCIKCache) return tickerCIKCache;
@@ -10325,14 +10425,15 @@ async function tickerToCIK(ticker) {
 
 async function fetchCompanyFacts(ticker) {
   const key = ticker.toUpperCase();
-  if (factsCache.has(key)) return factsCache.get(key);
+  const cached = _factsCacheGet(key);
+  if (cached) return cached;
   const { cik, title } = await tickerToCIK(ticker);
   const url = `${SEC_PROXY_BASE}/api/xbrl/companyfacts/CIK${cik}.json`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Facts fetch failed for ${ticker}: HTTP ${res.status}`);
   const data = await res.json();
   const result = { cik, title, facts: data.facts };
-  factsCache.set(key, result);
+  _factsCacheSet(key, result);
   return result;
 }
 
