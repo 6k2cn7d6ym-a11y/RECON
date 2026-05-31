@@ -10238,10 +10238,12 @@ setInterval(checkMarketRegime, 3*60*1000);
 (async function _initJournalSync(){
   try{
     await Promise.all(['momo','swing','core'].map(function(m){ return pullJournal(m); }));
-    // 첫 pull 후 현재 모드 push: 로컬에만 있는 거래(서버 아직 모름)를 한 번 올림
-    var cm = (typeof G !== 'undefined' && G.currentMode) || 'momo';
-    await pushJournal(cm);
+    // ★ FIX 2026-05-30: 첫 pull 후 모든 모드 push (로컬에만 있는 거래를 서버에 올림)
+    //   이전에 현재 모드 1개만 push해서, 다른 모드 거래가 서버에 못 가던 버그 수정.
+    //   빈 모드는 pushJournal 내부에서 trades.length===0이면 조용히 return.
+    await Promise.all(['momo','swing','core'].map(function(m){ return pushJournal(m); }));
     // 보유중 영역 갱신 (서버에서 새 거래 받았을 수 있음)
+    var cm = (typeof G !== 'undefined' && G.currentMode) || 'momo';
     if(typeof renderOpenPositions === 'function') renderOpenPositions(cm);
   }catch(e){ /* 오프라인이면 다음 saveJournal 때 자연 복구 */ }
 })();
