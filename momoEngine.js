@@ -413,9 +413,10 @@ function momoEngine(ydata, ctx){
       preSetup = {type:'MOMENTUM', bonus:10, reason:'갭 +'+gap.toFixed(0)+'% + 뉴스 촉매 + VWAP 위 유지'};
     }
     // ⑤ REVERSAL — PM 저점에서 강한 반등 (폭등 초입 포착)
-    else if(_pmH && _pmL && price > _pmL * 1.08 && (_pmH - _pmL) / _pmL > 0.15){
+    //    VWAP 가드 추가: 떨어지는 칼(VWAP 한참 아래) 배제 — 반등이 VWAP 근접/회복 중일 때만
+    else if(_pmH && _pmL && price > _pmL * 1.08 && (_pmH - _pmL) / _pmL > 0.15 && (!_vw || price >= _vw * 0.97)){
       var revBounce = ((price - _pmL) / _pmL * 100).toFixed(1);
-      preSetup = {type:'REVERSAL', bonus:8, reason:'PM 저점 $'+_pmL.toFixed(2)+' 대비 +'+revBounce+'% 반등 (스윕 가능성)'};
+      preSetup = {type:'REVERSAL', bonus:8, reason:'PM 저점 $'+_pmL.toFixed(2)+' 대비 +'+revBounce+'% 반등 (VWAP 근접/회복)'};
     }
 
     if(preSetup){

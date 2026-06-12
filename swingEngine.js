@@ -26,11 +26,18 @@
 
 'use strict';
 
+// ── 환경 가드: 브라우저는 DOM 설정값, Node 봇은 fallback 사용 ──
+function _swCfg(id, fallback){
+  if(typeof document === 'undefined' || !document.getElementById) return fallback;
+  var el = document.getElementById(id);
+  return (el && el.textContent != null) ? el.textContent : fallback;
+}
+
 // ── 상수 ──
 var SWING_ENTER_SCORE  = 70;  // ENTER 최소 점수
 var SWING_WATCH_SCORE  = 40;  // WATCH 최소 점수
 var SWING_MIN_COND     = 4;   // 진입 신호 발화 최소 조건 수
-var SWING_T1_MIN_DIST  = 0.02;
+var SWING_T1_MIN_DIST  = 0.01;  // 백테스트 정렬 (2026-06): 2%→1% — 가까운 저항도 T1 후보로 (도달률↑)
 var SWING_T2_MIN_GAP   = 0.05;
 
 // ── 타입별 핵심 조건 정의 ──
@@ -68,9 +75,7 @@ function swingEngine(ydata, swingData) {
   var ma20  = swingData.ma20;
   var ma60  = swingData.ma60;
 
-  var swingMinT1Pct = parseFloat(
-    ((document.getElementById('swingMinT1Pct') || {textContent: '8'}).textContent) || '8'
-  );
+  var swingMinT1Pct = parseFloat(_swCfg('swingMinT1Pct', '5') || '5');
 
   // ══════════════════════════════════════
   // 1. 거시 게이트 (VIX + 주봉 MA + 어닝)
@@ -130,46 +135,56 @@ function swingEngine(ydata, swingData) {
     else if (ma20)                                           sEntry = parseFloat((ma20 * 1.01).toFixed(2));
     else                                                     sEntry = parseFloat(price.toFixed(2));
 
+    // ── 손절: 백테스트 최적화 (2026-06) — 2×ATR 기반 (변동성 비례) ──
+    //   기존 -5% 고정은 스윙 노이즈에 과도하게 쓸림 (백테스트 승률 31%→53%).
+    //   2×ATR 손절 + 2.5×ATR T1 조합이 120/250일 양 기간에서 안정적 +1.5~1.8% 기대값.
+    var _atr = swingData.atr20 || (sEntry * 0.03);  // ATR 없으면 3% 근사
     var isLargeGap = ma20Gap !== null && ma20Gap > 15;
-    var stopMult   = isLargeGap ? 0.93 : 0.95;
+    var atrStop    = parseFloat((sEntry - 2.0 * _atr).toFixed(2));   // 2×ATR (백테스트 최적)
     var ma20Stop   = (!isLargeGap && ma20) ? parseFloat((ma20 * 0.97).toFixed(2)) : null;
-    var sStop = parseFloat(Math.max(
-      sEntry * stopMult,
-      ma20Stop !== null ? ma20Stop : 0
-    ).toFixed(2));
+    // 손절은 2×ATR 우선. MA20 -3%가 더 넓으면(아래면) 그걸 사용 — 노이즈 손절 방지.
+    //   진입가 -10% 밑으로는 안 내려가게 캡 (대형주 ATR 과대 방지)
+    var stopFloor = parseFloat((sEntry * 0.90).toFixed(2));
+    var sStop = atrStop;
+    if (ma20Stop !== null && ma20Stop < atrStop) sStop = ma20Stop;  // MA20이 더 넓으면 채택
+    if (sStop < stopFloor) sStop = stopFloor;                       // -10% 캡
+    sStop = parseFloat(sStop.toFixed(2));
+    if (sStop >= sEntry) sStop = parseFloat((sEntry - 1.5 * _atr).toFixed(2)); // 안전장치
     var sRisk = sEntry - sStop;
     var stopPctActual = sRisk > 0 ? ((sStop - sEntry) / sEntry * 100).toFixed(0) : '-5';
 
-    // ── T1/T2: 저항 사다리 ──
+    // ── T1/T2: 저항 사다리 우선, ATR 하한 적용 (백테스트 resY 최적) ──
     var _levels = swingData.resistanceLevels || [];
     var _above  = [];
     for (var li = 0; li < _levels.length; li++) {
       if (_levels[li].price > sEntry * (1 + SWING_T1_MIN_DIST)) _above.push(_levels[li]);
     }
 
+    var _t1AtrMin = parseFloat((sEntry + 2.5 * _atr).toFixed(2));  // T1 ATR 하한 2.5×
+    var _t2AtrMin = parseFloat((sEntry + 5.0 * _atr).toFixed(2));  // T2 ATR 하한 5×
+
     var sT1, sT2, t1Src = 'resistance', t2Src = 'resistance';
     var t1Strong = false, t2Strong = false;
 
     if (_above.length > 0) {
       var _z1 = _above[0];
-      sT1      = parseFloat((_z1.price * 0.99).toFixed(2));
-      t1Strong = !!_z1.strong;
+      var _resT1 = parseFloat((_z1.price * 0.99).toFixed(2));
+      // 저항이 2.5×ATR 이상 멀면 저항 사용, 너무 가까우면 ATR 하한 사용
+      if (_resT1 >= _t1AtrMin) { sT1 = _resT1; t1Strong = !!_z1.strong; }
+      else                     { sT1 = _t1AtrMin; t1Src = 'atr_floor'; }
       var _z2  = null;
       for (var li2 = 1; li2 < _above.length; li2++) {
-        if (_above[li2].price >= _z1.price * (1 + SWING_T2_MIN_GAP)) { _z2 = _above[li2]; break; }
+        if (_above[li2].price >= sT1 * (1 + SWING_T2_MIN_GAP)) { _z2 = _above[li2]; break; }
       }
-      if (_z2) {
+      if (_z2 && _z2.price * 0.99 >= _t2AtrMin) {
         sT2 = parseFloat((_z2.price * 0.99).toFixed(2)); t2Strong = !!_z2.strong;
       } else {
-        var _atr2 = swingData.atr20 ? parseFloat((sEntry + swingData.atr20 * 8).toFixed(2)) : 0;
-        sT2 = Math.max(_atr2, parseFloat((sT1 * 1.12).toFixed(2))); t2Src = 'est';
+        sT2 = _t2AtrMin; t2Src = 'est';
       }
     } else {
       t1Src = 'est'; t2Src = 'est';
-      var _a3 = swingData.atr20 ? parseFloat((sEntry + swingData.atr20 * 3).toFixed(2)) : 0;
-      sT1 = Math.max(_a3, parseFloat((sEntry * 1.10).toFixed(2)));
-      var _a8 = swingData.atr20 ? parseFloat((sEntry + swingData.atr20 * 8).toFixed(2)) : 0;
-      sT2 = Math.max(_a8, parseFloat((sEntry * 1.25).toFixed(2)));
+      sT1 = _t1AtrMin;
+      sT2 = _t2AtrMin;
     }
     if (sT2 < sT1 * 1.10) sT2 = parseFloat((sT1 * 1.15).toFixed(2));
 
@@ -261,14 +276,19 @@ function swingEngine(ydata, swingData) {
   // ══════════════════════════════════════
   // 4. T1 상방 필터
   // ══════════════════════════════════════
+  // ── T1 협소 게이트 (백테스트 반영 2026-06) ──
+  //   백테스트: 가까운 T1(2.5×ATR)이 먼 T1(8%+)보다 승률·기대값 우수.
+  //   따라서 T1이 최소치 미만이어도 T2 상방이 충분하면 BLOCK 안 함 (기회 보존).
+  //   T1·T2 둘 다 협소할 때만 차단.
   if (r.target1_pct !== null && r.target1_pct !== undefined && r.target1_pct < swingMinT1Pct) {
-    var _t2Narrow = (r.target2_pct === null || r.target2_pct === undefined || r.target2_pct < swingMinT1Pct);
+    var _t2Floor = swingMinT1Pct * 2;  // T2는 최소치의 2배(예: 10%) 이상이어야 의미
+    var _t2Narrow = (r.target2_pct === null || r.target2_pct === undefined || r.target2_pct < _t2Floor);
     if (_t2Narrow) {
       r.blockers.push('[SWING] T1 +' + r.target1_pct + '% · T2 +' + (r.target2_pct != null ? r.target2_pct : '-') + '% — 상방 전 구간 협소');
       r.action = 'BLOCK'; return r;
     }
-    r.warnings.push('[SWING] T1 +' + r.target1_pct + '% 협소 (최소 ' + swingMinT1Pct + '% 미만) — 눌림 대기 / T2 +' + r.target2_pct + '%');
-    r.score = Math.max(0, r.score - 10);
+    r.warnings.push('[SWING] T1 +' + r.target1_pct + '% 근접 익절 (T2 +' + r.target2_pct + '% 추세 보유)');
+    r.score = Math.max(0, r.score - 4);  // 감점 완화 (기존 -10 → -4)
   }
 
   // ── 최소 조건 게이트 ──
@@ -323,12 +343,9 @@ function swingEngine(ydata, swingData) {
   if (!levInfo) {
     var capB   = ydata.marketCap_b;
     var avgVol = ydata.avgVolume;
-    var minCapEl = document.getElementById('swingMinCap');
-    var maxCapEl = document.getElementById('swingMaxCap');
-    var minVolEl = document.getElementById('swingMinVol');
-    var minCapStr = minCapEl ? minCapEl.textContent : '$500M';
-    var maxCapStr = maxCapEl ? maxCapEl.textContent : '$10B';
-    var minVolStr = minVolEl ? minVolEl.textContent : '50만';
+    var minCapStr = _swCfg('swingMinCap', '$500M');
+    var maxCapStr = _swCfg('swingMaxCap', '$10B');
+    var minVolStr = _swCfg('swingMinVol', '50만');
     var minCapB = minCapStr === '없음' ? 0 : minCapStr === '$300M' ? 0.3 : minCapStr === '$500M' ? 0.5 : minCapStr === '$1B' ? 1 : 0;
     var maxCapB = maxCapStr === '없음' ? 99999 : maxCapStr === '$5B' ? 5 : maxCapStr === '$10B' ? 10 : maxCapStr === '$20B' ? 20 : 99999;
     var minVolK = minVolStr === '없음' ? 0 : minVolStr === '30만' ? 300000 : minVolStr === '50만' ? 500000 : minVolStr === '100만' ? 1000000 : 0;
@@ -343,7 +360,7 @@ function swingEngine(ydata, swingData) {
   } else {
     var mult = levInfo.mult;
     var absM = Math.abs(mult);
-    var swingHoldDays = parseInt(((document.getElementById('swingHoldDays') || {textContent: '10'}).textContent) || '10');
+    var swingHoldDays = parseInt(_swCfg('swingHoldDays', '10') || '10');
     var maxSafeDays   = absM >= 3 ? 5 : 7;
     r.is_lev_etf = true; r.lev_mult = mult; r.lev_base = levInfo.base; r.lev_base_ticker = levInfo.baseTicker;
     r.float_m = null; r.short_pct = null; r.slippage_risk = 'low';
@@ -504,6 +521,11 @@ function calcSwingEntrySignal(r) {
   };
 }
 
-// ── 전역 노출 ──
-window.swingEngine           = swingEngine;
-window.calcSwingEntrySignal  = calcSwingEntrySignal;
+// ── 모듈 export (Node + 브라우저 양쪽 호환) ──
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { swingEngine: swingEngine, calcSwingEntrySignal: calcSwingEntrySignal };
+}
+if (typeof window !== 'undefined') {
+  window.swingEngine          = swingEngine;
+  window.calcSwingEntrySignal = calcSwingEntrySignal;
+}
