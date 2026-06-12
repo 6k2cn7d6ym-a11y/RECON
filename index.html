@@ -7182,25 +7182,38 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
         await new Promise(function(res){ setTimeout(res, retryDelays[_attempt]); });
       }
       try{
-        var _d = await res.json();
+        // ── 응답 방어: 구 Worker는 /recon/claude 라우트가 없어 텍스트("RECON Worker OK")를 200으로 반환 ──
+        var _raw = await res.text();
+        if(_raw.indexOf('RECON Worker OK') === 0){
+          var _we = new Error('Worker가 구버전입니다 — /recon/claude 라우트 없음. Cloudflare 대시보드에서 새 worker.js를 배포하세요');
+          _we._fatal = true; throw _we;
+        }
+        var _d;
+        try{ _d = JSON.parse(_raw); }
+        catch(_pe){
+          var _je = new Error('Worker 응답이 JSON이 아님 (HTTP '+res.status+'): '+_raw.slice(0,60));
+          _je._fatal = true; throw _je;
+        }
         if(_d.error){
-          var errType = _d.error.type || '';
-          // Overloaded/rate_limit → 재시도, 나머지 → 즉시 throw
+          // Anthropic 형식(객체) / Worker 형식(문자열) 모두 대응
+          var errType = (_d.error && _d.error.type) || '';
+          var errMsg  = (typeof _d.error === 'string') ? _d.error : (_d.error.message || JSON.stringify(_d.error));
           if(errType === 'overloaded_error' || errType === 'rate_limit_error' || res.status === 429 || res.status === 529){
-            lastErr = new Error(_d.error.message);
+            lastErr = new Error(errMsg);
             continue; // 재시도
           }
-          throw new Error(_d.error.message);
+          var _ae = new Error(errMsg); _ae._fatal = true; throw _ae;
         }
         data = _d;
         break; // 성공 → 루프 종료
       }catch(fetchErr){
         lastErr = fetchErr;
+        if(fetchErr._fatal) break;          // 재시도 무의미한 오류는 즉시 중단
         if(_attempt < retryDelays.length - 1) continue;
       }
     }
     if(!data) throw lastErr || new Error('API 요청 실패');
-    if(data.error) throw new Error(data.error.message);
+    if(data.error) throw new Error(typeof data.error === 'string' ? data.error : (data.error.message || 'API 오류'));
 
     // 사용량 추적
     if(data.usage){
