@@ -44,22 +44,32 @@ var SWING_T2_MIN_GAP   = 0.05;
 // ── 스윙 적합성 필터 (스크리너 정제용 — 2026-06) ──
 //   부적합: 초저가/초고가, 저변동성(잔잔), 초대형. 스윙은 변동성 있는 중소형 성장주가 맞음.
 var SWING_FIT_PRICE_MIN = 10;    // $10 미만: 조작·세금손실 매물·저유동
-var SWING_FIT_PRICE_MAX = 150;   // $150 초과: 소액계좌 진입 불가(1주가 큰 비중)
-var SWING_FIT_ATRPCT_MIN = 2.5;  // ATR% 2.5% 미만: 변동성 부족(은행·REIT·유틸) — 스윙 먹을 게 없음
-var SWING_FIT_CAP_MAX_B  = 100;  // 시총 $100B 초과: 초대형주는 스윙 변동성 부족
+var SWING_FIT_PRICE_MAX = 150;   // $150 초과: 소액계좌 진입 불가 — 계좌적합성(sizeEngine)이 처리. 수익성 필터엔 미적용.
+var SWING_FIT_ATRPCT_MIN = 2.5;  // ATR% 2.5% 미만: 변동성 부족(은행·REIT·유틸) — 스윙 먹을 게 없음 (직접 측정)
+var SWING_FIT_AVGVOL_MIN = 500000;  // 일평균 거래량 50만주 미만: 유동성 부족(진입·청산 슬리피지)
+var SWING_FIT_RVOL_MIN   = 0.3;     // RVol 0.3x 미만: 거래 고갈(ASTC 0.04x 같은 비정상)
+// 시총 상한 제거: 변동성은 ATR%로 직접 재므로 시총은 중복 대리지표. AMD/NVDA 같은 변동성 큰 대형주를 부당하게 막았음.
 // 반환: { fit:bool, reasons:[] } — 부적합 사유 목록
-function swingFitness(price, atr20, marketCap_b){
+//   avgVolume/rvol은 선택 인자 (스크리너에서 가용 시 전달)
+//   includePriceMax: 가격 상한($150) 적용 여부. 기본 true.
+//     - 스크리너/카드: false (계좌 적합성은 sizeEngine이 권장수량으로 표시)
+//     - (가격 상한은 수익성과 무관 — 계좌 크기 이슈일 뿐)
+function swingFitness(price, atr20, marketCap_b, avgVolume, rvol, includePriceMax){
+  if (includePriceMax === undefined) includePriceMax = true;
   var reasons = [];
   if (price != null){
     if (price < SWING_FIT_PRICE_MIN) reasons.push('초저가 $'+price+' (<$'+SWING_FIT_PRICE_MIN+')');
-    if (price > SWING_FIT_PRICE_MAX) reasons.push('초고가 $'+price+' (>$'+SWING_FIT_PRICE_MAX+')');
+    if (includePriceMax && price > SWING_FIT_PRICE_MAX) reasons.push('초고가 $'+price+' (>$'+SWING_FIT_PRICE_MAX+')');
   }
   if (price != null && atr20 != null && price > 0){
     var atrPct = atr20 / price * 100;
     if (atrPct < SWING_FIT_ATRPCT_MIN) reasons.push('저변동성 ATR '+atrPct.toFixed(1)+'% (<'+SWING_FIT_ATRPCT_MIN+'%)');
   }
-  if (marketCap_b != null && marketCap_b > SWING_FIT_CAP_MAX_B){
-    reasons.push('초대형 $'+Math.round(marketCap_b)+'B (>$'+SWING_FIT_CAP_MAX_B+'B)');
+  if (avgVolume != null && avgVolume > 0 && avgVolume < SWING_FIT_AVGVOL_MIN){
+    reasons.push('저유동성 평균 '+Math.round(avgVolume/1000)+'K주 (<'+(SWING_FIT_AVGVOL_MIN/1000)+'K)');
+  }
+  if (rvol != null && rvol > 0 && rvol < SWING_FIT_RVOL_MIN){
+    reasons.push('거래 고갈 RVol '+rvol.toFixed(2)+'x (<'+SWING_FIT_RVOL_MIN+'x)');
   }
   return { fit: reasons.length === 0, reasons: reasons };
 }

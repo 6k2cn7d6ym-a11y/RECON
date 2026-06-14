@@ -3165,18 +3165,28 @@ async function runSwingScreener(){
           if(decision.action === 'BLOCK') return null;
 
           // ── 스윙 적합성 필터 (스크리너 정제) — 부적합 종목 완전 제외 ──
+          // 시총 폴백: chart meta엔 시총 없음 → Webull 캐시로 보강 (SAN 같은 대형주 거르기)
+          var _capB = ydata.marketCap_b;
+          if(_capB == null){
+            try{ await _ensureWbMarketCapCache(); if(_WB_CAP_CACHE.map[q.symbol]) _capB = _WB_CAP_CACHE.map[q.symbol]; }catch(e){}
+          }
+          var _avgVol = swingData.vol20avg || ydata.avgVolume || null;
+          var _rvol = ydata.rvol || null;
           var _fitReasons = [];
           if(typeof swingFitness === 'function'){
-            var _fit = swingFitness(ydata.price, swingData.atr20, ydata.marketCap_b);
+            // 가격 상한 제외(false) — 수익성/유동성만 거름. 계좌별 진입가능성은 sizeEngine이 카드에서 판단.
+            var _fit = swingFitness(ydata.price, swingData.atr20, _capB, _avgVol, _rvol, false);
             if(!_fit.fit) _fitReasons = _fit.reasons;
           } else {
-            // 폴백: swingEngine.js 구버전이어도 가격/변동성 필터는 작동
-            var _p = ydata.price, _a = swingData.atr20, _c = ydata.marketCap_b;
-            if(_p != null && (_p < 10 || _p > 150)) _fitReasons.push('가격');
+            // 폴백: swingEngine.js 구버전이어도 핵심 필터는 작동 (가격 상한 제외)
+            var _p = ydata.price, _a = swingData.atr20;
+            if(_p != null && _p < 10) _fitReasons.push('초저가');
             if(_p != null && _a != null && _p > 0 && (_a/_p*100) < 2.5) _fitReasons.push('저변동');
-            if(_c != null && _c > 100) _fitReasons.push('초대형');
+            if(_capB != null && _capB > 100) _fitReasons.push('초대형');
+            if(_avgVol != null && _avgVol > 0 && _avgVol < 500000) _fitReasons.push('저유동');
+            if(_rvol != null && _rvol > 0 && _rvol < 0.3) _fitReasons.push('거래고갈');
           }
-          if(_fitReasons.length > 0) return null;  // 부적합 → 후보에서 제외
+          if(_fitReasons.length > 0) return null;  // 수익성/유동성 부적합 → 제외
 
           return {
             ticker:   q.symbol,
@@ -8214,7 +8224,7 @@ function cardHTML(r, mode){
   if(ac==='BLOCK')                 tags+='<span class="tag tr">BLOCK</span>';
   // 스윙 부적합 경고 (개별 분석 시 — 스크리너는 이미 제외됨)
   if(r._mode==='swing' && typeof swingFitness==='function' && r.entry){
-    var _sf = swingFitness(r.price||r.entry, r.atr20, r.marketCap_b);
+    var _sf = swingFitness(r.price||r.entry, r.atr20, r.marketCap_b, r.vol20avg||r.avgVolume, r.rvol, false);  // 가격상한 제외 — 계좌적합성은 권장수량이 표시
     if(!_sf.fit){
       tags+='<span class="tag" style="color:var(--a);background:rgba(255,170,0,.1);border:1px solid var(--a)">⚠ 스윙부적합 ('+_sf.reasons[0].split(' ')[0]+')</span>';
     }
