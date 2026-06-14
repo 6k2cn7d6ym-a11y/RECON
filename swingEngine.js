@@ -561,4 +561,6 @@ if (typeof window !== 'undefined') {
   window.swingEngine          = swingEngine;
   window.calcSwingEntrySignal = calcSwingEntrySignal;
   window.swingFitness         = swingFitness;
+  window.SWING_ENGINE_VERSION = '2026-06-14-fitness';  // 배포 확인용 — 콘솔에서 window.SWING_ENGINE_VERSION
+  console.log('[RECON] swingEngine loaded:', window.SWING_ENGINE_VERSION);
 }

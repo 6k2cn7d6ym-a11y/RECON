@@ -3165,10 +3165,18 @@ async function runSwingScreener(){
           if(decision.action === 'BLOCK') return null;
 
           // ── 스윙 적합성 필터 (스크리너 정제) — 부적합 종목 완전 제외 ──
+          var _fitReasons = [];
           if(typeof swingFitness === 'function'){
             var _fit = swingFitness(ydata.price, swingData.atr20, ydata.marketCap_b);
-            if(!_fit.fit) return null;  // 초저가/초고가/저변동/초대형 → 후보에서 제외
+            if(!_fit.fit) _fitReasons = _fit.reasons;
+          } else {
+            // 폴백: swingEngine.js 구버전이어도 가격/변동성 필터는 작동
+            var _p = ydata.price, _a = swingData.atr20, _c = ydata.marketCap_b;
+            if(_p != null && (_p < 10 || _p > 150)) _fitReasons.push('가격');
+            if(_p != null && _a != null && _p > 0 && (_a/_p*100) < 2.5) _fitReasons.push('저변동');
+            if(_c != null && _c > 100) _fitReasons.push('초대형');
           }
+          if(_fitReasons.length > 0) return null;  // 부적합 → 후보에서 제외
 
           return {
             ticker:   q.symbol,
