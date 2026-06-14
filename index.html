@@ -1556,7 +1556,7 @@ function renderOpenPositions(mode){
             '<div style="font-family:var(--mono);font-size:11px;color:var(--t)">'+t.date+'</div>'+
           '</div>'+
         '</div>'+
-        renderExitGuide(t)+
+        renderExitGuide(t, mode)+
         '<div style="display:flex;gap:6px">'+
           '<button onclick="rescanOpenTrade(\''+mode+'\',\''+t.ticker+'\')" '+
             'style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">↻ 재분석</button>'+
@@ -3641,6 +3641,23 @@ async function fetchYahooData(ticker){
       if(IS_PRE){ result.price = latestClose || meta.regularMarketPrice || null; result.preMarketPrice = result.price; }
       else { result.price = meta.regularMarketPrice || latestClose || null; }
 
+      // ── 데이터 신뢰도 (data_confidence) — 과신 방지용 ──
+      //   MOMO ENTER 강등 판단에 사용. 시세가 오래됐거나 호가 없으면 신호 신뢰도↓.
+      var _mktState = meta.marketState || null;  // REGULAR / PRE / POST / CLOSED
+      var _qTime = meta.regularMarketTime ? meta.regularMarketTime * 1000 : null;
+      var _ageMin = _qTime ? (Date.now() - _qTime) / 60000 : null;
+      var _quoteConf;
+      if(_mktState === 'REGULAR') _quoteConf = 'live';
+      else if(_mktState === 'PRE' || _mktState === 'POST') _quoteConf = 'session'; // 프리/애프터 — MOMO 정상
+      else if(_ageMin !== null && _ageMin > 30) _quoteConf = 'stale';  // 마감 30분+ 경과
+      else _quoteConf = 'delayed';
+      result.data_confidence = {
+        quote: _quoteConf,
+        marketState: _mktState,
+        ageMin: _ageMin !== null ? Math.round(_ageMin) : null,
+        // marketCap/rvol/spread는 아래에서 채워진 뒤 _finalizeConfidence에서 종합
+      };
+
       // ── Webull /us-quote (전 세션 호출 — 2026-06 확장) ──
       //   ① 스프레드: 모든 세션에서 Webull 실시간 bid/ask 우선 (Finviz는 폴백)
       //   ② 가격 덮어쓰기: 프리마켓만 (Yahoo 1분봉 stale 대응 — 기존 동작 유지)
@@ -4273,10 +4290,11 @@ async function fetchYahooData(ticker){
   }catch(e){ console.warn('[Yahoo]',ticker,e.message); }
 
   // A안: marketCap_b 보완 (Yahoo v8에 없는 필드, Webull 캐시에서 조회)
+  var _capFromCache = false;
   if(!result.marketCap_b){
     try{
       await _ensureWbMarketCapCache();
-      if(_WB_CAP_CACHE.map[ticker]) result.marketCap_b = _WB_CAP_CACHE.map[ticker];
+      if(_WB_CAP_CACHE.map[ticker]){ result.marketCap_b = _WB_CAP_CACHE.map[ticker]; _capFromCache = true; }
     }catch(_){}
   }
 
@@ -4286,6 +4304,13 @@ async function fetchYahooData(ticker){
       var _ed = await fetchEarningsDate(ticker);
       if(_ed){ result.earningsDaysAway = _ed.daysAway; result.earningsDateStr = _ed.dateStr; }
     }catch(_){}
+  }
+
+  // ── data_confidence 종합 (과신 방지) ──
+  if(result.data_confidence){
+    result.data_confidence.marketCap = result.marketCap_b ? (_capFromCache ? 'cached' : 'confirmed') : 'missing';
+    result.data_confidence.spread = (result.spread_pct !== null && result.spread_pct !== undefined) ? 'confirmed' : 'missing';
+    result.data_confidence.rvol = result.rvol_anomaly ? 'anomaly' : (result.rvol ? 'measured' : 'missing');
   }
 
   return result;
@@ -5183,7 +5208,7 @@ async function fetchCoreData(ticker){
 // ═══════════════════════════════════════
 
 // ── 보유 포지션 관리 전용 프롬프트 (makePrompt에서 분리) ──
-function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
+function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade, babylonResult, exitDecision){
   var entryP  = openTrade.entry;
   var curP    = ydata.price || entryP;
   var pnlPct  = entryP ? ((curP - entryP)/entryP*100).toFixed(2) : '알수없음';
@@ -5198,6 +5223,24 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
     (openTrade.date   ? '진입일: '+openTrade.date+'\n'       : '') +
     (openTrade.memo   ? '메모: '+openTrade.memo+'\n'         : '') + '\n';
 
+  // exitEngine 1차 청산 결정 주입 (swing/momo) — 규칙이 먼저
+  var exitStr = '';
+  if(exitDecision && exitDecision.action){
+    exitStr = '\\n[청산엔진 결정 - 규칙기반 1차판단]\\n결정: '+exitDecision.action+(exitDecision.sell_pct?' ('+exitDecision.sell_pct+'%)':'')+'\\n';
+    if(exitDecision.reasons && exitDecision.reasons.length) exitStr += '근거: '+exitDecision.reasons.join(' / ')+'\\n';
+    if(exitDecision.stop_update) exitStr += '손절 상향 제안: $'+exitDecision.stop_update+'\\n';
+    if(exitDecision.protective)  exitStr += '(이익보호 구간 - 손절선이 진입가 위)\\n';
+    exitStr += '* 이 엔진 결정이 1차 기준. SELL이면 근거 설명하고 반대 데이터(거래량 급증 등) 없으면 따를 것. HOLD면 노이즈로 보고 유지하되 위험신호만 경고.\\n';
+  }
+  var babyStr2 = '';
+  if(mode === 'core' && babylonResult && babylonResult.verdict && babylonResult.verdict !== 'ERROR'){
+    babyStr2 = '\\n[SEC 펀더(BABYLON) - 1차 청산근거]\\n판정: '+babylonResult.verdict+(babylonResult.reason?' ('+babylonResult.reason+')':'')+'\\n';
+    if(babylonResult.exit_signals && babylonResult.exit_signals.signals && babylonResult.exit_signals.signals.length){
+      babyStr2 += '펀더 청산신호 ['+babylonResult.exit_signals.severity+']:\\n';
+      babylonResult.exit_signals.signals.forEach(function(s){ babyStr2 += '  - ['+s.severity+'] '+s.message+'\\n'; });
+      babyStr2 += '* severity=exit이면 SELL 적극 고려. 신호 없으면 단순 하락만으로 매도 금지.\\n';
+    } else { babyStr2 += '펀더 청산신호 없음 - 훼손 징후 없음. 단순 하락은 매도 사유 아님.\\n'; }
+  }
   var dataStr =
     '현재가: $'+(curP||'알수없음')+'\n' +
     'VWAP: '+(ydata.vwap?'$'+ydata.vwap+(ydata.vwap_pct!==null?' ('+(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%)':''):'알수없음')+'\n' +
@@ -5230,7 +5273,7 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
       'VWAP 대비: '+(ydata.vwap_pct!==null?(ydata.vwap_pct>=0?'+':'')+ydata.vwap_pct+'%':'알수없음')+' \n\n';
     var phaseNow = {'PRE':'프리마켓','ORB':'ORB형성중(진입금지)','EARLY':'골든윈도우(최적매도구간)','PRIME':'2차모멘텀','LATE':'페이드구간(익절우선)','CLOSED':'장마감'}[G.marketPhase||'']||'시간미확인';
     return '당신은 MOMO 당일 트레이딩 전문 AI입니다. 지금 이 순간 이 포지션을 어떻게 해야 하는지 구체적으로 알려주세요.\n\n' +
-      posInfo + sellHistStr + buyHistStr + dataStr + chartLevels +
+      posInfo + sellHistStr + buyHistStr + dataStr + chartLevels + exitStr +
       '현재 시장 시간대: '+phaseNow+'\n\n' +
       '판단 기준 (엄격하게 적용):\n' +
       '- HOLD: 거래량 RVol 3x+ 유지 중이면 기본값. 진입가 아래 -7% 이내 눌림은 회복 가능 구간\n' +
@@ -5285,7 +5328,7 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
         '10일 최고가: '+(swingData.high10?'$'+swingData.high10:'?')+'\n\n';
     }
     return '당신은 스윙 트레이딩 전문 AI입니다. 아래는 현재 보유 중인 스윙 포지션입니다.\n\n' +
-      posInfo + dataStr + swStr2 +
+      posInfo + dataStr + swStr2 + exitStr +
       '이 포지션을 스윙 관점에서 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
       'SWING 포지션 관리 기준:\n' +
       '- 추가매수(피라미딩): 수익 +2% 이상 필수 + MA20 눌림목 + 거래량 지지 + RSI 55 이하\n' +
@@ -5306,8 +5349,28 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
 
   // ── CORE 보유 포지션 관리 (장기 · 베이비 자이언트) ──
   if(mode === 'core'){
+    // babylon(SEC 펀더) 청산 신호를 프롬프트에 주입 — 펀더 훼손 판단의 1차 근거
+    var babyStr = '';
+    if(babylonResult && babylonResult.verdict && babylonResult.verdict !== 'ERROR'){
+      babyStr = '\n【SEC 펀더멘털 분석 (BABYLON)】\n';
+      babyStr += '- 판정: '+babylonResult.verdict+(babylonResult.reason?' ('+babylonResult.reason+')':'')+'\n';
+      if(babylonResult.exit_signals && babylonResult.exit_signals.signals && babylonResult.exit_signals.signals.length){
+        babyStr += '- 펀더 청산신호 ['+babylonResult.exit_signals.severity+']:\n';
+        babylonResult.exit_signals.signals.forEach(function(s){
+          babyStr += '   - ['+s.severity+'] '+s.message+'\n';
+        });
+      } else {
+        babyStr += '- 펀더 청산신호: 없음 (펀더 훼손 징후 없음)\n';
+      }
+      if(babylonResult.warnings && babylonResult.warnings.length){
+        babylonResult.warnings.forEach(function(w){ babyStr += '   (주의) '+w.message+'\n'; });
+      }
+      babyStr += '* 이 SEC 펀더 분석이 매도 판단의 1차 근거다. exit_signals에 severity=exit이 있으면 SELL_ALL/SELL_HALF를 적극 고려하고, 신호가 없으면 단순 가격 하락만으로 매도하지 말 것.\n';
+    } else {
+      babyStr = '\n【SEC 펀더멘털】 데이터 없음 — 가격·뉴스·추세로 보수적 판단\n';
+    }
     return '당신은 장기 가치/물밑 포착(CORE · 베이비 자이언트) 전문 AI입니다. 아래는 현재 보유 중인 CORE 포지션입니다.\n\n' +
-      posInfo + dataStr +
+      posInfo + dataStr + babyStr2 +
       '이 포지션을 장기 보유 관점에서 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
       'CORE 포지션 관리 기준 (장기 추세 우선, 단기 노이즈 무시):\n' +
       '- HOLD: 투자 논거(성장 가속/턴어라운드/추세)가 유효하고 장기 추세(200SMA 위 등)가 살아 있으면 기본값. 단기 -10~20% 출렁임도, 단기 급등·고점 근접도 모두 노이즈로 보고 보유 유지\n' +
@@ -5329,13 +5392,13 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade){
 
   // ── 안전망: 어떤 모드에도 안 걸리면 빈 프롬프트(content undefined) 방지 ──
   return '당신은 트레이딩 전문 AI입니다. 아래 보유 포지션을 분석하고 순수 JSON만 반환하세요.\n\n' +
-    posInfo + dataStr +
+    posInfo + dataStr + exitStr +
     '{"hold_action":"HOLD"|"SELL_HALF"|"SELL_ALL"|"ADD"|"STOP_LOSS",'+
     '"urgency":"immediate"|"this_week"|"monitor",'+
     '"reason":"근거","summary":"한줄 지침","signals":[],"warnings":[]}';
 }
 
-function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
+function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData, babylonResult, exitDecision){
   var minGap   = parseInt(document.getElementById('minGap').textContent)||20;
   var maxFloat = parseInt(document.getElementById('maxFloat').textContent)||20;
 
@@ -5357,7 +5420,7 @@ function makePrompt(mode, ticker, ydata, swingData, openTrade, coreData){
   var newsHint = ydata.newsQualityHint ? '\n뉴스 출처 기반 사전 판단: '+ydata.newsQualityHint+' (제목과 함께 최종 판단할 것)' : '';
 
   // ── 보유 중 포지션 관리 프롬프트 ──
-  if(openTrade) return _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade);
+  if(openTrade) return _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade, babylonResult, exitDecision);
 
   var phaseLabel = {'PRE':'프리마켓(4~9:30)','ORB':'ORB형성중(9:30~9:35)','EARLY':'골든윈도우(9:35~10:30)','PRIME':'2차모멘텀(10:30~11:30)','LATE':'페이드구간(11:30+)','CLOSED':'장마감'}[G.marketPhase||'']||'시간미확인';
   var spyStatus = G.spyIntraday ? 'SPY '+G.spyIntraday.change_pct+'% ('+G.spyIntraday.trend+')'+
@@ -6345,7 +6408,8 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
   if(ydata.price){
     var cEntry=parseFloat((ydata.price*1.003).toFixed(2));
     var cStop, cTarget1, cTarget2;
-    // 손절: 베이스 저점 기반 (없으면 MA200 → 비율 순)
+    // 손절(추세이탈선): 베이스 저점 기반 (없으면 MA200 → 비율 순)
+    //   CORE는 가격 손절이 주인이 아님 — 이 선은 "추세 이탈 참고선"일 뿐, 청산 기준은 펀더 훼손.
     if(coreData.base_low&&coreData.base_low<cEntry){
       cStop=parseFloat((coreData.base_low*0.97).toFixed(2));
     } else if(coreData.ma200){
@@ -7105,6 +7169,8 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   var openTrade = G_journal.find(function(t){
     return !t.deleted && t.ticker === ticker && (t.status === 'open' || t.status === 'partial') && (!t.mode || t.mode === mode);
   });
+  var result_stopFresh = null, result_t1Fresh = null, result_t2Fresh = null;  // 보유 재분석 시 엔진 재계산 값
+  var exitDecision = null;  // exitEngine 청산 결정 (swing/momo 보유)
 
   analyzeEl.innerHTML =
     '<div class="analyzing-card">'+
@@ -7114,8 +7180,10 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
 
   var ydata = await fetchYahooData(ticker);
 
-  // 하드 프리필터 (MOMO만)
-  if(mode === 'momo'){
+  // 하드 프리필터 (MOMO 신규 진입만 — 보유 포지션은 청산 판단으로 직행)
+  //   ★ 보유 중이면 신규 필터 스킵: "들어가도 되나?"가 아니라 "나가야 하나?"가 질문이므로.
+  //     아침에 진입한 종목이 오후에 갭/RVol 조건 사라졌다고 BLOCK 카드를 띄우면 안 됨.
+  if(mode === 'momo' && !openTrade){
     var earlyBlock=[];
     var validExchanges = ['NASDAQ','NYSE','AMEX','NGS','NMS','NCM','NYQ','NAS','BTS','BATS','ARCA','PCX','NGM','NGE'];
 
@@ -7229,7 +7297,45 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       '<div class="analyzing-card"><div class="analyzing-spinner"></div>'+
       '<div><div class="analyzing-ticker">'+ticker+'</div>'+
       '<div class="analyzing-text">📌 포지션 관리 — Claude AI 분석 중...</div></div></div>';
-    prompt = makePrompt(mode, ticker, ydata, swingData, openTrade, coreData);
+    // 보유 중에도 엔진을 돌려 stop/target1/target2를 현재가 기준으로 재계산 (자동갱신용)
+    //   Claude 청산 판단과 별개 — 엔진은 결정론적 손절/타겟 산출만 담당
+    try{
+      if(mode==='swing')      decision = swingEngine(ydata, swingData);
+      else if(mode==='momo')  decision = momoEngine(ydata);
+      else if(mode==='core')  decision = coreEngine(ydata, coreData, fundData, sectorData, babylonResult);
+      if(decision){
+        result_stopFresh = decision.stop || null;
+        result_t1Fresh   = decision.target1 || null;
+        result_t2Fresh   = decision.target2 || null;
+      }
+    }catch(e){ console.warn('[보유 재분석] 엔진 계산 실패:', e.message); }
+
+    // ── ★ exitEngine 1차 청산 결정 (swing/momo) — 규칙이 먼저, Claude는 설명만 ──
+    //   비판 수용: 매도는 결정론 엔진이 결정. LLM은 근거 설명만.
+    //   core는 babylon 펀더 신호가 이미 1차 근거(프롬프트 주입)라 exitEngine 생략.
+    if((mode==='swing' || mode==='momo') && typeof exitEngine === 'function'){
+      try{
+        var _pos = {
+          ticker: ticker, mode: mode,
+          entry: openTrade.entry, stop: openTrade.stop,
+          t1: result_t1Fresh || openTrade.t1, t2: result_t2Fresh || openTrade.t2,
+          phase: openTrade.phase || null,
+          highWatermark: openTrade.highWatermark || null,
+        };
+        var _snap = {
+          price: ydata.price,
+          vwap: ydata.vwap || null,
+          atr20: (swingData && swingData.atr20) || null,
+          lodBroken: ydata.lod_broken || false,
+          closedBelowMA20: (swingData && swingData.below_ma20_close) || false,
+          earningsDaysAway: (ydata.earningsDaysAway !== undefined) ? ydata.earningsDaysAway : null,
+        };
+        exitDecision = exitEngine(_pos, _snap);
+        console.log('[exitEngine]', ticker, exitDecision.action, exitDecision.sell_pct+'%', exitDecision.reasons.join(' / '));
+      }catch(e){ console.warn('[exitEngine] 실패:', e.message); }
+    }
+
+    prompt = makePrompt(mode, ticker, ydata, swingData, openTrade, coreData, babylonResult, exitDecision);
   } else {
     // 신규 진입: 엔진 게이트 → 스윙은 Claude 직접 판단, MOMO/CORE는 설명만
     analyzeEl.innerHTML =
@@ -7243,6 +7349,25 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     decision.float_m   = ydata.float_m   !== null ? ydata.float_m   : null;
     decision.short_pct = ydata.short_pct !== null ? ydata.short_pct : null;
     decision.rvol      = ydata.rvol      !== null ? ydata.rvol      : null;
+
+    // ── ★ MOMO 데이터 부실 시 ENTER → WATCH 강등 (과신 방지) ──
+    //   MOMO는 초단타라 시세 신선도가 생명. 데이터 못 믿으면 진입 신호를 낮춤.
+    //   swing/core는 장기라 분 단위 지연 무관 → 적용 안 함.
+    if(mode === 'momo' && decision.action === 'ENTER' && ydata.data_confidence){
+      var _dc = ydata.data_confidence;
+      var _dataIssues = [];
+      if(_dc.quote === 'stale') _dataIssues.push('시세 지연('+(_dc.ageMin||'?')+'분 전)');
+      if(_dc.spread === 'missing') _dataIssues.push('호가 없음');
+      if(_dc.rvol === 'anomaly' || _dc.rvol === 'missing') _dataIssues.push('RVol 측정불가');
+      if(_dataIssues.length > 0){
+        decision.action = 'WATCH';
+        decision.data_downgrade = true;
+        decision.data_downgrade_reason = _dataIssues.join(' · ');
+        if(!decision.warnings) decision.warnings = [];
+        decision.warnings.unshift('데이터 부실 — ' + _dataIssues.join(' · ') + '로 ENTER 보류');
+        console.log('[MOMO 강등] '+ticker+' ENTER→WATCH:', _dataIssues.join(' · '));
+      }
+    }
 
     // ── 비BLOCK (MOMO/SWING/CORE): 엔진이 ENTER/WATCH 결정, Claude는 뉴스 해석만 ──
     //   [변경] 스윙도 엔진 결정론으로 통일 (구: Claude 전체 판단 → swingEngine v2 단독 판단)
@@ -7532,10 +7657,14 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
 
     // ── 보유 중 재분석 시 stop/t1/t2 자동 갱신 ──
     //   재분석이 항상 더 정확 (현재가 기준 ATR·저항·뉴스 반영) → 진입 시 스냅샷을 덮어씀
-    if(openTrade && result.stop && result.target1 && result.target2){
-      var _newStop = parseFloat(result.stop.toFixed(2));
-      var _newT1   = parseFloat(result.target1.toFixed(2));
-      var _newT2   = parseFloat(result.target2.toFixed(2));
+    //   보유 시엔 decision=null이라 result.stop이 비어 → 엔진 재계산값(result_*Fresh) 우선 사용
+    var _us = result_stopFresh || result.stop;
+    var _u1 = result_t1Fresh   || result.target1;
+    var _u2 = result_t2Fresh   || result.target2;
+    if(openTrade && _us && _u1 && _u2){
+      var _newStop = parseFloat(_us.toFixed(2));
+      var _newT1   = parseFloat(_u1.toFixed(2));
+      var _newT2   = parseFloat(_u2.toFixed(2));
       var _changed = (_newStop !== openTrade.stop) || (_newT1 !== openTrade.t1) || (_newT2 !== openTrade.t2);
       if(_changed){
         openTrade.stop = _newStop;
@@ -7545,6 +7674,33 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
         saveJournal();
         console.log('[재분석 자동갱신]', ticker, '손절→$'+_newStop, 'T1→$'+_newT1, 'T2→$'+_newT2);
       }
+      // 카드에도 즉시 반영 (holdCardHTML은 result 사용)
+      result.stop = _newStop; result.target1 = _newT1; result.target2 = _newT2;
+      result.t1 = _newT1; result.t2 = _newT2;
+    }
+
+    // ── 재분석 액션을 보유 요약에 저장 (펀더 훼손 매도 / 추가매수가 표시용) ──
+    //   stop 유무와 무관하게 — CORE는 손절선이 아니라 액션(SELL/ADD/HOLD)이 핵심
+    //   ★ swing/momo는 exitEngine(규칙)이 1차. 엔진이 SELL이면 그걸 우선, 아니면 Claude 액션.
+    if(openTrade && (result.hold_action || exitDecision)){
+      var _finalAction = result.hold_action || 'HOLD';
+      var _finalReason = result.hold_reason || result.exit_reason || null;
+      // exitEngine이 SELL 계열을 결정했으면 규칙 우선 (Claude가 HOLD라 해도 엔진 SELL이 이김)
+      if(exitDecision && (exitDecision.action === 'SELL_ALL' || exitDecision.action === 'SELL_HALF')){
+        _finalAction = exitDecision.action;
+        _finalReason = (exitDecision.reasons && exitDecision.reasons.join(' / ')) || _finalReason;
+      }
+      openTrade.exitSignal = {
+        action:     _finalAction,
+        add_price:  result.add_price || null,
+        add_reason: result.add_reason || null,
+        reason:     _finalReason,
+        engine_action: exitDecision ? exitDecision.action : null,  // 엔진 원본 결정 (디버그/투명성)
+        at:         Date.now()
+      };
+      openTrade.updatedAt = Date.now();
+      saveJournal();
+      console.log('[액션 저장]', ticker, _finalAction, '(엔진:'+(exitDecision?exitDecision.action:'N/A')+', Claude:'+(result.hold_action||'N/A')+')');
     }
 
     analyzeEl.innerHTML = '';
@@ -8273,6 +8429,10 @@ function cardHTML(r, mode){
   if(r.clinical_catalyst){
     var _ckw = (r.clinical_kw && r.clinical_kw.length) ? (' ('+r.clinical_kw.join('/')+')') : '';
     tags+='<span class="tag" style="color:var(--r);background:rgba(255,45,78,.12);border:1px solid var(--r);font-weight:700">🧬 임상 갭리스크'+_ckw+'</span>';
+  }
+  // 데이터 부실 강등 배지 (MOMO — ENTER→WATCH 사유)
+  if(r.data_downgrade && r.data_downgrade_reason){
+    tags+='<span class="tag" style="color:var(--a);background:rgba(255,170,0,.12);border:1px solid var(--a);font-weight:700">📊 데이터 부실 ('+r.data_downgrade_reason+')</span>';
   }
   // 어닝 임박 배지 (전 모드 — 갭 리스크 경고)
   if(r.earningsDaysAway !== null && r.earningsDaysAway !== undefined && r.earningsDaysAway >= 0 && r.earningsDaysAway <= 14){
@@ -9345,7 +9505,32 @@ function saveTradeLog(ticker){
   var t1     = parseFloat((document.getElementById('tl_t1')  ||{}).value) || 0;
   var t2     = parseFloat((document.getElementById('tl_t2')  ||{}).value) || 0;
   var name   = ((document.getElementById('tl_name')||{}).value || '').trim();
-  if(!entry){ showToast('진입가를 입력하세요'); return; }
+  var _mode  = G.currentMode || 'momo';
+
+  // ── 고스트 포지션 방지: 진입 기록 무결성 검증 ──
+  //   감시(watch:true) 대상이 되므로 0주·손절0 같은 유령 포지션을 막아야 함.
+  if(!entry || entry <= 0){ showToast('⚠ 진입가를 입력하세요 (필수)'); return; }
+  if(!shares || shares <= 0){ showToast('⚠ 보유 수량을 입력하세요 (0주 기록 불가)'); return; }
+  // 손절선: SWING/MOMO는 필수(리스크 관리 핵심), CORE는 선택(펀더 기준이라 가격손절 약함)
+  if(_mode !== 'core'){
+    if(!stop || stop <= 0){ showToast('⚠ 손절가를 입력하세요 ('+_mode.toUpperCase()+'는 필수)'); return; }
+    if(stop >= entry){
+      if(!confirm('손절가($'+stop+')가 진입가($'+entry+') 이상입니다.\n이익보호선(트레일 후 상향)이 아니라면 잘못된 값일 수 있습니다.\n\n그대로 기록할까요?')) return;
+    }
+  }
+  // 실리스크 한도 초과 경고 (계좌 설정 있을 때만)
+  try{
+    var _rs = getRiskSettings ? getRiskSettings(_mode) : null;
+    if(_rs && _rs.equity > 0 && stop > 0 && stop < entry){
+      var _riskAmt = (entry - stop) * shares;
+      var _riskPct = _riskAmt / _rs.equity * 100;
+      var _allowed = (_rs.riskPctPerTrade || 1) * 1.2;  // 20% 버퍼
+      if(_riskPct > _allowed){
+        if(!confirm('이 거래의 실리스크가 '+_riskPct.toFixed(1)+'%로 설정 한도('+(_rs.riskPctPerTrade||1)+'%)를 초과합니다.\n($'+Math.round(_riskAmt)+' 손실 가능)\n\n그대로 기록할까요?')) return;
+      }
+    }
+  }catch(e){}
+
   var record = {
     id: Date.now(), date: new Date().toLocaleDateString('ko-KR'),
     ticker: ticker,
@@ -9360,9 +9545,9 @@ function saveTradeLog(ticker){
       price: entry, shares: shares, memo: memo||'1차 진입'
     }],
     sells: [], exit: null, pnl: null, pnl_pct: null, memo: memo,
-    mode: G.currentMode || 'momo', status: 'open',
+    mode: _mode, status: 'open',
     updatedAt: Date.now(),        // ticker 기준 머지/투영용
-    card_snapshot: G_cardSnapshots[(G.currentMode||'momo')+'_'+ticker] || null
+    card_snapshot: G_cardSnapshots[_mode+'_'+ticker] || null
   };
   G_journal.unshift(record);
   saveJournal();
@@ -9582,7 +9767,32 @@ function confirmPartialBuy(tradeId){
   // 가중평균 진입가 재계산
   var totalVal = trade.buys.reduce(function(s,b){ return s + b.price * b.shares; }, 0);
   var totalSh  = trade.buys.reduce(function(s,b){ return s + b.shares; }, 0);
-  trade.entry   = parseFloat((totalVal / totalSh).toFixed(2));
+  var _newEntry = parseFloat((totalVal / totalSh).toFixed(2));
+
+  // ── 추가매수 후 전체 포지션 리스크 재계산 (한도 초과 경고) ──
+  //   평단만 갱신하면 안 됨 — 추가 후 총 리스크가 계좌 한도를 넘는지 확인.
+  try{
+    var _rs = getRiskSettings ? getRiskSettings(trade.mode) : null;
+    if(_rs && _rs.equity > 0){
+      var _notional = _newEntry * totalSh;
+      var _posPct = _notional / _rs.equity * 100;
+      // 손절선이 있으면 실리스크도 계산
+      var _riskWarn = '';
+      if(trade.stop && trade.stop < _newEntry){
+        var _riskAmt = (_newEntry - trade.stop) * totalSh;
+        var _riskPct = _riskAmt / _rs.equity * 100;
+        if(_riskPct > (_rs.riskPctPerTrade || 1) * 1.2){
+          _riskWarn = '\n⚠ 추가 후 실리스크 '+_riskPct.toFixed(1)+'% (한도 '+(_rs.riskPctPerTrade||1)+'% 초과, $'+Math.round(_riskAmt)+' 손실 가능)';
+        }
+      }
+      if(_posPct > (_rs.maxPositionPct || 20) || _riskWarn){
+        var _msg = trade.ticker+' 추가매수 후:\n• 비중 '+_posPct.toFixed(1)+'% (한도 '+(_rs.maxPositionPct||20)+'%)'+_riskWarn+'\n\n그대로 진행할까요?';
+        if(!confirm(_msg)) return;
+      }
+    }
+  }catch(e){}
+
+  trade.entry   = _newEntry;
   trade.shares  = totalSh;
   trade.remaining = (trade.remaining||0) + shares;
 
@@ -9762,9 +9972,43 @@ function loadRiskSettings(){
   });
 }
 // 보유 카드용 — 청산 가이드 (저장된 stop/t1/t2 + 마지막 재분석 캐시)
-function renderExitGuide(t){
+function renderExitGuide(t, mode){
   try{
-    if(!t || !t.stop || !t.entry) return '';
+    if(!t || !t.entry) return '';
+
+    // ── CORE 모드: 액션 중심 (펀더 훼손→매도 / 멀쩡→추가매수가 / 목표근접→홀드) ──
+    if(mode === 'core'){
+      var es = t.exitSignal || null;
+      var box = '<div style="font-family:var(--mono);font-size:11px;margin-bottom:8px;line-height:1.7">';
+
+      if(es && (es.action === 'SELL_ALL' || es.action === 'STOP_LOSS')){
+        // 펀더 훼손 — 매도 사인
+        box += '<div style="background:rgba(255,45,78,.1);border:1px solid var(--r);border-radius:8px;padding:8px 12px;color:var(--r);font-weight:700">🔴 매도 검토 — 펀더 훼손'+
+          (es.reason?'<br><span style="font-weight:400;font-size:10px">'+es.reason+'</span>':'')+'</div>';
+      } else if(es && es.action === 'SELL_HALF'){
+        box += '<div style="background:rgba(255,170,0,.1);border:1px solid var(--a);border-radius:8px;padding:8px 12px;color:var(--a);font-weight:700">🟠 일부 실현 검토'+
+          (es.reason?'<br><span style="font-weight:400;font-size:10px">'+es.reason+'</span>':'')+'</div>';
+      } else if(es && es.action === 'ADD' && es.add_price){
+        // 펀더 멀쩡 + 추가매수 기회
+        box += '<div style="background:rgba(43,159,255,.1);border:1px solid var(--bl);border-radius:8px;padding:8px 12px;color:var(--bl);font-weight:700">🔵 추가매수 $'+es.add_price+
+          (es.add_reason?'<br><span style="font-weight:400;font-size:10px">'+es.add_reason+'</span>':'<br><span style="font-weight:400;font-size:10px">펀더 유효 — 눌림 분할매수 구간</span>')+'</div>';
+      } else {
+        // 홀드 (펀더 유효, 특별 액션 없음)
+        box += '<div style="color:var(--g)">🟢 홀드 — 펀더 유효</div>';
+        if(t.t1) box += '<div style="color:var(--t3);font-size:10px;margin-top:3px">장기목표 T1 $'+t.t1+(t.t2?' · T2 $'+t.t2:'')+'</div>';
+      }
+      // 추세이탈 참고선 (작게 — 청산 기준 아님)
+      if(t.stop){
+        var sp = ((t.stop - t.entry)/t.entry*100).toFixed(0);
+        box += '<div style="color:var(--t3);font-size:9px;margin-top:4px">추세이탈 참고선 $'+t.stop+' ('+sp+'%) · 매도 기준은 펀더, 가격 아님</div>';
+      }
+      box += '<div style="color:var(--t3);font-size:9px;margin-top:2px">↻ 재분석으로 펀더 상태 갱신</div>';
+      box += '</div>';
+      return box;
+    }
+
+    // ── SWING/MOMO 모드: 기존 ATR 손절선 / 이익보호선 ──
+    if(!t.stop) return '';
     var protective = t.stop >= t.entry;
     var stopLabel = protective
       ? '<span style="color:var(--a)">🟠 이익보호선 $'+t.stop+'</span> <span style="color:var(--t3)">(진입가 위 — 이익 구간)</span>'
