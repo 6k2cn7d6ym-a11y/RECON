@@ -4108,6 +4108,19 @@ async function fetchYahooData(ticker){
     result.newsText = result.news.join(' | ');
     result.newsQualityHint = factualCount >= 1 ? 'factual' : vagueCount >= 1 ? 'vague' : 'none';
 
+    // ── 임상 바이오텍 catalyst 감지 (갭 리스크 — sizeEngine 축소용) ──
+    //   임상 결과 발표는 ±50~90% 바이너리 갭. ATR 손절 무력화 → 사이즈 강제 축소.
+    //   신호: (1) 뉴스에 임상 이벤트 키워드  (2) 저가+고변동 프로파일
+    var _newsLow = (result.newsText || '').toLowerCase();
+    var _clinicalKw = ['phase 3','phase iii','phase 2','phase ii','topline','readout',
+      'pdufa','primary endpoint','trial results','pivotal','fda approval','fda decision',
+      'data readout','interim analysis','final analysis','nda','bla submission','clinical trial'];
+    var _kwHit = _clinicalKw.filter(function(k){ return _newsLow.indexOf(k) >= 0; });
+    if(_kwHit.length > 0){
+      result.clinical_catalyst = true;
+      result.clinical_kw = _kwHit.slice(0,2);  // 카드 표시용 (최대 2개)
+    }
+
     // Tier 통계 + wire_only 판정
     result.news_tier1 = tier1Count;
     result.news_tier2 = tier2Count;
@@ -8185,6 +8198,11 @@ function cardHTML(r, mode){
     else if(r.slippage_risk==='medium') tags+='<span class="tag ta">⚠ 슬리피지</span>';
   }
   if(ac==='BLOCK')                 tags+='<span class="tag tr">BLOCK</span>';
+  // 임상 바이오텍 catalyst 경고 (갭 리스크 — 사이즈 자동 축소됨)
+  if(r.clinical_catalyst){
+    var _ckw = (r.clinical_kw && r.clinical_kw.length) ? (' ('+r.clinical_kw.join('/')+')') : '';
+    tags+='<span class="tag" style="color:var(--r);background:rgba(255,45,78,.12);border:1px solid var(--r);font-weight:700">🧬 임상 갭리스크'+_ckw+'</span>';
+  }
   // 어닝 임박 배지 (전 모드 — 갭 리스크 경고)
   if(r.earningsDaysAway !== null && r.earningsDaysAway !== undefined && r.earningsDaysAway >= 0 && r.earningsDaysAway <= 14){
     var _ed = r.earningsDaysAway;
@@ -9713,6 +9731,7 @@ function renderSizeLine(r){
       type: r.swing_type || (r.swingType) || null,
       action: r.action || 'ENTER',
       vixRegime: (typeof G !== 'undefined' && G.vixRegime) || 'CALM',
+      clinical_catalyst: r.clinical_catalyst || false,
     };
     var sz = sizeEngine(plan, { equity: rs.equity, cashAvailable: rs.equity },
                         { riskPctPerTrade: rs.riskPctPerTrade, maxPositionPct: rs.maxPositionPct });

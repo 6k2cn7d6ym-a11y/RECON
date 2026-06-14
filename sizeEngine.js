@@ -30,6 +30,7 @@ var SIZE_DEFAULTS = {
   typeRiskMult:  { A: 1.0, B: 0.6, C: 0.7, none: 0.8 },
   vixRiskMult:   { CALM: 1.0, CAUTION: 0.7, STRESS: 0.5 },
   watchMult:       0.5,    // WATCH(미확정) 진입 시 리스크 절반
+  clinicalMult:    0.3,    // 임상 바이오텍 catalyst 임박 — 갭 리스크로 극소 사이즈
 };
 
 function _n(v){ return (typeof v === 'number' && isFinite(v)) ? v : null; }
@@ -97,7 +98,8 @@ function sizeEngine(plan, account, cfgIn){
   if (typeMult === undefined) typeMult = cfg.typeRiskMult.none;
   var vixMult  = cfg.vixRiskMult[(plan && plan.vixRegime) || 'CALM'] || 1.0;
   var watchMult = (plan && plan.action === 'WATCH') ? cfg.watchMult : 1.0;
-  var effRiskPct = cfg.riskPctPerTrade * typeMult * vixMult * watchMult;
+  var clinicalMult = (plan && plan.clinical_catalyst) ? cfg.clinicalMult : 1.0;
+  var effRiskPct = cfg.riskPctPerTrade * typeMult * vixMult * watchMult * clinicalMult;
   var riskBudget = equity * effRiskPct / 100;   // 이 거래에 걸 수 있는 최대 손실 ($)
 
   // ── 4중 캡: 각 기준의 주수 계산 후 최소값 ──
@@ -140,7 +142,8 @@ function sizeEngine(plan, account, cfgIn){
   d.reasons.push('리스크 예산 $' + _r2(riskBudget) + ' (계좌 ' + _r2(effRiskPct) + '%' +
     (typeMult !== 1 ? ' · 타입' + (plan.type||'?') + '×' + typeMult : '') +
     (vixMult !== 1 ? ' · VIX×' + vixMult : '') +
-    (watchMult !== 1 ? ' · WATCH×' + watchMult : '') + ')');
+    (watchMult !== 1 ? ' · WATCH×' + watchMult : '') +
+    (clinicalMult !== 1 ? ' · 임상×' + clinicalMult : '') + ')');
   d.reasons.push(shares + '주 → 투입 $' + d.notional + ' (비중 ' + _r2(d.notional/equity*100) + '%) · 실리스크 $' + d.riskAmount + ' (' + d.riskPctActual + '%)');
 
   if (chosen.by === 'position') d.warnings.push('비중 한도(' + cfg.maxPositionPct + '%)에 막힘 — 리스크 예산보다 적게 진입');

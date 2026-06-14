@@ -70,6 +70,10 @@ function swingEngine(ydata, swingData) {
   }
 
   r.conditions_met = swingData.conditions_met || 0;
+  r.earningsDaysAway = (ydata.earningsDaysAway !== undefined) ? ydata.earningsDaysAway : null;
+  r.earningsDateStr  = ydata.earningsDateStr || null;
+  r.clinical_catalyst = ydata.clinical_catalyst || false;
+  r.clinical_kw       = ydata.clinical_kw || null;
   r.swing_detail   = swingData.condition_detail || [];
 
   var price = ydata.price;
@@ -107,13 +111,17 @@ function swingEngine(ydata, swingData) {
   }
 
   var earnDays = ydata.earningsDaysAway;
+  var earnDateStr = ydata.earningsDateStr ? (' (' + ydata.earningsDateStr + ')') : '';
   if (earnDays !== null && earnDays !== undefined) {
-    if (earnDays >= 0 && earnDays <= 7) {
+    if (earnDays >= 0 && earnDays <= 3) {
       r.action = 'BLOCK';
-      r.blockers.push('[어닝] ' + earnDays + '일 후 실적 발표 — 이벤트 리스크 BLOCK');
+      r.blockers.push('[어닝] D-' + earnDays + ' 실적 발표 임박' + earnDateStr + ' — 갭 리스크로 진입 차단');
       return r;
-    } else if (earnDays > 7 && earnDays <= 14) {
-      r.warnings.push('[어닝] ' + earnDays + '일 후 실적 발표 — 포지션 50% 이하 권고');
+    } else if (earnDays > 3 && earnDays <= 10) {
+      r.warnings.push('[어닝] D-' + earnDays + ' 실적 발표' + earnDateStr + ' — 보유 중 갭 노출. 어닝 전 청산 또는 50% 이하 축소 권고');
+      r._earningsSoon = earnDays;
+    } else if (earnDays > 10 && earnDays <= 14) {
+      r.warnings.push('[어닝] D-' + earnDays + ' 실적 발표' + earnDateStr + ' — 보유 기간 내 이벤트, 주시');
     }
   }
 
