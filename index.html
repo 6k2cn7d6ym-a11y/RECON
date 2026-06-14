@@ -572,6 +572,11 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   </div>
   <div class="sg-row"><div><div class="sg-label">KIS 연결 상태</div></div><div style="font-family:var(--mono);font-size:11px" id="kisKeyStatus">미설정</div></div>
 
+  <div class="sg-title">리스크 관리 (자동 수량 계산)</div>
+  <div class="sg-row"><div><div class="sg-label">MOMO 계좌 평가액 ($)</div><div class="sg-sub">이 모드 전용 · 빈칸이면 미표시</div></div><input id="momo_acctEquity" type="number" inputmode="decimal" placeholder="예: 50000" oninput="saveRiskSettings('momo')" style="width:120px;text-align:right;background:var(--bg1);border:1px solid var(--b);border-radius:8px;padding:8px 10px;color:var(--t);font-family:var(--mono);font-size:13px"></div>
+  <div class="sg-row"><div><div class="sg-label">거래당 리스크 (%)</div><div class="sg-sub">한 거래 최대 손실 = 계좌의 N%</div></div><div class="sg-val" id="momo_riskPctPerTrade" onclick="cycleRisk('momo','riskPctPerTrade',['0.5','1.0','1.5','2.0'])">1.0</div></div>
+  <div class="sg-row"><div><div class="sg-label">종목당 최대 비중 (%)</div><div class="sg-sub">한 종목 집중 한도</div></div><div class="sg-val" id="momo_maxPositionPct" onclick="cycleRisk('momo','maxPositionPct',['10','15','20','25'])">20</div></div>
+
   <div class="sg-title">MOMO 스캔 기준</div>
   <div class="sg-row"><div><div class="sg-label">최소 갭업</div><div class="sg-sub">이하 종목 제외</div></div><div class="sg-val" id="minGap" onclick="cycle('minGap',['15%','20%','30%','50%'])">20%</div></div>
   <div class="sg-row"><div><div class="sg-label">최대 Float</div><div class="sg-sub">이상 Float 제외</div></div><div class="sg-val" id="maxFloat" onclick="cycle('maxFloat',['5M','10M','20M'])">20M</div></div>
@@ -675,6 +680,10 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <div class="sg-row"><div><div class="sg-label">최소 T1 상승률 (%)</div><div class="sg-sub">이하이면 BLOCK — 스윙 최소 기대 수익</div></div><div class="sg-val" id="swingMinT1Pct" onclick="cycle('swingMinT1Pct',['6','8','10'])">8</div></div>
     <div class="sg-row"><div><div class="sg-label">RSI 상단 기준</div><div class="sg-sub">진입 시 RSI 최대 허용값</div></div><div class="sg-val" id="swingRsiMax" onclick="cycle('swingRsiMax',['60','65','70'])">65</div></div>
     <div class="sg-row"><div><div class="sg-label">시간 손절 (일)</div><div class="sg-sub">N일 내 움직임 없으면 청산</div></div><div class="sg-val" id="swingHoldDays" onclick="cycle('swingHoldDays',['7','10','14'])">10</div></div>
+    <div class="sg-title">리스크 관리 (자동 수량 계산)</div>
+    <div class="sg-row"><div><div class="sg-label">SWING 계좌 평가액 ($)</div><div class="sg-sub">이 모드 전용 · 빈칸이면 미표시</div></div><input id="swing_acctEquity" type="number" inputmode="decimal" placeholder="예: 100000" oninput="saveRiskSettings('swing')" style="width:120px;text-align:right;background:var(--bg1);border:1px solid var(--b);border-radius:8px;padding:8px 10px;color:var(--t);font-family:var(--mono);font-size:13px"></div>
+    <div class="sg-row"><div><div class="sg-label">거래당 리스크 (%)</div><div class="sg-sub">한 거래 최대 손실 = 계좌의 N%</div></div><div class="sg-val" id="swing_riskPctPerTrade" onclick="cycleRisk('swing','riskPctPerTrade',['0.5','1.0','1.5','2.0'])">1.0</div></div>
+    <div class="sg-row"><div><div class="sg-label">종목당 최대 비중 (%)</div><div class="sg-sub">한 종목 집중 한도</div></div><div class="sg-val" id="swing_maxPositionPct" onclick="cycleRisk('swing','maxPositionPct',['10','15','20','25'])">20</div></div>
     <div class="sg-title">공통 설정</div>
     <div class="sg-row"><div><div class="sg-label">Claude API</div><div class="sg-sub">Worker 프록시</div></div><div style="font-family:var(--mono);font-size:11px;color:var(--g)" id="swingKeyStatus">✓ Worker 프록시</div></div>
   </div>
@@ -744,6 +753,10 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <div class="sg-row"><div><div class="sg-label">최소 가격</div><div class="sg-sub">이하 종목 제외</div></div><div class="sg-val" id="coreFilterPrice" onclick="cycleCoreFilter('coreFilterPrice',['$5','$8','$10','$15','$20'])">$8</div></div>
     <div class="sg-row"><div><div class="sg-label">최소 거래량</div><div class="sg-sub">일거래량 이하 제외</div></div><div class="sg-val" id="coreFilterVol" onclick="cycleCoreFilter('coreFilterVol',['5만','10만','30만','50만','100만'])">10만</div></div>
     <div class="sg-row"><div><div class="sg-label">최소 시총</div><div class="sg-sub">이 미만 제외</div></div><div class="sg-val" id="coreFilterCap" onclick="cycleCoreFilter('coreFilterCap',['$1B','$5B','$10B','$20B','$50B','$100B'])">$10B</div></div>
+    <div class="sg-title">리스크 관리 (자동 수량 계산)</div>
+    <div class="sg-row"><div><div class="sg-label">CORE 계좌 평가액 ($)</div><div class="sg-sub">이 모드 전용 · 빈칸이면 미표시</div></div><input id="core_acctEquity" type="number" inputmode="decimal" placeholder="예: 200000" oninput="saveRiskSettings('core')" style="width:120px;text-align:right;background:var(--bg1);border:1px solid var(--b);border-radius:8px;padding:8px 10px;color:var(--t);font-family:var(--mono);font-size:13px"></div>
+    <div class="sg-row"><div><div class="sg-label">거래당 리스크 (%)</div><div class="sg-sub">한 거래 최대 손실 = 계좌의 N%</div></div><div class="sg-val" id="core_riskPctPerTrade" onclick="cycleRisk('core','riskPctPerTrade',['0.5','1.0','1.5','2.0'])">1.0</div></div>
+    <div class="sg-row"><div><div class="sg-label">종목당 최대 비중 (%)</div><div class="sg-sub">한 종목 집중 한도</div></div><div class="sg-val" id="core_maxPositionPct" onclick="cycleRisk('core','maxPositionPct',['10','15','20','25'])">20</div></div>
     <div class="sg-title">공통 설정</div>
     <div class="sg-row"><div><div class="sg-label">Claude API</div><div class="sg-sub">Worker 프록시</div></div><div style="font-family:var(--mono);font-size:11px;color:var(--g)" id="coreKeyStatus">✓ Worker 프록시</div></div>
   </div>
@@ -777,6 +790,8 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 
 <script src="momoEngine.js"></script>
 <script src="swingEngine.js"></script>
+<script src="exitEngine.js"></script>
+<script src="sizeEngine.js"></script>
 <script>
 // ═══════════════════════════════════════
 // 전역 상태
@@ -1541,6 +1556,7 @@ function renderOpenPositions(mode){
             '<div style="font-family:var(--mono);font-size:11px;color:var(--t)">'+t.date+'</div>'+
           '</div>'+
         '</div>'+
+        renderExitGuide(t)+
         '<div style="display:flex;gap:6px">'+
           '<button onclick="rescanOpenTrade(\''+mode+'\',\''+t.ticker+'\')" '+
             'style="flex:2;background:rgba(0,240,122,.08);border:1px solid rgba(0,240,122,.2);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--g);cursor:pointer">↻ 재분석</button>'+
@@ -1640,16 +1656,28 @@ function updateClock(){
 // ═══════════════════════════════════════
 var WORKER_URL = 'https://recon.miinonnnn.workers.dev';
 
-async function fetchWithProxy(url){
+async function fetchWithProxy(url, _retry){
   // 캐시 버스팅 — Yahoo Finance URL 안에 포함해야 Worker/CF 캐시 우회 가능
   var bustUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
   var fetchP = fetch(WORKER_URL + '?url=' + encodeURIComponent(bustUrl), {cache:'no-store'})
     .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
-    .then(function(t){ return JSON.parse(t); });
+    .then(function(t){
+      try{ return JSON.parse(t); }
+      catch(pe){ throw new Error('응답 JSON 잘림: ' + pe.message); }
+    });
   var timeoutP = new Promise(function(_,reject){
     setTimeout(function(){ reject(new Error('timeout')); }, 8000);
   });
-  return Promise.race([fetchP, timeoutP]);
+  try{
+    return await Promise.race([fetchP, timeoutP]);
+  }catch(e){
+    // 잘린 응답/타임아웃은 일시적 — 1회 재시도 (새 cache-bust로)
+    if(!_retry && (e.message.includes('잘림') || e.message === 'timeout')){
+      await new Promise(function(res){ setTimeout(res, 600); });
+      return fetchWithProxy(url, true);
+    }
+    throw e;
+  }
 }
 
 // ═══════════════════════════════════════
@@ -2188,13 +2216,54 @@ async function runCoreScanner(){
     setStatus('');
     if(statusEl) statusEl.style.display = 'none';
     
-    // ★ C3 (2026-05-31): 스캔 buckets 영속화 → 탭 전환 후 페이지 리로드돼도 복원 가능
+    // ★ C3 (2026-05-31) + FIX (2026-06-12): 스캔 buckets 영속화 → 탭 전환·리로드 후 복원
+    //   [버그] babylon 원본(SEC facts 포함)을 통째로 저장 → localStorage 5MB 초과로 조용히 실패
+    //          → 옛 스캔(데이터 적어 저장 성공했던 것)이 계속 복원되던 문제.
+    //   [수정] 카드 렌더에 필요한 필드만 추출(slim)해 저장. 실패 시 stale 제거 → watchlist fallback.
     try{
+      var _slimItem = function(r){
+        var bb = r.babylon || {};
+        var st = bb.stages || {};
+        var acc = st.acceleration && st.acceleration.details;
+        return {
+          stock: r.stock ? {
+            ticker: r.stock.ticker, name: r.stock.name, excd: r.stock.excd,
+            marketCap: r.stock.marketCap, price: r.stock.price
+          } : null,
+          babylon: {
+            verdict: bb.verdict, reason: bb.reason,
+            decision_details: { position_size_pct: (bb.decision_details||{}).position_size_pct },
+            stages: {
+              quarters: (st.quarters||[]).slice(-8),
+              warnings: (st.warnings||[]).map(function(w){ return { type:w.type, severity:w.severity, message:w.message }; }),
+              acceleration: acc ? { details: {
+                quarters: (acc.quarters||[]).slice(-8).map(function(q){ return { yoy_pct:q.yoy_pct, revenue_m:q.revenue_m }; }),
+                latest_jump_pp: acc.latest_jump_pp
+              } } : undefined,
+              margin_improvement: st.margin_improvement ? { reason: st.margin_improvement.reason, improved: st.margin_improvement.improved } : undefined,
+              revenue_collapse: st.revenue_collapse ? { collapsing: st.revenue_collapse.collapsing } : undefined,
+              profit_turnaround: st.profit_turnaround ? { turned_profitable: st.profit_turnaround.turned_profitable } : undefined
+            }
+          },
+          entry: r.entry ? {
+            firstDetected: r.entry.firstDetected, scanCount: r.entry.scanCount,
+            lastWasDegraded: r.entry.lastWasDegraded,
+            verdictHistory: (r.entry.verdictHistory||[]).slice(-5)
+          } : null,
+          status: r.status
+        };
+      };
+      var _slimArr = function(arr){ return (arr||[]).map(_slimItem); };
       localStorage.setItem('lastCoreScan', JSON.stringify({
+        v: 2,
         ts: Date.now(),
-        buckets: { new: newStocks, kept: keptStocks, improved: improvedStocks, degraded: degradedStocks }
+        buckets: { new: _slimArr(newStocks), kept: _slimArr(keptStocks), improved: _slimArr(improvedStocks), degraded: _slimArr(degradedStocks) }
       }));
-    }catch(e){ console.warn('[CoreScan] lastCoreScan 저장 실패 (quota 가능):', e); }
+    }catch(e){
+      console.warn('[CoreScan] lastCoreScan 저장 실패:', e);
+      // stale 복원 방지 — 옛 스냅샷 제거하고 watchlist 기반 fallback이 최신 상태를 그리게 함
+      try{ localStorage.removeItem('lastCoreScan'); }catch(_e){}
+    }
     
     renderCoreScannerResults({ new: newStocks, kept: keptStocks, improved: improvedStocks, degraded: degradedStocks });
     
@@ -2297,7 +2366,8 @@ function renderCoreScannerFromStorage(){
     var raw = localStorage.getItem('lastCoreScan');
     if(raw){
       var saved = JSON.parse(raw);
-      if(saved && saved.buckets && (Date.now() - (saved.ts||0) < 24*60*60*1000)){
+      // v2(slim) 스냅샷만 복원 — 구버전(무거운 babylon 원본)은 무시하고 watchlist fallback
+      if(saved && saved.v === 2 && saved.buckets && (Date.now() - (saved.ts||0) < 24*60*60*1000)){
         renderCoreScannerResults(saved.buckets);
         return;
       }
@@ -3001,7 +3071,7 @@ async function runMomoScreener(){
           '<span style="color:var(--bl)">진입 $'+r.entry+'</span>'+
           '<span style="color:var(--r)">손절 $'+r.stop+'</span>'+
           (r.rr?'<span style="color:var(--pu)">'+r.rr+'R</span>':'')+
-        '</div>':'')+
+        '</div>'+ renderSizeLine(r) :'')+
         (r.signals.length?'<div style="font-size:10px;color:var(--t2);line-height:1.5">'+r.signals.slice(0,2).join(' · ')+'</div>':'')+
         '<div style="font-size:9px;color:var(--t3);margin-top:3px">탭하여 상세 분석 →</div>'+
       '</div>';
@@ -6155,11 +6225,6 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     r.blockers.push('[CORE] '+r.setup.fail_reason.replace(/ → FAIL.*$/, ''));
   }
 
-  // ── 매집 신호 부족 (차트 hard block과는 별개 — 점수 기반) ──
-  if(r.accum_score<3){
-    r.action='BLOCK'; r.blockers.push('[CORE] 매집 신호 부족 ('+r.accum_score+'/10) — 기관 수급 미확인'); return r;
-  }
-
   // ── 진입가 / 손절 / 목표가 ──
   if(ydata.price){
     var cEntry=parseFloat((ydata.price*1.003).toFixed(2));
@@ -6208,6 +6273,11 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     else if(_bv === 'WATCH_WEAK' || _bv === 'WATCH_CLAUDE')            fundW = 6;
   }
   r.score=Math.min(100, Math.round(r.accum_score*4 + r.timing_score*4 + fundW));
+
+  // ── 매집 신호 부족 게이트 (점수 계산 후로 이동 — BLOCK 카드도 점수 표시) ──
+  if(r.accum_score<3){
+    r.action='BLOCK'; r.blockers.push('[CORE] 매집 신호 부족 ('+r.accum_score+'/10) — 기관 수급 미확인'); return r;
+  }
 
   // ── 신호 / 경고 빌드 ──
   if(coreData.ad_line_slope>0)          r.signals.push('A/D Line 상승 ('+coreData.ad_line_slope+'%)');
@@ -6480,6 +6550,39 @@ async function runModeScan(mode){
 }
 
 // ── ydata 공통 필드를 result 객체에 주입 (openTrade/신규 공통) ──
+// ── Claude JSON 응답 안전 파서 — max_tokens 잘림 시 스택 기반으로 문자열/배열/객체 닫아 복구 ──
+function _safeParseClaudeJSON(rawText){
+  if(!rawText) return null;
+  var t = String(rawText).trim();
+  var i = t.indexOf('{');
+  if(i < 0) return null;
+  var j = t.lastIndexOf('}');
+  t = (j > i) ? t.slice(i, j + 1) : t.slice(i);
+  try{ return JSON.parse(t); }catch(e){}
+  // 스택 스캐너: 문자열 내부/중첩 {,[ 추적 후 역순으로 닫음 (배열 잘림도 복구)
+  function closeAll(str){
+    var stack = [], inStr = false;
+    for(var k = 0; k < str.length; k++){
+      var c = str[k];
+      if(inStr){ if(c === '\\'){ k++; } else if(c === '"'){ inStr = false; } continue; }
+      if(c === '"') inStr = true;
+      else if(c === '{' || c === '[') stack.push(c);
+      else if(c === '}' || c === ']') stack.pop();
+    }
+    var out = str;
+    if(inStr) out += '"';
+    for(var m = stack.length - 1; m >= 0; m--) out += (stack[m] === '{' ? '}' : ']');
+    return out;
+  }
+  // ① 잘린 값까지 보존 시도
+  try{ return JSON.parse(closeAll(t)); }catch(e1){}
+  // ② 마지막 콤마 이후 잘린 조각(키/콜론/부분값) 버리고 닫기
+  try{
+    var t2 = t.replace(/,[^,{}\[\]]*$/, '');
+    return JSON.parse(closeAll(t2));
+  }catch(e2){ return null; }
+}
+
 // ── 스윙 카드용 일봉 레벨 주입 (calcSwingEntrySignal 입력 보강) ──
 // swingEngine은 entry/stop/target만 r에 넣으므로, 진입신호 함수가 읽는
 // 일봉 MA20/MA60/ATR20/저항을 swingData에서 채워준다 (1분봉 intraday 레벨 아님).
@@ -7074,7 +7177,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
           headers: _headers,
           body: JSON.stringify({
             model: 'claude-sonnet-4-6',
-            max_tokens: openTrade ? 600 : (mode==='swing' && !openTrade && decision && decision.action !== 'BLOCK') ? 600 : mode==='core' ? 500 : 250,
+            max_tokens: _maxTok,
             temperature: 0.2,
             messages: [{role:'user', content:prompt}]
           })
@@ -7089,6 +7192,8 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     var data = null;
     var lastErr = null;
     var retryDelays = [0, 3000, 7000]; // 즉시 → 3초 → 7초
+    var _maxTok = openTrade ? 800 : (mode==='swing' && decision && decision.action !== 'BLOCK') ? 600 : mode==='core' ? 700 : 300;
+    for(var _pass = 0; _pass < 2; _pass++){
     for(var _attempt = 0; _attempt < retryDelays.length; _attempt++){
       if(retryDelays[_attempt] > 0){
         analyzeEl.innerHTML =
@@ -7099,25 +7204,46 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
         await new Promise(function(res){ setTimeout(res, retryDelays[_attempt]); });
       }
       try{
-        var _d = await res.json();
+        // ── 응답 방어: 구 Worker는 /recon/claude 라우트가 없어 텍스트("RECON Worker OK")를 200으로 반환 ──
+        var _raw = await res.text();
+        if(_raw.indexOf('RECON Worker OK') === 0){
+          var _we = new Error('Worker가 구버전입니다 — /recon/claude 라우트 없음. Cloudflare 대시보드에서 새 worker.js를 배포하세요');
+          _we._fatal = true; throw _we;
+        }
+        var _d;
+        try{ _d = JSON.parse(_raw); }
+        catch(_pe){
+          var _je = new Error('Worker 응답이 JSON이 아님 (HTTP '+res.status+'): '+_raw.slice(0,60));
+          _je._fatal = true; throw _je;
+        }
         if(_d.error){
-          var errType = _d.error.type || '';
-          // Overloaded/rate_limit → 재시도, 나머지 → 즉시 throw
+          // Anthropic 형식(객체) / Worker 형식(문자열) 모두 대응
+          var errType = (_d.error && _d.error.type) || '';
+          var errMsg  = (typeof _d.error === 'string') ? _d.error : (_d.error.message || JSON.stringify(_d.error));
           if(errType === 'overloaded_error' || errType === 'rate_limit_error' || res.status === 429 || res.status === 529){
-            lastErr = new Error(_d.error.message);
+            lastErr = new Error(errMsg);
             continue; // 재시도
           }
-          throw new Error(_d.error.message);
+          var _ae = new Error(errMsg); _ae._fatal = true; throw _ae;
         }
         data = _d;
         break; // 성공 → 루프 종료
       }catch(fetchErr){
         lastErr = fetchErr;
+        if(fetchErr._fatal) break;          // 재시도 무의미한 오류는 즉시 중단
         if(_attempt < retryDelays.length - 1) continue;
       }
     }
+    // ── max_tokens 잘림 → 토큰 한도 2배(최대 1600)로 1회 재요청 (잘린 JSON 복구보다 근본 해결) ──
+    if(data && data.stop_reason === 'max_tokens' && _pass === 0){
+      _maxTok = Math.min(1600, _maxTok * 2);
+      data = null; lastErr = null;
+      continue;
+    }
+    break;
+    }
     if(!data) throw lastErr || new Error('API 요청 실패');
-    if(data.error) throw new Error(data.error.message);
+    if(data.error) throw new Error(typeof data.error === 'string' ? data.error : (data.error.message || 'API 오류'));
 
     // 사용량 추적
     if(data.usage){
@@ -7131,20 +7257,27 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       renderUsage();
     }
 
-    var rawText = data.content[0].text.trim().replace(/```json|```/g,'').trim();
+    var _cblocks = Array.isArray(data.content) ? data.content : [];
+    var rawText = '';
+    for(var _ci = 0; _ci < _cblocks.length; _ci++){
+      if(_cblocks[_ci] && typeof _cblocks[_ci].text === 'string') rawText += _cblocks[_ci].text;
+    }
+    rawText = rawText.trim().replace(/```json|```/g,'').trim();
+    if(!rawText) throw new Error('Claude 응답에 텍스트 없음 (stop_reason: '+(data.stop_reason||'?')+')');
     var jsonStart = rawText.indexOf('{');
     if(jsonStart > 0) rawText = rawText.slice(jsonStart);
 
     var result;
     if(openTrade){
       // ── 보유 포지션: Claude 전체 판단 (hold_action) ──
-      result = JSON.parse(rawText);
+      result = _safeParseClaudeJSON(rawText);
+      if(!result) throw new Error('Claude 응답 JSON 파싱 실패'+(data.stop_reason && data.stop_reason !== 'end_turn' ? ' [stop:'+data.stop_reason+']' : '')+' — 응답 앞부분: '+rawText.slice(0,60));
       result.ticker = ticker;
       _hydrateResult(result, ydata);
     } else {
       // ── 신규 진입 (MOMO/SWING/CORE): 엔진 결정 + Claude 뉴스해석 병합 ──
       var explain = {};
-      try{ explain = JSON.parse(rawText); }catch(e){}
+      explain = _safeParseClaudeJSON(rawText) || {};
 
       result = Object.assign({}, decision);
       result.ticker = ticker;
@@ -8211,6 +8344,17 @@ function cardHTML(r, mode){
     var sCell = sy.matrix_cell;
     var sSpecial = sy.special;
 
+    // ── 하드 게이트 차단 반영 (표시 모순 수정 2026-06-12) ──
+    //   매트릭스는 ENTER인데 이후 게이트(매집 부족 등)가 r.action을 BLOCK으로 바꾼 경우,
+    //   최종 판정 배너도 BLOCK으로 표시. 매트릭스 결과는 부기로 보존.
+    var _gatedBlock = (r.action === 'BLOCK' && sAction !== 'BLOCK');
+    var _matrixLabel = null;
+    if(_gatedBlock){
+      _matrixLabel = sAction === 'ENTER' ? ('ENTER ' + sPct + '%') : sAction;
+      sAction = 'BLOCK';
+      sSpecial = null;
+    }
+
     // 색상/아이콘 매핑
     var syColor, syBg, syBorder, syIcon, syLabel;
     if(sAction === 'ENTER' && sPct >= 75){
@@ -8235,7 +8379,7 @@ function cardHTML(r, mode){
       syIcon='⏸'; syLabel='WATCH';
     } else if(sAction === 'BLOCK'){
       syColor='var(--r)'; syBg='rgba(255,45,78,.08)'; syBorder='rgba(255,45,78,.25)';
-      syIcon='🛑'; syLabel='BLOCK';
+      syIcon='🛑'; syLabel = _gatedBlock ? 'BLOCK (게이트)' : 'BLOCK';
     } else {
       syColor='var(--t3)'; syBg='rgba(45,74,96,.06)'; syBorder='rgba(45,74,96,.15)';
       syIcon='—'; syLabel=sAction;
@@ -8268,7 +8412,8 @@ function cardHTML(r, mode){
           '셋업 <span style="color:'+syColor+'">'+sy.setup_label+'</span>'+
           (sy.setup_label !== (r.setup?.raw_label) && r.setup?.raw_label ? ' (raw: '+r.setup.raw_label+')' : '')+
         '</div>'+
-        '<div style="font-family:var(--mono);font-size:10px;color:var(--t2)">'+sy.note+'</div>'+
+        '<div style="font-family:var(--mono);font-size:10px;color:var(--t2)">'+sy.note+
+          (_gatedBlock ? ' <span style="color:var(--t3)">(매트릭스 '+_matrixLabel+' → 하드 게이트 차단)</span>' : '')+'</div>'+
         overrideNote+
       '</div>';
   }
@@ -9425,6 +9570,107 @@ function cycle(id,vals){
 //   - loadCoreFilters: 페이지 로드 시 텍스트 복원
 //   - getCoreFilters: 스캐너에서 호출 (숫자값으로 변환해 반환)
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════
+// ★ 리스크 관리 설정 — 모드별 독립 (momo/swing/core 각각 별도 계좌)
+//   저장 키: riskSettings_<mode>. sizeEngine.js 입력으로 사용.
+// ═══════════════════════════════════════
+function saveRiskSettings(mode){
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem('riskSettings_'+mode) || '{}'); } catch(e){}
+  var eq = document.getElementById(mode+'_acctEquity');
+  var rp = document.getElementById(mode+'_riskPctPerTrade');
+  var mp = document.getElementById(mode+'_maxPositionPct');
+  if(eq) saved.acctEquity = eq.value;
+  if(rp) saved.riskPctPerTrade = rp.textContent;
+  if(mp) saved.maxPositionPct = mp.textContent;
+  localStorage.setItem('riskSettings_'+mode, JSON.stringify(saved));
+}
+function cycleRisk(mode, key, vals){
+  var el = document.getElementById(mode+'_'+key);
+  if(!el) return;
+  var i = vals.indexOf(el.textContent);
+  el.textContent = vals[(i+1) % vals.length];
+  saveRiskSettings(mode);
+}
+function loadRiskSettings(){
+  ['momo','swing','core'].forEach(function(mode){
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem('riskSettings_'+mode) || '{}'); } catch(e){}
+    var eq = document.getElementById(mode+'_acctEquity');
+    var rp = document.getElementById(mode+'_riskPctPerTrade');
+    var mp = document.getElementById(mode+'_maxPositionPct');
+    if(eq && saved.acctEquity != null) eq.value = saved.acctEquity;
+    if(rp && saved.riskPctPerTrade) rp.textContent = saved.riskPctPerTrade;
+    if(mp && saved.maxPositionPct) mp.textContent = saved.maxPositionPct;
+  });
+}
+// 보유 카드용 — 청산 가이드 (저장된 stop/t1/t2 + 마지막 재분석 캐시)
+function renderExitGuide(t){
+  try{
+    if(!t || !t.stop || !t.entry) return '';
+    var protective = t.stop >= t.entry;
+    var stopLabel = protective
+      ? '<span style="color:var(--a)">🟠 이익보호선 $'+t.stop+'</span> <span style="color:var(--t3)">(진입가 위 — 이익 구간)</span>'
+      : '<span style="color:var(--r)">🔴 손절선 $'+t.stop+'</span>';
+    var line = '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);margin-bottom:8px;line-height:1.6">'+
+      stopLabel +
+      (t.t1?' · <span style="color:var(--g)">T1 $'+t.t1+'</span>':'')+
+      (t.t2?' · <span style="color:var(--g)">T2 $'+t.t2+'</span>':'');
+    // 마지막 재분석 시 캐시된 청산 결정이 있으면 표시
+    if(t.exitSignal && t.exitSignal.action && t.exitSignal.action !== 'HOLD'){
+      var es = t.exitSignal;
+      var c = es.action === 'SELL_ALL' ? 'var(--r)' : 'var(--a)';
+      line += '<br><span style="color:'+c+';font-weight:700">▶ '+
+        (es.action==='SELL_ALL'?'전량 청산':'절반 익절')+
+        (es.reason?' — '+es.reason:'')+'</span>';
+    } else if(t.exitSignal && t.exitSignal.stop_update){
+      line += '<br><span style="color:var(--bl)">▶ 트레일 손절 상향 제안 → $'+t.exitSignal.stop_update+'</span>';
+    }
+    line += '</div>';
+    return line;
+  }catch(e){ return ''; }
+}
+
+// 진입 카드용 — 권장 수량 한 줄 (계좌 평가액 설정 시에만 표시)
+function renderSizeLine(r){
+  try{
+    if(typeof sizeEngine !== 'function') return '';
+    var mode = (typeof G !== 'undefined' && G.currentMode) || 'swing';
+    var rs = getRiskSettings(mode);
+    if(!rs.equity) return '';  // 이 모드 계좌 미설정 → 표시 안 함
+    if(!r || !r.entry || !r.stop) return '';
+    var plan = {
+      ticker: r.ticker || r.stock && r.stock.ticker,
+      entry: r.entry, stop: r.stop,
+      type: r.swing_type || (r.swingType) || null,
+      action: r.action || 'ENTER',
+      vixRegime: (typeof G !== 'undefined' && G.vixRegime) || 'CALM',
+    };
+    var sz = sizeEngine(plan, { equity: rs.equity, cashAvailable: rs.equity },
+                        { riskPctPerTrade: rs.riskPctPerTrade, maxPositionPct: rs.maxPositionPct });
+    if(sz.skip || !sz.shares){
+      return '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-bottom:4px">권장 수량: — ('+(sz.reasons[0]||'계산 불가')+')</div>';
+    }
+    var capLabel = sz.boundBy === 'risk' ? '리스크 '+rs.riskPctPerTrade+'%'
+                 : sz.boundBy === 'position' ? '비중 '+rs.maxPositionPct+'% 한도'
+                 : sz.boundBy === 'cash' ? '현금 한도' : sz.boundBy;
+    return '<div style="font-family:var(--mono);font-size:10px;color:var(--g);margin-bottom:4px">'+
+      '권장 '+sz.shares+'주 · $'+sz.notional+' (비중 '+(sz.notional/rs.equity*100).toFixed(1)+'%) · 실리스크 '+sz.riskPctActual+'% <span style="color:var(--t3)">['+capLabel+']</span></div>';
+  }catch(e){ return ''; }
+}
+
+// sizeEngine 입력용 — 지정 모드의 설정을 숫자로 반환 (계좌 없으면 equity null)
+function getRiskSettings(mode){
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem('riskSettings_'+(mode||'swing')) || '{}'); } catch(e){}
+  var eq = parseFloat(saved.acctEquity);
+  return {
+    equity: (isFinite(eq) && eq > 0) ? eq : null,
+    riskPctPerTrade: parseFloat(saved.riskPctPerTrade) || 1.0,
+    maxPositionPct: parseFloat(saved.maxPositionPct) || 20,
+  };
+}
+
 function cycleCoreFilter(id, vals){
   var el = document.getElementById(id);
   if(!el) return;
@@ -10377,6 +10623,7 @@ async function checkMarketRegime(){
 loadAllMarket();
 // ★ CORE 필터 사용자 설정 복원 (페이지 로드 시 텍스트 텍스트 복구)
 if(typeof loadCoreFilters === 'function') loadCoreFilters();
+if(typeof loadRiskSettings === 'function') loadRiskSettings();
 // SPY 방향 3분마다 자동 갱신 (MOMO 필터 최신화)
 setInterval(checkMarketRegime, 3*60*1000);
 
@@ -10471,11 +10718,17 @@ function _factsCacheSet(key, value){
   }
 }
 
-async function loadTickerCIKMap() {
+async function loadTickerCIKMap(_retry) {
   if (tickerCIKCache) return tickerCIKCache;
-  const res = await fetch(`${SEC_PROXY_BASE}/files/company_tickers.json`);
-  if (!res.ok) throw new Error(`Ticker map fetch failed: HTTP ${res.status}`);
-  const data = await res.json();
+  const res = await fetch(`${SEC_PROXY_BASE}/files/company_tickers.json`, {cache:'no-store'});
+  if (!res.ok) throw new Error(`[SEC CIK맵] HTTP ${res.status}`);
+  let data;
+  try {
+    data = JSON.parse(await res.text());
+  } catch(pe) {
+    if (!_retry) { await new Promise(r=>setTimeout(r,600)); return loadTickerCIKMap(true); }
+    throw new Error(`[SEC CIK맵] 응답 잘림 — ${pe.message}`);
+  }
   const map = {};
   for (const key in data) {
     const e = data[key];
@@ -10492,15 +10745,22 @@ async function tickerToCIK(ticker) {
   return entry;
 }
 
-async function fetchCompanyFacts(ticker) {
+async function fetchCompanyFacts(ticker, _retry) {
   const key = ticker.toUpperCase();
   const cached = _factsCacheGet(key);
   if (cached) return cached;
   const { cik, title } = await tickerToCIK(ticker);
   const url = `${SEC_PROXY_BASE}/api/xbrl/companyfacts/CIK${cik}.json`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Facts fetch failed for ${ticker}: HTTP ${res.status}`);
-  const data = await res.json();
+  const res = await fetch(url, {cache:'no-store'});
+  if (!res.ok) throw new Error(`[SEC facts] ${ticker} HTTP ${res.status}`);
+  // 대용량(1~5MB) facts는 전송 중 잘릴 수 있음 → 잘림 감지 시 1회 재시도
+  let data;
+  try {
+    data = JSON.parse(await res.text());
+  } catch(pe) {
+    if (!_retry) { await new Promise(r=>setTimeout(r,800)); return fetchCompanyFacts(ticker, true); }
+    throw new Error(`[SEC facts] ${ticker} 응답 잘림 (재시도 실패) — ${pe.message}`);
+  }
   const result = { cik, title, facts: data.facts };
   _factsCacheSet(key, result);
   return result;
