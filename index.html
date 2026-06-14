@@ -7163,30 +7163,20 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   try{
     var apiKey = localStorage.getItem('apexKey')||''; // 하위호환: 시크릿 이전 기기용 (Worker 없을 때 폴백)
 
-        // ── Worker 프록시 경로 (1순위) — API 키가 Cloudflare 시크릿에만 존재 ──
-        var _useProxy = !!WORKER_URL;
-        var _endpoint = _useProxy
-          ? WORKER_URL + '/recon/claude'
-          : 'https://api.anthropic.com/v1/messages';
-        var _headers = _useProxy
-          ? { 'Content-Type': 'application/json' }
-          : { 'Content-Type': 'application/json', 'x-api-key': apiKey,
-              'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
-        var res = await fetch(_endpoint, {
-          method: 'POST',
-          headers: _headers,
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-6',
-            max_tokens: _maxTok,
-            temperature: 0.2,
-            messages: [{role:'user', content:prompt}]
-          })
-        });
-
     // ── 가드: 프롬프트가 비면 API 호출 금지 (content Field required 400 방지) ──
     if(!prompt || !String(prompt).trim()){
       throw new Error('프롬프트 생성 실패 (mode='+mode+', '+ticker+') — 빈 content 전송 차단됨');
     }
+
+    // ── Worker 프록시 경로 (1순위) — API 키가 Cloudflare 시크릿에만 존재 ──
+    var _useProxy = !!WORKER_URL;
+    var _endpoint = _useProxy
+      ? WORKER_URL + '/recon/claude'
+      : 'https://api.anthropic.com/v1/messages';
+    var _headers = _useProxy
+      ? { 'Content-Type': 'application/json' }
+      : { 'Content-Type': 'application/json', 'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
 
     // ── 자동 재시도 (Overloaded 대응 — 최대 3회, 지수 딜레이) ──
     var data = null;
@@ -7204,6 +7194,17 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
         await new Promise(function(res){ setTimeout(res, retryDelays[_attempt]); });
       }
       try{
+        // ★ fetch를 루프 안에서 — 재시도/토큰2배 패스마다 새 Response (body stream already read 방지)
+        var res = await fetch(_endpoint, {
+          method: 'POST',
+          headers: _headers,
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: _maxTok,
+            temperature: 0.2,
+            messages: [{role:'user', content:prompt}]
+          })
+        });
         // ── 응답 방어: 구 Worker는 /recon/claude 라우트가 없어 텍스트("RECON Worker OK")를 200으로 반환 ──
         var _raw = await res.text();
         if(_raw.indexOf('RECON Worker OK') === 0){
