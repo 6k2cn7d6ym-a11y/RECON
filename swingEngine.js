@@ -363,6 +363,25 @@ function swingEngine(ydata, swingData) {
     r.action = 'BLOCK'; return r;
   }
 
+  // ── ★ MA20 이격 과열 게이트 (비판 수용 — 추격 진입 차단) ──
+  //   스윙은 "놓쳤으면 보낸다"가 원칙. MA20에서 너무 벌어진 자리는 눌림목이 아니라 추격.
+  //   이격 8%+ → ENTER 불가(WATCH로 눌림 대기). 단 Type B 돌파형은 본질이 이격이라 예외.
+  //   이격 15%+ → 타입 무관 WATCH (과확장).
+  if (r.action === 'ENTER') {
+    var _gap = (swingData.ma20_gap_pct !== null && swingData.ma20_gap_pct !== undefined)
+      ? swingData.ma20_gap_pct
+      : (ma20 && price ? (price - ma20) / ma20 * 100 : null);
+    if (_gap !== null) {
+      if (_gap > 15) {
+        r.action = 'WATCH';
+        r.warnings.unshift('[SWING] MA20 이격 ' + _gap.toFixed(1) + '% — 과확장, 눌림목 대기 (추격 금지)');
+      } else if (_gap > 8 && swingType !== 'B') {
+        r.action = 'WATCH';
+        r.warnings.unshift('[SWING] MA20 이격 ' + _gap.toFixed(1) + '% — 눌림목 이탈, 추격 대신 되돌림 대기');
+      }
+    }
+  }
+
   // ══════════════════════════════════════
   // 6. 포지션 사이즈 권고
   //   ENTER: 타입별 기본 사이즈 (A=50%, B=25%, C=30%)

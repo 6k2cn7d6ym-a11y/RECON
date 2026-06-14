@@ -543,6 +543,24 @@ function momoEngine(ydata, ctx){
   r.slippage_pct  = ydata.slippage_pct  || 0;
   r.slippage_risk = ydata.slippage_risk || 'low';
   r.entry_slip    = ydata.entry_slip    || null;
+
+  // ── 7b. ★ 슬리피지 보정 R:R 하드 게이트 (비판 수용 — 엔진이 강제, 프롬프트 자문 아님) ──
+  //   급등주는 R:R 나쁘면 맞춰도 돈이 안 됨. 슬리피지로 진입가가 밀리면 실효 R:R이 더 나빠짐.
+  //   엔진 action을 직접 바꾸는 하드 게이트 (Claude 설명이 아니라 규칙).
+  if(r.action === 'ENTER' && r.entry && r.stop && r.target1){
+    var _slipPct = (r.slippage_pct || 0) / 100;
+    var _entryAdj = r.entry * (1 + _slipPct);          // 슬리피지로 밀린 실효 진입가
+    var _riskAdj  = _entryAdj - r.stop;                // 실효 리스크 (진입↑ → 리스크↑)
+    var _rrAdj    = _riskAdj > 0 ? (r.target1 - _entryAdj) / _riskAdj : 0;
+    r.rr_slip_adj = parseFloat(_rrAdj.toFixed(2));     // 카드 표시용
+    if(_rrAdj < 0.8){
+      r.action = 'BLOCK';
+      r.blockers.push('[R:R] 슬리피지 보정 R:R ' + _rrAdj.toFixed(2) + ' (<0.8) — 손익비 붕괴, 맞춰도 손실');
+    } else if(_rrAdj < 1.2){
+      r.action = 'WATCH';
+      r.warnings.push('[R:R] 슬리피지 보정 R:R ' + _rrAdj.toFixed(2) + ' (<1.2) — 진입 보류, 더 나은 자리 대기');
+    }
+  }
   r.float_turns   = ydata.float_turns   || null;
   r.breakout_wick_ratio    = ydata.breakout_wick_ratio    ?? null;
   r.breakout_wick_strength = ydata.breakout_wick_strength || null;

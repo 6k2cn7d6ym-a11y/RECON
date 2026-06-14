@@ -6333,6 +6333,23 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
 
   if(!coreData){ r.blockers.push('물밑 지표 데이터 부족'); r.action='BLOCK'; return r; }
 
+  // ── ★ Valuation/과확장 위험 태그 (비판 수용 — "성장은 맞는데 가격이 다 반영됐나") ──
+  //   PER/PSR 하드필터는 아님(고성장주엔 무의미). 대신 가격 과확장을 위험 신호로.
+  //   장기 추세선(MA200) 이격 + 52주 고점 근접 + 베이스 없는 급등 → 진입가가 비쌀 위험.
+  //   매도 사유가 아니라 "지금 신규/추가 진입엔 비싼 자리" 경고 (CORE 철학 유지).
+  var _valFlags = [];
+  if(coreData.price_vs_ma200_pct !== null && coreData.price_vs_ma200_pct > 40)
+    _valFlags.push('MA200 +'+coreData.price_vs_ma200_pct+'% 이격');
+  if(coreData.price_vs_52wk_high_pct !== null && coreData.price_vs_52wk_high_pct > -3)
+    _valFlags.push('52주 고점 근접');
+  if(coreData.overextended === true && coreData.base_tightening !== true)
+    _valFlags.push('베이스 없는 +30% 급등');
+  if(_valFlags.length >= 2){
+    r.valuation_risk = true;
+    r.valuation_risk_detail = _valFlags.join(' · ');
+    r.warnings.push('[밸류] 가격 과확장 ('+_valFlags.join(' · ')+') — 진입가 비쌈, 분할·눌림 대기 권고');
+  }
+
   r.accum_score       = coreData.accum_score    || 0;
   r.timing_score      = coreData.timing_score   || 0;
   r.underground_score = coreData.conditions_met || 0; // 호환
@@ -7029,10 +7046,11 @@ function buildTrackStatsPanel(mode){
       '🎯 시그널 성과 — '+(pend? '검증 대기 '+pend+'건 ('+horizon+' 후 자동 채워짐)' : '기록 없음 — 분석한 ENTER/WATCH 시그널이 여기 쌓여요')+'</div>';
   }
 
-  // 집계 헬퍼: 레코드 배열 → {n, fillRate, winRate, expectancy, avgRet, wins, losses, expired, nofill}
+  // 집계 헬퍼: 레코드 배열 → {n, fillRate, winRate, expectancy, avgRet, wins, losses, expired, nofill, t1HitRate, stopRate, avgR}
   function agg(list){
     var n=list.length, filled=0, wins=0, losses=0, expired=0, nofill=0;
     var sumRet=0, retN=0, sumWin=0, sumLoss=0;
+    var t1Hits=0, t2Hits=0, sumR=0, rN=0;
     list.forEach(function(t){
       var o=t.eval.outcome;
       if(o==='no_fill'){ nofill++; return; }
@@ -7041,6 +7059,13 @@ function buildTrackStatsPanel(mode){
       if(o==='win_t1'||o==='win_t2'){ wins++; if(t.eval.ret_pct!==null) sumWin+=t.eval.ret_pct; }
       else if(o==='loss'){ losses++; if(t.eval.ret_pct!==null) sumLoss+=t.eval.ret_pct; }
       else if(o==='expired'){ expired++; }
+      if(o==='win_t1'||o==='win_t2') t1Hits++;   // T1 도달 = T1 또는 T2
+      if(o==='win_t2') t2Hits++;
+      // R배수 = 수익률% / 진입-손절 리스크% (체결 건만)
+      if(t.eval.ret_pct!==null && t.entry && t.stop && t.entry>t.stop){
+        var riskPct = (t.entry - t.stop) / t.entry * 100;
+        if(riskPct>0){ sumR += t.eval.ret_pct / riskPct; rN++; }
+      }
     });
     var resolved = wins+losses;
     var winRate = resolved? wins/resolved : null;          // 종결 건 기준 승률
@@ -7051,7 +7076,10 @@ function buildTrackStatsPanel(mode){
       n:n, filled:filled, fillRate: n? filled/n : 0,
       wins:wins, losses:losses, expired:expired, nofill:nofill, resolved:resolved,
       winRate:winRate, avgWin:avgWin, avgLoss:avgLoss, expectancy:expectancy,
-      avgRet: retN? sumRet/retN : 0
+      avgRet: retN? sumRet/retN : 0,
+      t1HitRate: filled? t1Hits/filled : null,   // 체결 건 중 T1 도달 비율
+      stopRate:  filled? losses/filled : null,   // 체결 건 중 손절 비율
+      avgR: rN? sumR/rN : null                   // 평균 R배수 (기대값의 R 단위)
     };
   }
 
@@ -7096,6 +7124,40 @@ function buildTrackStatsPanel(mode){
     return '<div style="margin-top:4px;color:var(--t3)">'+label+': '+parts.join(' · ')+'</div>';
   }
   html += breakdown(function(t){ return t.features && t.features.type ? 'Type '+t.features.type : null; }, '타입별');
+
+  // ── ★ 타입별 상세 성과 (비판 수용 — 타입을 하나로 뭉치지 마라) ──
+  //   winRate만으론 부족. avgR(기대값 R단위) + T1도달률 + 손절률을 타입별로.
+  //   Type A 눌림목 vs Type B 돌파는 완전히 다른 전략 → 따로 봐야 엣지가 보임.
+  (function(){
+    var typeGroups={};
+    evald.forEach(function(t){
+      var ty = t.features && t.features.type; if(!ty) return;
+      (typeGroups[ty]=typeGroups[ty]||[]).push(t);
+    });
+    var tkeys=Object.keys(typeGroups).filter(function(k){ return agg(typeGroups[k]).filled>=3; });
+    if(tkeys.length){
+      var typeLabels = mode==='swing'
+        ? {'A':'A 눌림목','B':'B 돌파','C':'C 반전'}
+        : {'A':'A','B':'B','C':'C'};
+      html += '<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--b)">';
+      html += '<div style="color:'+col1+';font-weight:700;margin-bottom:3px">📐 타입별 상세 (체결 3건+)</div>';
+      tkeys.sort().forEach(function(k){
+        var g=agg(typeGroups[k]);
+        var rColor = g.avgR===null? 'var(--t3)' : g.avgR>=0.3?'var(--g)':g.avgR>=0?'var(--a)':'var(--r)';
+        var lbl = typeLabels[k] || k;
+        html += '<div style="color:var(--t2);margin-top:2px">'+
+          'Type '+lbl+' <span style="color:var(--t3)">('+g.filled+'건)</span>: '+
+          '승률 '+pct(g.winRate)+' · 평균R <span style="color:'+rColor+';font-weight:700">'+(g.avgR===null?'—':(g.avgR>=0?'+':'')+g.avgR.toFixed(2)+'R')+'</span> · '+
+          'T1도달 '+pct(g.t1HitRate)+' · 손절 '+pct(g.stopRate)+'</div>';
+      });
+      // 가장 약한 타입 경고 (avgR 음수면 그 타입은 빼는 게 나을 수 있음)
+      var weak = tkeys.filter(function(k){ var g=agg(typeGroups[k]); return g.avgR!==null && g.avgR<0 && g.filled>=5; });
+      if(weak.length){
+        html += '<div style="color:var(--r);margin-top:3px;font-size:9px">⚠ Type '+weak.map(function(k){return typeLabels[k]||k;}).join('/')+' 평균R 음수 (5건+) — 이 타입은 제외 검토</div>';
+      }
+      html += '</div>';
+    }
+  })();
   if(mode==='momo'){
     html += breakdown(function(t){ return t.features && t.features.preSetup ? t.features.preSetup : null; }, 'PRE셋업');
     html += breakdown(function(t){ return t.phase || null; }, '시간대');
@@ -8433,6 +8495,10 @@ function cardHTML(r, mode){
   // 데이터 부실 강등 배지 (MOMO — ENTER→WATCH 사유)
   if(r.data_downgrade && r.data_downgrade_reason){
     tags+='<span class="tag" style="color:var(--a);background:rgba(255,170,0,.12);border:1px solid var(--a);font-weight:700">📊 데이터 부실 ('+r.data_downgrade_reason+')</span>';
+  }
+  // CORE valuation 과확장 배지 (진입가 비쌈 경고 — 매도 사유 아님)
+  if(r.valuation_risk && r.valuation_risk_detail){
+    tags+='<span class="tag" style="color:var(--a);background:rgba(255,170,0,.1);border:1px solid var(--a)">💰 과확장 ('+r.valuation_risk_detail+')</span>';
   }
   // 어닝 임박 배지 (전 모드 — 갭 리스크 경고)
   if(r.earningsDaysAway !== null && r.earningsDaysAway !== undefined && r.earningsDaysAway >= 0 && r.earningsDaysAway <= 14){
