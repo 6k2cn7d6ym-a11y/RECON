@@ -41,6 +41,29 @@ var SWING_ENTER_COND   = 6;   // ENTER 최소 조건 수 — 백테스트 검증
 var SWING_T1_MIN_DIST  = 0.01;  // 백테스트 정렬 (2026-06): 2%→1% — 가까운 저항도 T1 후보로 (도달률↑)
 var SWING_T2_MIN_GAP   = 0.05;
 
+// ── 스윙 적합성 필터 (스크리너 정제용 — 2026-06) ──
+//   부적합: 초저가/초고가, 저변동성(잔잔), 초대형. 스윙은 변동성 있는 중소형 성장주가 맞음.
+var SWING_FIT_PRICE_MIN = 10;    // $10 미만: 조작·세금손실 매물·저유동
+var SWING_FIT_PRICE_MAX = 150;   // $150 초과: 소액계좌 진입 불가(1주가 큰 비중)
+var SWING_FIT_ATRPCT_MIN = 2.5;  // ATR% 2.5% 미만: 변동성 부족(은행·REIT·유틸) — 스윙 먹을 게 없음
+var SWING_FIT_CAP_MAX_B  = 100;  // 시총 $100B 초과: 초대형주는 스윙 변동성 부족
+// 반환: { fit:bool, reasons:[] } — 부적합 사유 목록
+function swingFitness(price, atr20, marketCap_b){
+  var reasons = [];
+  if (price != null){
+    if (price < SWING_FIT_PRICE_MIN) reasons.push('초저가 $'+price+' (<$'+SWING_FIT_PRICE_MIN+')');
+    if (price > SWING_FIT_PRICE_MAX) reasons.push('초고가 $'+price+' (>$'+SWING_FIT_PRICE_MAX+')');
+  }
+  if (price != null && atr20 != null && price > 0){
+    var atrPct = atr20 / price * 100;
+    if (atrPct < SWING_FIT_ATRPCT_MIN) reasons.push('저변동성 ATR '+atrPct.toFixed(1)+'% (<'+SWING_FIT_ATRPCT_MIN+'%)');
+  }
+  if (marketCap_b != null && marketCap_b > SWING_FIT_CAP_MAX_B){
+    reasons.push('초대형 $'+Math.round(marketCap_b)+'B (>$'+SWING_FIT_CAP_MAX_B+'B)');
+  }
+  return { fit: reasons.length === 0, reasons: reasons };
+}
+
 // ── 타입별 핵심 조건 정의 ──
 // 각 타입에서 반드시 충족해야 할 조건 인덱스 (0-based: c1=0 ... c8=7)
 // 핵심 조건이 하나라도 빠지면 ENTER 불가 (WATCH로 강등)
@@ -532,9 +555,10 @@ function calcSwingEntrySignal(r) {
 
 // ── 모듈 export (Node + 브라우저 양쪽 호환) ──
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { swingEngine: swingEngine, calcSwingEntrySignal: calcSwingEntrySignal };
+  module.exports = { swingEngine: swingEngine, calcSwingEntrySignal: calcSwingEntrySignal, swingFitness: swingFitness };
 }
 if (typeof window !== 'undefined') {
   window.swingEngine          = swingEngine;
   window.calcSwingEntrySignal = calcSwingEntrySignal;
+  window.swingFitness         = swingFitness;
 }

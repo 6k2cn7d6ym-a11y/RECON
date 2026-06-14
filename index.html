@@ -3164,6 +3164,12 @@ async function runSwingScreener(){
           var decision = swingEngine(ydata, swingData);
           if(decision.action === 'BLOCK') return null;
 
+          // ── 스윙 적합성 필터 (스크리너 정제) — 부적합 종목 완전 제외 ──
+          if(typeof swingFitness === 'function'){
+            var _fit = swingFitness(ydata.price, swingData.atr20, ydata.marketCap_b);
+            if(!_fit.fit) return null;  // 초저가/초고가/저변동/초대형 → 후보에서 제외
+          }
+
           return {
             ticker:   q.symbol,
             action:   decision.action,
@@ -8198,6 +8204,13 @@ function cardHTML(r, mode){
     else if(r.slippage_risk==='medium') tags+='<span class="tag ta">⚠ 슬리피지</span>';
   }
   if(ac==='BLOCK')                 tags+='<span class="tag tr">BLOCK</span>';
+  // 스윙 부적합 경고 (개별 분석 시 — 스크리너는 이미 제외됨)
+  if(r._mode==='swing' && typeof swingFitness==='function' && r.entry){
+    var _sf = swingFitness(r.price||r.entry, r.atr20, r.marketCap_b);
+    if(!_sf.fit){
+      tags+='<span class="tag" style="color:var(--a);background:rgba(255,170,0,.1);border:1px solid var(--a)">⚠ 스윙부적합 ('+_sf.reasons[0].split(' ')[0]+')</span>';
+    }
+  }
   // 임상 바이오텍 catalyst 경고 (갭 리스크 — 사이즈 자동 축소됨)
   if(r.clinical_catalyst){
     var _ckw = (r.clinical_kw && r.clinical_kw.length) ? (' ('+r.clinical_kw.join('/')+')') : '';
