@@ -36,7 +36,8 @@ function _swCfg(id, fallback){
 // ── 상수 ──
 var SWING_ENTER_SCORE  = 70;  // ENTER 최소 점수
 var SWING_WATCH_SCORE  = 40;  // WATCH 최소 점수
-var SWING_MIN_COND     = 4;   // 진입 신호 발화 최소 조건 수
+var SWING_MIN_COND     = 4;   // 진입 신호 발화 최소 조건 수 (WATCH 하한)
+var SWING_ENTER_COND   = 6;   // ENTER 최소 조건 수 — 백테스트 검증(2026-06): 6개+ 기대값 +1.15~1.83%(전체 +0.12~0.62% 대비), 250·750일 양 기간 우월
 var SWING_T1_MIN_DIST  = 0.01;  // 백테스트 정렬 (2026-06): 2%→1% — 가까운 저항도 T1 후보로 (도달률↑)
 var SWING_T2_MIN_GAP   = 0.05;
 
@@ -303,7 +304,7 @@ function swingEngine(ydata, swingData) {
   // ENTER 조건 (모두 충족):
   //   ① score ≥ SWING_ENTER_SCORE (70)
   //   ② 타입별 핵심조건 모두 충족 (_coresMet)
-  //   ③ conditions_met ≥ 5
+  //   ③ conditions_met ≥ SWING_ENTER_COND (6 — 백테스트 검증)
   //   ④ T1 상방 충분 (위에서 BLOCK 안 됨)
   //
   // WATCH 조건:
@@ -312,9 +313,9 @@ function swingEngine(ydata, swingData) {
   //
   // BLOCK: 나머지
   // ══════════════════════════════════════
-  if (r.score >= SWING_ENTER_SCORE && r._coresMet && r.conditions_met >= 5) {
+  if (r.score >= SWING_ENTER_SCORE && r._coresMet && r.conditions_met >= SWING_ENTER_COND) {
     r.action = 'ENTER';
-  } else if (r.score >= SWING_WATCH_SCORE && r.conditions_met >= 4) {
+  } else if (r.score >= SWING_WATCH_SCORE && r.conditions_met >= SWING_MIN_COND) {
     r.action = 'WATCH';
   } else {
     r.blockers.push('[SWING] 점수 ' + r.score + '점 / 조건 ' + r.conditions_met + '/8 — WATCH 기준 미달');

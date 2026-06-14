@@ -1640,28 +1640,16 @@ function updateClock(){
 // ═══════════════════════════════════════
 var WORKER_URL = 'https://recon.miinonnnn.workers.dev';
 
-async function fetchWithProxy(url, _retry){
+async function fetchWithProxy(url){
   // 캐시 버스팅 — Yahoo Finance URL 안에 포함해야 Worker/CF 캐시 우회 가능
   var bustUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
   var fetchP = fetch(WORKER_URL + '?url=' + encodeURIComponent(bustUrl), {cache:'no-store'})
     .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
-    .then(function(t){
-      try{ return JSON.parse(t); }
-      catch(pe){ throw new Error('응답 JSON 잘림: ' + pe.message); }
-    });
+    .then(function(t){ return JSON.parse(t); });
   var timeoutP = new Promise(function(_,reject){
     setTimeout(function(){ reject(new Error('timeout')); }, 8000);
   });
-  try{
-    return await Promise.race([fetchP, timeoutP]);
-  }catch(e){
-    // 잘린 응답/타임아웃은 일시적 — 1회 재시도 (새 cache-bust로)
-    if(!_retry && (e.message.includes('잘림') || e.message === 'timeout')){
-      await new Promise(function(res){ setTimeout(res, 600); });
-      return fetchWithProxy(url, true);
-    }
-    throw e;
-  }
+  return Promise.race([fetchP, timeoutP]);
 }
 
 // ═══════════════════════════════════════
@@ -2200,54 +2188,13 @@ async function runCoreScanner(){
     setStatus('');
     if(statusEl) statusEl.style.display = 'none';
     
-    // ★ C3 (2026-05-31) + FIX (2026-06-12): 스캔 buckets 영속화 → 탭 전환·리로드 후 복원
-    //   [버그] babylon 원본(SEC facts 포함)을 통째로 저장 → localStorage 5MB 초과로 조용히 실패
-    //          → 옛 스캔(데이터 적어 저장 성공했던 것)이 계속 복원되던 문제.
-    //   [수정] 카드 렌더에 필요한 필드만 추출(slim)해 저장. 실패 시 stale 제거 → watchlist fallback.
+    // ★ C3 (2026-05-31): 스캔 buckets 영속화 → 탭 전환 후 페이지 리로드돼도 복원 가능
     try{
-      var _slimItem = function(r){
-        var bb = r.babylon || {};
-        var st = bb.stages || {};
-        var acc = st.acceleration && st.acceleration.details;
-        return {
-          stock: r.stock ? {
-            ticker: r.stock.ticker, name: r.stock.name, excd: r.stock.excd,
-            marketCap: r.stock.marketCap, price: r.stock.price
-          } : null,
-          babylon: {
-            verdict: bb.verdict, reason: bb.reason,
-            decision_details: { position_size_pct: (bb.decision_details||{}).position_size_pct },
-            stages: {
-              quarters: (st.quarters||[]).slice(-8),
-              warnings: (st.warnings||[]).map(function(w){ return { type:w.type, severity:w.severity, message:w.message }; }),
-              acceleration: acc ? { details: {
-                quarters: (acc.quarters||[]).slice(-8).map(function(q){ return { yoy_pct:q.yoy_pct, revenue_m:q.revenue_m }; }),
-                latest_jump_pp: acc.latest_jump_pp
-              } } : undefined,
-              margin_improvement: st.margin_improvement ? { reason: st.margin_improvement.reason, improved: st.margin_improvement.improved } : undefined,
-              revenue_collapse: st.revenue_collapse ? { collapsing: st.revenue_collapse.collapsing } : undefined,
-              profit_turnaround: st.profit_turnaround ? { turned_profitable: st.profit_turnaround.turned_profitable } : undefined
-            }
-          },
-          entry: r.entry ? {
-            firstDetected: r.entry.firstDetected, scanCount: r.entry.scanCount,
-            lastWasDegraded: r.entry.lastWasDegraded,
-            verdictHistory: (r.entry.verdictHistory||[]).slice(-5)
-          } : null,
-          status: r.status
-        };
-      };
-      var _slimArr = function(arr){ return (arr||[]).map(_slimItem); };
       localStorage.setItem('lastCoreScan', JSON.stringify({
-        v: 2,
         ts: Date.now(),
-        buckets: { new: _slimArr(newStocks), kept: _slimArr(keptStocks), improved: _slimArr(improvedStocks), degraded: _slimArr(degradedStocks) }
+        buckets: { new: newStocks, kept: keptStocks, improved: improvedStocks, degraded: degradedStocks }
       }));
-    }catch(e){
-      console.warn('[CoreScan] lastCoreScan 저장 실패:', e);
-      // stale 복원 방지 — 옛 스냅샷 제거하고 watchlist 기반 fallback이 최신 상태를 그리게 함
-      try{ localStorage.removeItem('lastCoreScan'); }catch(_e){}
-    }
+    }catch(e){ console.warn('[CoreScan] lastCoreScan 저장 실패 (quota 가능):', e); }
     
     renderCoreScannerResults({ new: newStocks, kept: keptStocks, improved: improvedStocks, degraded: degradedStocks });
     
@@ -2350,8 +2297,7 @@ function renderCoreScannerFromStorage(){
     var raw = localStorage.getItem('lastCoreScan');
     if(raw){
       var saved = JSON.parse(raw);
-      // v2(slim) 스냅샷만 복원 — 구버전(무거운 babylon 원본)은 무시하고 watchlist fallback
-      if(saved && saved.v === 2 && saved.buckets && (Date.now() - (saved.ts||0) < 24*60*60*1000)){
+      if(saved && saved.buckets && (Date.now() - (saved.ts||0) < 24*60*60*1000)){
         renderCoreScannerResults(saved.buckets);
         return;
       }
@@ -6209,6 +6155,11 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     r.blockers.push('[CORE] '+r.setup.fail_reason.replace(/ → FAIL.*$/, ''));
   }
 
+  // ── 매집 신호 부족 (차트 hard block과는 별개 — 점수 기반) ──
+  if(r.accum_score<3){
+    r.action='BLOCK'; r.blockers.push('[CORE] 매집 신호 부족 ('+r.accum_score+'/10) — 기관 수급 미확인'); return r;
+  }
+
   // ── 진입가 / 손절 / 목표가 ──
   if(ydata.price){
     var cEntry=parseFloat((ydata.price*1.003).toFixed(2));
@@ -6257,11 +6208,6 @@ function coreEngine(ydata, coreData, fundData, sectorData, babylonResult){
     else if(_bv === 'WATCH_WEAK' || _bv === 'WATCH_CLAUDE')            fundW = 6;
   }
   r.score=Math.min(100, Math.round(r.accum_score*4 + r.timing_score*4 + fundW));
-
-  // ── 매집 신호 부족 게이트 (점수 계산 후로 이동 — BLOCK 카드도 점수 표시) ──
-  if(r.accum_score<3){
-    r.action='BLOCK'; r.blockers.push('[CORE] 매집 신호 부족 ('+r.accum_score+'/10) — 기관 수급 미확인'); return r;
-  }
 
   // ── 신호 / 경고 빌드 ──
   if(coreData.ad_line_slope>0)          r.signals.push('A/D Line 상승 ('+coreData.ad_line_slope+'%)');
@@ -6534,35 +6480,6 @@ async function runModeScan(mode){
 }
 
 // ── ydata 공통 필드를 result 객체에 주입 (openTrade/신규 공통) ──
-// ── Claude JSON 응답 안전 파서 — max_tokens 잘림 시 따옴표/중괄호 닫아 복구 시도 ──
-function _safeParseClaudeJSON(rawText){
-  if(!rawText) return null;
-  var t = String(rawText).trim();
-  var i = t.indexOf('{'), j = t.lastIndexOf('}');
-  if(i >= 0 && j > i) t = t.slice(i, j + 1);
-  else if(i >= 0) t = t.slice(i);
-  try{ return JSON.parse(t); }catch(e){}
-  // 복구: 잘린 마지막 조각이 '값'이면 따옴표 닫고, '키'면 통째로 제거
-  try{
-    var rep = t;
-    var q = 0, lastQ = -1;
-    for(var k = 0; k < rep.length; k++){
-      if(rep[k] === '"' && (k === 0 || rep[k-1] !== '\\')){ q++; lastQ = k; }
-    }
-    if(q % 2 === 1 && lastQ >= 0){
-      // 미닫힌 따옴표 — 그 앞 비공백 문자로 값/키 판별
-      var b = lastQ - 1;
-      while(b >= 0 && /\s/.test(rep[b])) b--;
-      if(b >= 0 && rep[b] === ':'){ rep += '"'; }              // 값 잘림 → 닫기 (내용 보존)
-      else { rep = rep.slice(0, lastQ).replace(/,\s*$/, ''); } // 키 잘림 → 조각 제거
-    }
-    rep = rep.replace(/,\s*"[^"]*"\s*:\s*$/, '').replace(/,\s*$/, '');  // 콜론까지 잘린 키 정리
-    var opens = (rep.match(/{/g)||[]).length, closes = (rep.match(/}/g)||[]).length;
-    while(closes < opens){ rep += '}'; closes++; }
-    return JSON.parse(rep);
-  }catch(e2){ return null; }
-}
-
 // ── 스윙 카드용 일봉 레벨 주입 (calcSwingEntrySignal 입력 보강) ──
 // swingEngine은 entry/stop/target만 r에 넣으므로, 진입신호 함수가 읽는
 // 일봉 MA20/MA60/ATR20/저항을 swingData에서 채워준다 (1분봉 intraday 레벨 아님).
@@ -7157,7 +7074,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
           headers: _headers,
           body: JSON.stringify({
             model: 'claude-sonnet-4-6',
-            max_tokens: openTrade ? 600 : (mode==='swing' && !openTrade && decision && decision.action !== 'BLOCK') ? 600 : mode==='core' ? 700 : 300,
+            max_tokens: openTrade ? 600 : (mode==='swing' && !openTrade && decision && decision.action !== 'BLOCK') ? 600 : mode==='core' ? 500 : 250,
             temperature: 0.2,
             messages: [{role:'user', content:prompt}]
           })
@@ -7182,38 +7099,25 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
         await new Promise(function(res){ setTimeout(res, retryDelays[_attempt]); });
       }
       try{
-        // ── 응답 방어: 구 Worker는 /recon/claude 라우트가 없어 텍스트("RECON Worker OK")를 200으로 반환 ──
-        var _raw = await res.text();
-        if(_raw.indexOf('RECON Worker OK') === 0){
-          var _we = new Error('Worker가 구버전입니다 — /recon/claude 라우트 없음. Cloudflare 대시보드에서 새 worker.js를 배포하세요');
-          _we._fatal = true; throw _we;
-        }
-        var _d;
-        try{ _d = JSON.parse(_raw); }
-        catch(_pe){
-          var _je = new Error('Worker 응답이 JSON이 아님 (HTTP '+res.status+'): '+_raw.slice(0,60));
-          _je._fatal = true; throw _je;
-        }
+        var _d = await res.json();
         if(_d.error){
-          // Anthropic 형식(객체) / Worker 형식(문자열) 모두 대응
-          var errType = (_d.error && _d.error.type) || '';
-          var errMsg  = (typeof _d.error === 'string') ? _d.error : (_d.error.message || JSON.stringify(_d.error));
+          var errType = _d.error.type || '';
+          // Overloaded/rate_limit → 재시도, 나머지 → 즉시 throw
           if(errType === 'overloaded_error' || errType === 'rate_limit_error' || res.status === 429 || res.status === 529){
-            lastErr = new Error(errMsg);
+            lastErr = new Error(_d.error.message);
             continue; // 재시도
           }
-          var _ae = new Error(errMsg); _ae._fatal = true; throw _ae;
+          throw new Error(_d.error.message);
         }
         data = _d;
         break; // 성공 → 루프 종료
       }catch(fetchErr){
         lastErr = fetchErr;
-        if(fetchErr._fatal) break;          // 재시도 무의미한 오류는 즉시 중단
         if(_attempt < retryDelays.length - 1) continue;
       }
     }
     if(!data) throw lastErr || new Error('API 요청 실패');
-    if(data.error) throw new Error(typeof data.error === 'string' ? data.error : (data.error.message || 'API 오류'));
+    if(data.error) throw new Error(data.error.message);
 
     // 사용량 추적
     if(data.usage){
@@ -7234,14 +7138,13 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     var result;
     if(openTrade){
       // ── 보유 포지션: Claude 전체 판단 (hold_action) ──
-      result = _safeParseClaudeJSON(rawText);
-      if(!result) throw new Error('Claude 응답 JSON 파싱 실패 (잘림 복구 불가)');
+      result = JSON.parse(rawText);
       result.ticker = ticker;
       _hydrateResult(result, ydata);
     } else {
       // ── 신규 진입 (MOMO/SWING/CORE): 엔진 결정 + Claude 뉴스해석 병합 ──
       var explain = {};
-      explain = _safeParseClaudeJSON(rawText) || {};
+      try{ explain = JSON.parse(rawText); }catch(e){}
 
       result = Object.assign({}, decision);
       result.ticker = ticker;
@@ -8308,17 +8211,6 @@ function cardHTML(r, mode){
     var sCell = sy.matrix_cell;
     var sSpecial = sy.special;
 
-    // ── 하드 게이트 차단 반영 (표시 모순 수정 2026-06-12) ──
-    //   매트릭스는 ENTER인데 이후 게이트(매집 부족 등)가 r.action을 BLOCK으로 바꾼 경우,
-    //   최종 판정 배너도 BLOCK으로 표시. 매트릭스 결과는 부기로 보존.
-    var _gatedBlock = (r.action === 'BLOCK' && sAction !== 'BLOCK');
-    var _matrixLabel = null;
-    if(_gatedBlock){
-      _matrixLabel = sAction === 'ENTER' ? ('ENTER ' + sPct + '%') : sAction;
-      sAction = 'BLOCK';
-      sSpecial = null;
-    }
-
     // 색상/아이콘 매핑
     var syColor, syBg, syBorder, syIcon, syLabel;
     if(sAction === 'ENTER' && sPct >= 75){
@@ -8343,7 +8235,7 @@ function cardHTML(r, mode){
       syIcon='⏸'; syLabel='WATCH';
     } else if(sAction === 'BLOCK'){
       syColor='var(--r)'; syBg='rgba(255,45,78,.08)'; syBorder='rgba(255,45,78,.25)';
-      syIcon='🛑'; syLabel = _gatedBlock ? 'BLOCK (게이트)' : 'BLOCK';
+      syIcon='🛑'; syLabel='BLOCK';
     } else {
       syColor='var(--t3)'; syBg='rgba(45,74,96,.06)'; syBorder='rgba(45,74,96,.15)';
       syIcon='—'; syLabel=sAction;
@@ -8376,8 +8268,7 @@ function cardHTML(r, mode){
           '셋업 <span style="color:'+syColor+'">'+sy.setup_label+'</span>'+
           (sy.setup_label !== (r.setup?.raw_label) && r.setup?.raw_label ? ' (raw: '+r.setup.raw_label+')' : '')+
         '</div>'+
-        '<div style="font-family:var(--mono);font-size:10px;color:var(--t2)">'+sy.note+
-          (_gatedBlock ? ' <span style="color:var(--t3)">(매트릭스 '+_matrixLabel+' → 하드 게이트 차단)</span>' : '')+'</div>'+
+        '<div style="font-family:var(--mono);font-size:10px;color:var(--t2)">'+sy.note+'</div>'+
         overrideNote+
       '</div>';
   }
@@ -10580,17 +10471,11 @@ function _factsCacheSet(key, value){
   }
 }
 
-async function loadTickerCIKMap(_retry) {
+async function loadTickerCIKMap() {
   if (tickerCIKCache) return tickerCIKCache;
-  const res = await fetch(`${SEC_PROXY_BASE}/files/company_tickers.json`, {cache:'no-store'});
-  if (!res.ok) throw new Error(`[SEC CIK맵] HTTP ${res.status}`);
-  let data;
-  try {
-    data = JSON.parse(await res.text());
-  } catch(pe) {
-    if (!_retry) { await new Promise(r=>setTimeout(r,600)); return loadTickerCIKMap(true); }
-    throw new Error(`[SEC CIK맵] 응답 잘림 — ${pe.message}`);
-  }
+  const res = await fetch(`${SEC_PROXY_BASE}/files/company_tickers.json`);
+  if (!res.ok) throw new Error(`Ticker map fetch failed: HTTP ${res.status}`);
+  const data = await res.json();
   const map = {};
   for (const key in data) {
     const e = data[key];
@@ -10607,22 +10492,15 @@ async function tickerToCIK(ticker) {
   return entry;
 }
 
-async function fetchCompanyFacts(ticker, _retry) {
+async function fetchCompanyFacts(ticker) {
   const key = ticker.toUpperCase();
   const cached = _factsCacheGet(key);
   if (cached) return cached;
   const { cik, title } = await tickerToCIK(ticker);
   const url = `${SEC_PROXY_BASE}/api/xbrl/companyfacts/CIK${cik}.json`;
-  const res = await fetch(url, {cache:'no-store'});
-  if (!res.ok) throw new Error(`[SEC facts] ${ticker} HTTP ${res.status}`);
-  // 대용량(1~5MB) facts는 전송 중 잘릴 수 있음 → 잘림 감지 시 1회 재시도
-  let data;
-  try {
-    data = JSON.parse(await res.text());
-  } catch(pe) {
-    if (!_retry) { await new Promise(r=>setTimeout(r,800)); return fetchCompanyFacts(ticker, true); }
-    throw new Error(`[SEC facts] ${ticker} 응답 잘림 (재시도 실패) — ${pe.message}`);
-  }
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Facts fetch failed for ${ticker}: HTTP ${res.status}`);
+  const data = await res.json();
   const result = { cik, title, facts: data.facts };
   _factsCacheSet(key, result);
   return result;
