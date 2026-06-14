@@ -587,7 +587,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   <div class="sg-row"><div><div class="sg-label">BLOCK 알림</div></div><button class="toggle on" id="tgBlock" onclick="this.classList.toggle('on')"></button></div>
 
   <div class="sg-title">앱</div>
-  <div class="sg-row"><div class="sg-label">RECON v3.1</div><div style="font-family:var(--mono);font-size:11px;color:var(--t2)">SWING 전략 강화</div></div>
+  <div class="sg-row"><div class="sg-label" id="appVersionLabel">RECON</div><div id="appVersionDetail" style="font-family:var(--mono);font-size:11px;color:var(--t2)">버전 확인 중...</div></div>
   <div class="sg-row"><div><div class="sg-label">강제 새로고침</div><div class="sg-sub">서비스워커·캐시 비우고 재로드</div></div><button onclick="forceRefresh()" style="background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:7px 14px;font-family:var(--mono);font-size:11px;color:var(--t);cursor:pointer">🔄 새로고침</button></div>
   <div class="sg-row" style="flex-direction:column;align-items:flex-start;gap:6px">
     <div class="sg-label">API 사용량</div>
@@ -1595,6 +1595,25 @@ function switchSubTab(sub){
   if(sub === 'search'){
     renderOpenPositions(G.currentMode);
     if(G.currentMode === 'momo') renderMomoTodayCards();
+  }
+  if(sub === 'settings'){
+    var _vEl = document.getElementById('appVersionDetail');
+    var _lEl = document.getElementById('appVersionLabel');
+    if(_vEl){
+      var _ver = window.SWING_ENGINE_VERSION || null;
+      if(_ver){
+        var _parts = _ver.split('-');
+        var _date = _parts.slice(0,3).join('-');
+        var _tag  = _parts.slice(3).join('-');
+        if(_lEl) _lEl.textContent = 'RECON';
+        _vEl.textContent = _date + (_tag ? ' · ' + _tag : '');
+        _vEl.style.color = 'var(--g)';
+      } else {
+        if(_lEl) _lEl.textContent = 'RECON';
+        _vEl.textContent = '⚠ swingEngine 구버전 — 강제 새로고침 필요';
+        _vEl.style.color = 'var(--a)';
+      }
+    }
   }
 }
 
@@ -3171,7 +3190,7 @@ async function runSwingScreener(){
             try{ await _ensureWbMarketCapCache(); if(_WB_CAP_CACHE.map[q.symbol]) _capB = _WB_CAP_CACHE.map[q.symbol]; }catch(e){}
           }
           var _avgVol = swingData.vol20avg || ydata.avgVolume || null;
-          var _rvol = ydata.rvol || null;
+          var _rvol = ydata.rvol || swingData.vol_ratio || null;  // vol_ratio 폴백 (스크리너에서 항상 채워짐)
           var _fitReasons = [];
           if(typeof swingFitness === 'function'){
             // 가격 상한 제외(false) — 수익성/유동성만 거름. 계좌별 진입가능성은 sizeEngine이 카드에서 판단.
@@ -3182,11 +3201,14 @@ async function runSwingScreener(){
             var _p = ydata.price, _a = swingData.atr20;
             if(_p != null && _p < 10) _fitReasons.push('초저가');
             if(_p != null && _a != null && _p > 0 && (_a/_p*100) < 2.5) _fitReasons.push('저변동');
-            if(_capB != null && _capB > 100) _fitReasons.push('초대형');
             if(_avgVol != null && _avgVol > 0 && _avgVol < 500000) _fitReasons.push('저유동');
             if(_rvol != null && _rvol > 0 && _rvol < 0.3) _fitReasons.push('거래고갈');
           }
-          if(_fitReasons.length > 0) return null;  // 수익성/유동성 부적합 → 제외
+          if(_fitReasons.length > 0){
+            console.log('[스크리너 제외]', q.symbol, '$'+ydata.price, 'ATR%='+(swingData.atr20&&ydata.price?(swingData.atr20/ydata.price*100).toFixed(1):'?'), 'RVol='+(_rvol||'?'), '→', _fitReasons.join(','));
+            return null;  // 수익성/유동성 부적합 → 제외
+          }
+          console.log('[스크리너 통과]', q.symbol, '$'+ydata.price, 'ATR%='+(swingData.atr20&&ydata.price?(swingData.atr20/ydata.price*100).toFixed(1):'?'), 'fitFn='+(typeof swingFitness));
 
           return {
             ticker:   q.symbol,
@@ -7507,6 +7529,24 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     if(!openTrade) captureReconSignal(result, mode);
     // 거래 기록용 스냅샷 저장 (진입 시 카드 상황 보존)
     G_cardSnapshots[mode+'_'+ticker] = _buildSnapshot(result, mode);
+
+    // ── 보유 중 재분석 시 stop/t1/t2 자동 갱신 ──
+    //   재분석이 항상 더 정확 (현재가 기준 ATR·저항·뉴스 반영) → 진입 시 스냅샷을 덮어씀
+    if(openTrade && result.stop && result.target1 && result.target2){
+      var _newStop = parseFloat(result.stop.toFixed(2));
+      var _newT1   = parseFloat(result.target1.toFixed(2));
+      var _newT2   = parseFloat(result.target2.toFixed(2));
+      var _changed = (_newStop !== openTrade.stop) || (_newT1 !== openTrade.t1) || (_newT2 !== openTrade.t2);
+      if(_changed){
+        openTrade.stop = _newStop;
+        openTrade.t1   = _newT1;
+        openTrade.t2   = _newT2;
+        openTrade.updatedAt = Date.now();
+        saveJournal();
+        console.log('[재분석 자동갱신]', ticker, '손절→$'+_newStop, 'T1→$'+_newT1, 'T2→$'+_newT2);
+      }
+    }
+
     analyzeEl.innerHTML = '';
     resultEl.innerHTML = openTrade ? holdCardHTML(result, mode, openTrade) : cardHTML(result, mode);
     // MOMO: 오늘 분석 카드 목록 갱신
