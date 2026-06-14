@@ -3157,6 +3157,10 @@ async function runSwingScreener(){
           }catch(e){}
 
           var swingData = await fetchSwingData(q.symbol);
+          // 어닝일 폴백 — chart meta에 없으면 quoteSummary로 (어닝 임박 BLOCK/경고 작동)
+          if(ydata.earningsDaysAway === null || ydata.earningsDaysAway === undefined){
+            try{ var _e = await fetchEarningsDate(q.symbol); if(_e) ydata.earningsDaysAway = _e.daysAway; }catch(e){}
+          }
           var decision = swingEngine(ydata, swingData);
           if(decision.action === 'BLOCK') return null;
 
@@ -3532,7 +3536,7 @@ async function fetchYahooData(ticker){
         var daysAway = Math.round((ets * 1000 - Date.now()) / 86400000);
         result.earningsDaysAway = daysAway; // 음수 = 이미 지남, 양수 = N일 후
       } else {
-        result.earningsDaysAway = null;
+        result.earningsDaysAway = null;  // chart meta에 없음 → 아래에서 quoteSummary 폴백
       }
       // averageVolume from v8 — 오늘 미완성 캔들 제외
       var vols5 = qt0?.indicators?.quote?.[0]?.volume || [];
@@ -3700,7 +3704,14 @@ async function fetchYahooData(ticker){
         if(elapsedFrac > 0.05){ // 최소 5% 이상 경과해야 보정 의미 있음
           var projectedVol = result.volume / elapsedFrac;
           result.rvol_raw       = parseFloat((result.volume / result.avgVolume).toFixed(1));
-          result.rvol           = parseFloat((projectedVol  / result.avgVolume).toFixed(1));
+          var _rvCalc           = projectedVol / result.avgVolume;
+          // 상한 가드: RVol 30x 초과는 데이터 이상(avgVolume 비정상/저유동성). 캡 + 플래그
+          if(_rvCalc > 30 || !isFinite(_rvCalc)){
+            result.rvol           = Math.min(30, parseFloat(_rvCalc.toFixed(1))) || null;
+            result.rvol_anomaly   = true;
+          } else {
+            result.rvol           = parseFloat(_rvCalc.toFixed(1));
+          }
           result.rvol_corrected = true;
           result.rvol_elapsed   = Math.round(elapsedFrac * 100); // 경과 비중 %
         }
@@ -4210,6 +4221,14 @@ async function fetchYahooData(ticker){
     }catch(_){}
   }
 
+  // 어닝일 폴백 — chart meta에 없으면 quoteSummary calendarEvents로 (어닝 임박 경고 작동)
+  if(result.earningsDaysAway === null || result.earningsDaysAway === undefined){
+    try{
+      var _ed = await fetchEarningsDate(ticker);
+      if(_ed){ result.earningsDaysAway = _ed.daysAway; result.earningsDateStr = _ed.dateStr; }
+    }catch(_){}
+  }
+
   return result;
 }
 
@@ -4295,6 +4314,44 @@ function findResistanceLevels(bars, vol20avg, opts){
     out.levels.push({ price:price, touches:touches, relVol:parseFloat(volStr.toFixed(2)), hvn:hvn, strong:strong });
   }
   out.levels.sort(function(a,b){return a.price-b.price;});
+  return out;
+}
+
+// ═══════════════════════════════════════
+// 어닝 발표일 조회 — quoteSummary calendarEvents (chart meta엔 보통 없음)
+//   반환: { daysAway, dateStr } | null
+//   24h 캐시 (localStorage) — 같은 날 재조회 방지
+// ═══════════════════════════════════════
+async function fetchEarningsDate(ticker){
+  var ck = 'earn_' + ticker.toUpperCase();
+  try{
+    var cached = JSON.parse(localStorage.getItem(ck) || 'null');
+    if(cached && (Date.now() - cached.ts < 24*3600*1000)){
+      return cached.val;  // null도 캐시 (없는 종목 반복 조회 방지)
+    }
+  }catch(e){}
+
+  var out = null;
+  try{
+    var dc = await fetchWithProxy(
+      'https://query1.finance.yahoo.com/v10/finance/quoteSummary/'+ticker+'?modules=calendarEvents'
+    );
+    var ev = dc?.quoteSummary?.result?.[0]?.calendarEvents?.earnings;
+    // earningsDate는 배열(레인지일 수 있음) — 가장 가까운 미래 또는 첫 값
+    var dates = (ev && ev.earningsDate) || [];
+    var raw = null;
+    for(var i=0;i<dates.length;i++){
+      var v = dates[i] && (dates[i].raw || dates[i]);
+      if(typeof v === 'number'){ raw = (raw === null) ? v : Math.min(raw, v); }
+    }
+    if(raw){
+      var daysAway = Math.round((raw * 1000 - Date.now()) / 86400000);
+      var d = new Date(raw * 1000);
+      out = { daysAway: daysAway, dateStr: (d.getMonth()+1)+'/'+d.getDate() };
+    }
+  }catch(e){ out = null; }
+
+  try{ localStorage.setItem(ck, JSON.stringify({ ts: Date.now(), val: out })); }catch(e){}
   return out;
 }
 
@@ -6611,6 +6668,7 @@ function _hydrateResult(result, ydata){
   result.rvol           = ydata.rvol           !== null ? ydata.rvol           : (result.rvol           || null);
   result.rvol_raw       = ydata.rvol_raw       || null;
   result.rvol_corrected = ydata.rvol_corrected || false;
+  result.rvol_anomaly   = ydata.rvol_anomaly || false;
   result.rvol_elapsed   = ydata.rvol_elapsed   || null;
   result.spread_pct     = ydata.spread_pct     || null;
   result.news           = ydata.newsText        || result.news || '';
@@ -8127,6 +8185,14 @@ function cardHTML(r, mode){
     else if(r.slippage_risk==='medium') tags+='<span class="tag ta">⚠ 슬리피지</span>';
   }
   if(ac==='BLOCK')                 tags+='<span class="tag tr">BLOCK</span>';
+  // 어닝 임박 배지 (전 모드 — 갭 리스크 경고)
+  if(r.earningsDaysAway !== null && r.earningsDaysAway !== undefined && r.earningsDaysAway >= 0 && r.earningsDaysAway <= 14){
+    var _ed = r.earningsDaysAway;
+    var _edStr = r.earningsDateStr ? (' '+r.earningsDateStr) : '';
+    var _edColor = _ed <= 3 ? 'var(--r)' : _ed <= 10 ? 'var(--a)' : 'var(--t2)';
+    var _edBg = _ed <= 3 ? 'rgba(255,45,78,.12)' : _ed <= 10 ? 'rgba(255,170,0,.12)' : 'rgba(255,255,255,.05)';
+    tags+='<span class="tag" style="color:'+_edColor+';background:'+_edBg+';border:1px solid '+_edColor+';font-weight:700">📅 어닝 D-'+_ed+_edStr+'</span>';
+  }
   // SWING 전용 태그
   if(r._mode==='swing'&&r.conditions_met!==undefined){
     var scTagColor=r.conditions_met>=5?'var(--bl)':r.conditions_met>=3?'var(--a)':'var(--t3)';
@@ -8809,7 +8875,7 @@ function cardHTML(r, mode){
     '<div class="card-row2">'+
       '<span class="card-price">'+price+'</span>'+
       '<span class="card-gap '+(r.gap_pct<0?'red':'')+'">'+gap+'</span>'+
-      (r.rvol && r._mode !== 'core' ?'<span class="card-rvol">RVol '+r.rvol+'x'+(r.rvol_corrected?'*':'')+' </span>':'')+
+      (r.rvol && r._mode !== 'core' ?'<span class="card-rvol">RVol '+(r.rvol_anomaly?'<span style="color:var(--a)">측정불가</span>':(r.rvol+'x'+(r.rvol_corrected?'*':'')))+' </span>':'')+
     '</div>'+
 
     (ac!=='BLOCK'?
@@ -8911,6 +8977,7 @@ function cardHTML(r, mode){
       ((r._mode==='swing')&&r.vpoc?
         '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:3px;text-align:right">VPOC(매물대 자석) $'+r.vpoc+(r.t1_src==='est'&&r.t2_src==='est'?' · 머리 위 저항 없음(신고가권)':'')+'</div>'
       :'')+
+      ((r._mode==='swing'||r._mode==='momo')&&ac!=='BLOCK'?renderSizeLine(r):'')+
       (r._mode==='core'&&r.target2&&ac!=='BLOCK'?
         '<div style="margin-top:5px;padding:8px 10px;background:rgba(159,122,255,.06);border:1px solid rgba(159,122,255,.2);border-radius:8px">'+
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
@@ -9650,7 +9717,17 @@ function renderSizeLine(r){
     var sz = sizeEngine(plan, { equity: rs.equity, cashAvailable: rs.equity },
                         { riskPctPerTrade: rs.riskPctPerTrade, maxPositionPct: rs.maxPositionPct });
     if(sz.skip || !sz.shares){
-      return '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-bottom:4px">권장 수량: — ('+(sz.reasons[0]||'계산 불가')+')</div>';
+      // 1주 가격이 리스크 예산을 초과하는 경우(고가주 + 소액 계좌) 명확히 안내
+      var oneShareRisk = (r.entry - r.stop);
+      var riskBudget = rs.equity * rs.riskPctPerTrade / 100;
+      var msg;
+      if(oneShareRisk > riskBudget){
+        var need1pct = Math.ceil(oneShareRisk / (rs.riskPctPerTrade/100));
+        msg = '1주 손절액 $'+oneShareRisk.toFixed(0)+' > 리스크 예산 $'+riskBudget.toFixed(0)+' — 계좌 대비 고가주. 리스크 '+rs.riskPctPerTrade+'%로 진입하려면 ~$'+need1pct.toLocaleString()+' 필요';
+      } else {
+        msg = sz.reasons[0] || '계산 불가';
+      }
+      return '<div style="font-family:var(--mono);font-size:10px;color:var(--a);margin-bottom:4px;line-height:1.5">⚠ 권장 수량 0주 — '+msg+'</div>';
     }
     var capLabel = sz.boundBy === 'risk' ? '리스크 '+rs.riskPctPerTrade+'%'
                  : sz.boundBy === 'position' ? '비중 '+rs.maxPositionPct+'% 한도'
