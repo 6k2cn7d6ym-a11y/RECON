@@ -467,8 +467,8 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   </div>
 
   <div id="momoAnalyzeArea"></div>
-  <div class="cards-area"><div id="momoOpenArea"></div></div>
   <div class="cards-area"><div id="momoResultArea"></div></div>
+  <div class="cards-area"><div id="momoOpenArea"></div></div>
   <!-- 오늘 분석한 ENTER/WATCH 카드 누적 표시 -->
   <div id="momoTodayArea"></div>
 </div>
@@ -616,8 +616,8 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     </div>
   </div>
   <div id="swingAnalyzeArea"></div>
-  <div class="cards-area"><div id="swingOpenArea"></div></div>
   <div class="cards-area"><div id="swingResultArea"></div></div>
+  <div class="cards-area"><div id="swingOpenArea"></div></div>
 </div>
 
 
@@ -707,8 +707,8 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     </div>
   </div>
   <div id="coreAnalyzeArea"></div>
-  <div class="cards-area"><div id="coreOpenArea"></div></div>
   <div class="cards-area"><div id="coreResultArea"></div></div>
+  <div class="cards-area"><div id="coreOpenArea"></div></div>
 </div>
 
 <!-- CORE 히스토리 -->
@@ -2714,7 +2714,10 @@ function sessionLabel(session){
 
 // ── 갭업 후보 로드 + 렌더링 ──
 async function loadKisGappers(){
-  if(!KIS.appKey || !KIS.appSecret){
+  // 프리/애프터마켓은 Webull을 쓰므로 KIS 키가 없어도 진행. 정규장만 KIS 키 필수.
+  var _sessForKey = getUsSession();
+  var _needKis = (_sessForKey === 'regular');
+  if(_needKis && (!KIS.appKey || !KIS.appSecret)){
     document.getElementById('kisGapList').innerHTML =
       '<div style="text-align:center;padding:14px;color:var(--t3);font-size:11px;font-family:var(--mono)">설정 탭에서 KIS 키를 입력하세요</div>';
     return;
@@ -2728,10 +2731,16 @@ async function loadKisGappers(){
 
   try{
     // NAS + NYS 병합
-    var [nas, nys] = await Promise.all([
-      fetchKisOverseasRanking('NAS').catch(function(){ return []; }),
-      fetchKisOverseasRanking('NYS').catch(function(){ return []; }),
-    ]);
+    //   ★ 프리마켓/애프터마켓엔 KIS 해외순위가 급등 리스트를 못 준다(정규장 전용).
+    //     → pre/after면 KIS 호출 스킵, 바로 Webull 폴백으로 (빈 배열로 두면 아래 폴백이 작동).
+    var _curSess = getUsSession();
+    var nas = [], nys = [];
+    if(_curSess === 'regular' || _curSess === 'closed'){
+      [nas, nys] = await Promise.all([
+        fetchKisOverseasRanking('NAS').catch(function(){ return []; }),
+        fetchKisOverseasRanking('NYS').catch(function(){ return []; }),
+      ]);
+    }
     var all = nas.concat(nys);
 
     // 등락률 내림차순 정렬 → 상위 20개
@@ -2739,7 +2748,7 @@ async function loadKisGappers(){
     var top = all.slice(0, 20);
 
     if(!top.length){
-      // ── KIS 빈 배열 → Webull 폴백 (세션별 자동 분기) ──
+      // ── KIS 빈 배열(또는 pre/after 스킵) → Webull 폴백 (세션별 자동 분기) ──
       var _sess = getUsSession();
       if(_sess !== 'closed'){
         if(statusEl) statusEl.textContent = 'Webull '+sessionLabel(_sess);
@@ -3084,6 +3093,7 @@ async function runMomoScreener(){
           '<span style="color:var(--g)">'+gapStr+'</span>'+
           '<span style="color:var(--t2)">RVol '+rvolStr+'</span>'+
           '<span style="color:var(--t2)">Float '+floatStr+'</span>'+
+          (r.rs_spy!==null&&r.rs_spy!==undefined?'<span style="color:'+(r.rs_spy>=1.0?'var(--g)':'var(--t3)')+'">RS '+r.rs_spy.toFixed(2)+'x'+(r.rs_improving===true?'↑':r.rs_improving===false?'↓':'')+'</span>':'')+
           '<span style="color:var(--pu)">'+r.score+'pt</span>'+
         '</div>'+
         (r.entry?'<div style="display:flex;gap:12px;font-family:var(--mono);font-size:11px;margin-bottom:5px">'+
@@ -3228,6 +3238,8 @@ async function runSwingScreener(){
             rsi14:    swingData ? swingData.rsi14 : null,
             ma20_gap: swingData ? swingData.ma20_gap_pct : null,
             vol_ratio: swingData ? swingData.vol_ratio : null,
+            rs_spy:   swingData ? swingData.rs_spy : null,        // 상대강도 (표시용)
+            rs_improving: swingData ? swingData.rs_improving : null,
           };
         }catch(e){ return null; }
       }));
@@ -4439,6 +4451,19 @@ async function fetchEarningsDate(ticker){
   return out;
 }
 
+// ── SPY 일봉 종가 캐시 (상대강도 계산용 — 스캔 중 1회만 fetch) ──
+//   매 종목마다 SPY를 다시 가져오면 74번 중복 → 5분 캐시로 1회만.
+var _SPY_RS_CACHE = { closes: null, ts: 0 };
+async function _getSpyCloses(){
+  if(_SPY_RS_CACHE.closes && (Date.now() - _SPY_RS_CACHE.ts) < 300000) return _SPY_RS_CACHE.closes;
+  try{
+    var d = await fetchWithProxy('https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=1y');
+    var c = (d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter(function(v){return v&&v>0;});
+    if(c.length >= 65){ _SPY_RS_CACHE.closes = c; _SPY_RS_CACHE.ts = Date.now(); }
+    return _SPY_RS_CACHE.closes;
+  }catch(e){ return _SPY_RS_CACHE.closes; }
+}
+
 async function fetchSwingData(ticker){
   var sw = {
     ma5:null, ma20:null, ma60:null, ma200:null,
@@ -4452,6 +4477,8 @@ async function fetchSwingData(ticker){
     above_ma200:null, above_ma20:null,
     pullback_to_ma20:null, // MA20 ±3% 이내
     bullish_candle:null,   // 종가 > 시가
+    rs_spy:null,           // 13주 상대강도 (종목수익률/SPY수익률, >1이면 시장보다 강함)
+    rs_improving:null,     // RS 개선 중 (최근 RS > 이전 RS)
     conditions_met: 0,
     condition_detail: []
   };
@@ -4678,6 +4705,25 @@ async function fetchSwingData(ticker){
     var isTypeB = !!(sw.near_high20 && sw.base_weeks>=3 && c2 && (sw.vol_ratio||0)>=1.5);
     var isTypeC = !!(sw.ma200_recently_crossed && sw.macd_hist!==null && sw.macd_hist>0 && sw.vol_dry_on_down);
     sw.swing_type = isTypeA ? 'A' : isTypeB ? 'B' : isTypeC ? 'C' : null;
+
+    // ── 상대강도 (RS vs SPY) — 스윙 핵심: "시장보다 강한가" ──
+    //   rs_spy = 종목 13주 수익률 / SPY 13주 수익률. >1이면 시장 아웃퍼폼.
+    //   rs_improving = 최근 RS가 이전보다 개선 (강세 가속). CORE 방식과 동일.
+    try{
+      var spyC = await _getSpyCloses();
+      var nC = closes.length;
+      if(spyC && spyC.length>=65 && nC>=65){
+        var stkR = (closes[nC-1] - closes[nC-65]) / closes[nC-65];
+        var spyR = (spyC[spyC.length-1] - spyC[spyC.length-65]) / spyC[spyC.length-65];
+        sw.rs_spy = parseFloat((stkR / (Math.abs(spyR)+0.001)).toFixed(2));
+        if(nC>=95 && spyC.length>=95){
+          var stkR2 = (closes[nC-30] - closes[nC-95]) / closes[nC-95];
+          var spyR2 = (spyC[spyC.length-30] - spyC[spyC.length-95]) / spyC[spyC.length-95];
+          var rsPrev = stkR2 / (Math.abs(spyR2)+0.001);
+          sw.rs_improving = sw.rs_spy > rsPrev;
+        }
+      }
+    }catch(e){}
 
     // ── 저항 사다리 + 거래량 가중 + 매물대 (Yahoo 일봉 only) ──
     // O/H/L/C/V 정합 테이블: 한 봉이라도 비면 행 통째 제외 → 가격·거래량 인덱스 일치
@@ -6789,6 +6835,8 @@ function _hydrateSwingLevels(r, swingData){
   r.ma60  = swingData.ma60  || null;
   r.atr20 = swingData.atr20 || null;
   r.vpoc  = swingData.vpoc  || r.vpoc || null;
+  r.rs_spy = (swingData.rs_spy !== null && swingData.rs_spy !== undefined) ? swingData.rs_spy : null;  // 상대강도(표시용, 판정 미반영)
+  r.rs_improving = swingData.rs_improving;
   // 일봉 피봇 사다리에서 현재가 위/아래 가장 가까운 저항/지지 (있으면)
   if(Array.isArray(swingData.resistanceLevels) && r.price){
     var above = swingData.resistanceLevels.filter(function(l){ return l.price > r.price; });
@@ -6872,6 +6920,8 @@ function captureReconSignal(result, mode){
     gap_pct:        result.gap_pct ?? null,
     conditions_met: result.conditions_met ?? null,
     breakout_wick:  result.breakout_wick_strength || null,
+    rs_spy:         result.rs_spy ?? null,           // 상대강도 — 검증 후 "이긴 거래가 RS 높았나" 분석용
+    rs_improving:   result.rs_improving ?? null,
     vixRegime:      (typeof G!=='undefined'? G.vixRegime : null),
     spyAboveMA200:  (typeof G!=='undefined'? G.spyAboveMA200 : null),
     spyTrend:       (typeof G!=='undefined'&&G.spyIntraday? G.spyIntraday.trend : null),
@@ -8499,6 +8549,15 @@ function cardHTML(r, mode){
   // CORE valuation 과확장 배지 (진입가 비쌈 경고 — 매도 사유 아님)
   if(r.valuation_risk && r.valuation_risk_detail){
     tags+='<span class="tag" style="color:var(--a);background:rgba(255,170,0,.1);border:1px solid var(--a)">💰 과확장 ('+r.valuation_risk_detail+')</span>';
+  }
+  // 상대강도(RS) 배지 — SWING 표시 전용 (판정 미반영, 데이터 관찰용)
+  //   rs_spy >1 = 시장(SPY)보다 강함. 모멘텀 전략의 핵심 지표지만, 검증 전까진 표시만.
+  if(mode==='swing' && r.rs_spy !== null && r.rs_spy !== undefined){
+    var _rsStrong = r.rs_spy >= 1.0;
+    var _rsCol = _rsStrong ? 'var(--g)' : 'var(--t2)';
+    var _rsArrow = r.rs_improving === true ? ' ↑' : (r.rs_improving === false ? ' ↓' : '');
+    var _rsLabel = _rsStrong ? '시장比 강' : '시장比 약';
+    tags+='<span class="tag" style="color:'+_rsCol+';background:rgba('+(_rsStrong?'0,214,143':'150,150,150')+',.1);border:1px solid '+_rsCol+'">RS '+r.rs_spy.toFixed(2)+'x '+_rsLabel+_rsArrow+'</span>';
   }
   // 어닝 임박 배지 (전 모드 — 갭 리스크 경고)
   if(r.earningsDaysAway !== null && r.earningsDaysAway !== undefined && r.earningsDaysAway >= 0 && r.earningsDaysAway <= 14){
