@@ -3415,6 +3415,13 @@ async function loadMovers(){
     var effectiveSession = _session !== 'closed' ? _session
       : (_isWeekday && _etHM >= 2000) ? 'after'
       : 'regular';
+    // API가 afterMarketChangePercent를 0으로 반환할 때 가격 차이로 보완 계산
+    function _afterChg(q){
+      var c = q.afterMarketChangePercent;
+      if(!c && q.afterMarketPrice && q.regularMarketPrice && q.regularMarketPrice > 0)
+        c = (q.afterMarketPrice - q.regularMarketPrice) / q.regularMarketPrice * 100;
+      return c || 0;
+    }
 
     try{
       var wbResp = await fetch(WORKER_URL + '/us-movers?session='+effectiveSession+'&pageSize=50');
@@ -3424,7 +3431,7 @@ async function loadMovers(){
       // 세션별 변동률 기준 필터 (3%+)
       allQ = allQ.filter(function(q){
         if(effectiveSession === 'pre')   return q.preMarketChangePercent   && q.preMarketChangePercent   > 3;
-        if(effectiveSession === 'after') return q.afterMarketChangePercent && q.afterMarketChangePercent > 3;
+        if(effectiveSession === 'after') return _afterChg(q) > 3;
         return q.regularMarketChangePercent && q.regularMarketChangePercent > 3;
       });
 
@@ -3432,7 +3439,7 @@ async function loadMovers(){
       allQ.sort(function(a,b){
         var aChg, bChg;
         if(effectiveSession === 'pre')        { aChg=a.preMarketChangePercent;   bChg=b.preMarketChangePercent; }
-        else if(effectiveSession === 'after') { aChg=a.afterMarketChangePercent; bChg=b.afterMarketChangePercent; }
+        else if(effectiveSession === 'after') { aChg=_afterChg(a); bChg=_afterChg(b); }
         else                                   { aChg=a.regularMarketChangePercent; bChg=b.regularMarketChangePercent; }
         return (bChg||0) - (aChg||0);
       });
@@ -3460,8 +3467,8 @@ async function loadMovers(){
         chg   = q.preMarketChangePercent;
         price = (q.preMarketPrice || q.regularMarketPrice || 0).toFixed(2);
         sessionBadge = '<span style="font-size:8px;color:var(--a);margin-left:3px">PRE</span>';
-      } else if(effectiveSession === 'after' && q.afterMarketChangePercent){
-        chg   = q.afterMarketChangePercent;
+      } else if(effectiveSession === 'after' && _afterChg(q) > 0){
+        chg   = _afterChg(q);
         price = (q.afterMarketPrice || q.regularMarketPrice || 0).toFixed(2);
         sessionBadge = '<span style="font-size:8px;color:var(--bl);margin-left:3px">AH</span>';
       } else {
