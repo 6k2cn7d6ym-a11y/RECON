@@ -3411,7 +3411,10 @@ async function loadMovers(){
 
   try{
     var quotes = [];
-    var effectiveSession = _session === 'closed' ? 'regular' : _session;
+    // closed: 평일 장후(20:00~) → after fallback, 그 외(야간/새벽/주말) → regular fallback
+    var effectiveSession = _session !== 'closed' ? _session
+      : (_isWeekday && _etHM >= 2000) ? 'after'
+      : 'regular';
 
     try{
       var wbResp = await fetch(WORKER_URL + '/us-movers?session='+effectiveSession+'&pageSize=50');
@@ -3440,10 +3443,10 @@ async function loadMovers(){
     var _ml = document.getElementById('moversList');
     if(!quotes.length){
       var _emptyMsg;
-      if(_session === 'closed')      _emptyMsg = '장 마감 — 최근 정규장 급등주 데이터 없음';
-      else if(_session === 'pre')    _emptyMsg = '프리마켓 급등 후보 없음 (3%+ 기준)';
-      else if(_session === 'regular')_emptyMsg = '정규장 급등 후보 없음 (3%+ 기준)';
-      else if(_session === 'after')  _emptyMsg = '애프터마켓 급등 후보 없음 (3%+ 기준)';
+      if(effectiveSession === 'pre')     _emptyMsg = '프리마켓 급등 후보 없음 (3%+ 기준)';
+      else if(effectiveSession === 'regular') _emptyMsg = '정규장 급등 후보 없음 (3%+ 기준)';
+      else if(effectiveSession === 'after')   _emptyMsg = '애프터마켓 급등 후보 없음 (3%+ 기준)';
+      else                                    _emptyMsg = '데이터 없음';
       if(_ml) _ml.innerHTML =
         '<div class="empty-state"><div class="es-icon">◎</div>'+_emptyMsg+
         '<br>잠시 후 새로고침 해보세요</div>';
