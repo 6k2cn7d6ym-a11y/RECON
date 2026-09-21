@@ -677,9 +677,9 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <div class="sg-row"><div><div class="sg-label">최대 시가총액</div><div class="sg-sub">이상 종목 경고</div></div><div class="sg-val" id="swingMaxCap" onclick="cycle('swingMaxCap',['없음','$5B','$10B','$20B'])">$10B</div></div>
     <div class="sg-row"><div><div class="sg-label">최소 일평균 거래량</div><div class="sg-sub">이하 유동성 경고</div></div><div class="sg-val" id="swingMinVol" onclick="cycle('swingMinVol',['없음','30만','50만','100만'])">50만</div></div>
     <div class="sg-title">SWING 스캔 기준</div>
-    <div class="sg-row"><div><div class="sg-label">최소 T1 상승률 (%)</div><div class="sg-sub">이하이면 BLOCK — 스윙 최소 기대 수익</div></div><div class="sg-val" id="swingMinT1Pct" onclick="cycle('swingMinT1Pct',['6','8','10'])">8</div></div>
+    <div class="sg-row"><div><div class="sg-label">최소 T1 상승률 (%)</div><div class="sg-sub">미만이면 경고·-4점 (T2도 2배 미만이면 BLOCK) — 스윙 최소 기대 수익</div></div><div class="sg-val" id="swingMinT1Pct" onclick="cycle('swingMinT1Pct',['6','8','10'])">8</div></div>
     <div class="sg-row"><div><div class="sg-label">RSI 상단 기준</div><div class="sg-sub">진입 시 RSI 최대 허용값</div></div><div class="sg-val" id="swingRsiMax" onclick="cycle('swingRsiMax',['60','65','70'])">65</div></div>
-    <div class="sg-row"><div><div class="sg-label">시간 손절 (일)</div><div class="sg-sub">N일 내 움직임 없으면 청산</div></div><div class="sg-val" id="swingHoldDays" onclick="cycle('swingHoldDays',['7','10','14'])">10</div></div>
+    <div class="sg-row"><div><div class="sg-label">시간 손절 (일)</div><div class="sg-sub">보유 N일 경과 시 청산엔진 SELL_ALL(시간 청산) · 카드/프롬프트 동일 값 · 백테스트 보유한도는 30일</div></div><div class="sg-val" id="swingHoldDays" onclick="cycle('swingHoldDays',['7','10','14','21','30'])">10</div></div>
     <div class="sg-title">리스크 관리 (자동 수량 계산)</div>
     <div class="sg-row"><div><div class="sg-label">SWING 계좌 평가액 ($)</div><div class="sg-sub">이 모드 전용 · 빈칸이면 미표시</div></div><input id="swing_acctEquity" type="number" inputmode="decimal" placeholder="예: 100000" oninput="saveRiskSettings('swing')" style="width:120px;text-align:right;background:var(--bg1);border:1px solid var(--b);border-radius:8px;padding:8px 10px;color:var(--t);font-family:var(--mono);font-size:13px"></div>
     <div class="sg-row"><div><div class="sg-label">거래당 리스크 (%)</div><div class="sg-sub">한 거래 최대 손실 = 계좌의 N%</div></div><div class="sg-val" id="swing_riskPctPerTrade" onclick="cycleRisk('swing','riskPctPerTrade',['0.5','1.0','1.5','2.0'])">1.0</div></div>
@@ -792,6 +792,7 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
 <script src="swingEngine.js"></script>
 <script src="exitEngine.js"></script>
 <script src="sizeEngine.js"></script>
+<script src="babylonEngine.js"></script>
 <script>
 // ═══════════════════════════════════════
 // 전역 상태
@@ -818,6 +819,7 @@ var G = {
 var G_journal = JSON.parse(localStorage.getItem('reconJournal')||'[]');
 var G_jFilters = { momo:'today', swing:'today', core:'today' };
 var G_cardSnapshots = {};
+var G_scanSeqMap = {};  // D3: ticker별 최신 분석 seq — 구버전 응답 역전 방지
 
 // MOMO 오늘 분석 카드 (BLOCK 제외, 날짜 바뀌면 히스토리로 이동)
 var G_momoTodayCards = JSON.parse(localStorage.getItem('momoTodayCards')||'[]');
@@ -2109,6 +2111,16 @@ async function runCoreScanner(){
         if(v === 'ENTER' && pct === 100) enterCount++;
         else if(v === 'ENTER') warnCount++;
         else if(v === 'WATCH_CLAUDE') watchCount++;
+        if(v === 'ENTER' || v === 'WATCH_CLAUDE'){
+          captureReconSignal({
+            ticker: r.stock.ticker,
+            price: r.stock.regularMarketPrice || r.stock.price || 0,
+            action: v === 'ENTER' ? 'ENTER' : 'WATCH',
+            score: pct || 0,
+            babylonVerdict: v,
+            position_size_pct: pct || 0
+          }, 'core');
+        }
       });
       
       processed += batch.length;
@@ -2198,7 +2210,13 @@ async function runCoreScanner(){
     
     saveCoreWatchlist(watchlist);
     _coreScanState.watchlist = watchlist;
-    
+    // [DIAG-TEMP] SNDK/MU/BE watchlist 진단 배지 — 원인 확인 후 제거
+    (function(wl){ var DT=['SNDK','MU','BE'];
+      var html=DT.map(function(d){var e=wl[d],vh=e&&e.verdictHistory||[];return '<span style="margin:0 6px">'+d+':'+(e?'✓':'✗')+' stk='+(e&&e.stock&&e.stock.ticker||'-')+' sc='+(e&&e.scanCount||0)+' h='+vh.length+' ['+vh.slice(-5).map(function(x){return x.verdict}).join('→')+']</span>';}).join('');
+      var el=document.createElement('div');el.id='_diag_smu';el.style.cssText='position:fixed;bottom:8px;left:50%;transform:translateX(-50%);z-index:9999;background:rgba(0,0,0,.85);border:1px solid #e6a817;border-radius:6px;padding:4px 10px;font-size:10px;font-family:monospace;white-space:nowrap';
+      el.innerHTML='<b style="color:#e6a817">[진단]</b> '+html;var old=document.getElementById('_diag_smu');if(old)old.remove();document.body.appendChild(el);
+    })(watchlist);
+
     // ═══ Phase 4: 결과 정렬 + 렌더링 ═══
     // 각 카테고리 내부 정렬: 포지션% → 가속 강도 → 시총 작은 순
     var sortFn = function(a, b){
@@ -2617,6 +2635,7 @@ function renderCoreScannerCard(stock, babylon, entry, status){
     var recentHist = entry.verdictHistory.slice(-5);
     historyStr = '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:4px">추이: '+
       recentHist.map(function(h){
+        if(h.dataMiss) return '<span style="color:var(--t3)">-</span>';
         var abbrev = h.verdict === 'ENTER' ? 'E' : h.verdict === 'WATCH_CLAUDE' ? 'W' : h.verdict === 'WATCH_WEAK' ? 'w' : h.verdict === 'BLOCK' ? 'B' : '?';
         var hc = h.verdict === 'ENTER' ? 'var(--g)' : (h.verdict === 'WATCH_CLAUDE' ? 'var(--a)' : 'var(--r)');
         var sc = (h.score !== undefined && h.score !== null) ? '<span style="color:var(--t3)">·'+h.score+'</span>' : '';
@@ -3227,6 +3246,7 @@ async function runSwingScreener(){
             warnings: decision.warnings || [],
             signals:  decision.signals  || [],
             scrSource: q.scrSource,
+            _ydata: ydata, _swingData: swingData,   // 상위 N개 시총 보강 후 엔진 재실행용 (2026-08)
             // swingData 핵심 수치
             rsi14:    swingData ? swingData.rsi14 : null,
             ma20_gap: swingData ? swingData.ma20_gap_pct : null,
@@ -3250,7 +3270,35 @@ async function runSwingScreener(){
       return b.score - a.score;
     });
 
-    var top = results.slice(0, 15);
+    // ── 상위 20개 시총 보강 (KIS→Yahoo, 24h 캐시) → 엔진 재실행 → 시총 필터(min BLOCK/라지캡 경고) 적용 후 15개 (2026-08) ──
+    //   전체 풀에 붙이면 요청이 75건이라 rate limit 부담 → 정렬 후 상위만.
+    var _pre = results.slice(0, 20);
+    if(typeof fetchMarketCapInfo === 'function' && typeof swingEngine === 'function'){
+      statusEl.textContent = '3/3 상위 종목 시총 확인 중...';
+      for(var pi = 0; pi < _pre.length; pi++){
+        var pr = _pre[pi];
+        try{
+          if(!pr._ydata || !pr._swingData) continue;
+          if(!pr._ydata.marketCap_b){
+            var _mi2 = await fetchMarketCapInfo(pr.ticker, pr._ydata.exchange || null);
+            if(_mi2 && _mi2.capB){ pr._ydata.marketCap_b = _mi2.capB; pr.marketCap_src = _mi2.src; }
+          }
+          if(pr._ydata.marketCap_b){
+            pr.marketCap_b = pr._ydata.marketCap_b;
+            var d2 = swingEngine(pr._ydata, pr._swingData);
+            pr.action = d2.action; pr.score = d2.score; pr.warnings = d2.warnings || []; pr.signals = d2.signals || [];
+            pr.rr = d2.rr; pr.target1_pct = d2.target1_pct; pr.entry = d2.entry; pr.stop = d2.stop; pr.target1 = d2.target1;
+          }
+        }catch(_e){}
+      }
+      _pre = _pre.filter(function(x){ return x.action !== 'BLOCK'; });   // 시총 하한 BLOCK 등 제외
+      _pre.sort(function(a, b){
+        if(a.action === 'ENTER' && b.action !== 'ENTER') return -1;
+        if(a.action !== 'ENTER' && b.action === 'ENTER') return 1;
+        return b.score - a.score;
+      });
+    }
+    var top = _pre.slice(0, 15);
     if(!top.length){
       statusEl.style.display = 'none';
       resultsEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--t3);font-size:12px">조건을 충족하는 종목이 없습니다<br>VIX 또는 시장 상황 확인 필요</div>';
@@ -3295,6 +3343,8 @@ async function runSwingScreener(){
           (r.rsi14?'<span>RSI <b style="color:var(--t)">'+r.rsi14+'</b></span>':'')+
           (r.vol_ratio?'<span>거래량 <b style="color:var(--t)">'+r.vol_ratio+'x</b></span>':'')+
           (r.target1_pct?'<span>T1 <b style="color:var(--t)">+'+r.target1_pct+'%</b></span>':'')+
+          (r.marketCap_b?'<span title="출처: '+(r.marketCap_src||'-')+'">시총 <b style="color:var(--t)">$'+r.marketCap_b+'B</b></span>':'<span style="color:var(--t3)">시총 -</span>')+
+          ((r.warnings||[]).some(function(w){ return w.indexOf('시총')>=0 && w.indexOf('초과')>=0; })?'<span style="color:var(--a)">라지캡</span>':'')+
         '</div>'+
         (topSig?'<div style="font-size:10px;color:var(--t2)">'+topSig+'</div>':'')+
       '</div>';
@@ -4188,10 +4238,17 @@ async function fetchYahooData(ticker){
     //   임상 결과 발표는 ±50~90% 바이너리 갭. ATR 손절 무력화 → 사이즈 강제 축소.
     //   신호: (1) 뉴스에 임상 이벤트 키워드  (2) 저가+고변동 프로파일
     var _newsLow = (result.newsText || '').toLowerCase();
+    // 시총 이 값(B$) 이상이면 임상 키워드가 있어도 사이즈 축소 안 함 (아래 프로파일 게이트에서 사용). 튜닝 포인트 — 0이면 게이트 비활성(항상 ×0.3).
+    if(typeof CLINICAL_LARGECAP_B === 'undefined') window.CLINICAL_LARGECAP_B = 50;
     var _clinicalKw = ['phase 3','phase iii','phase 2','phase ii','topline','readout',
       'pdufa','primary endpoint','trial results','pivotal','fda approval','fda decision',
       'data readout','interim analysis','final analysis','nda','bla submission','clinical trial'];
-    var _kwHit = _clinicalKw.filter(function(k){ return _newsLow.indexOf(k) >= 0; });
+    // 단어 경계 매칭 (2026-08): substring 매칭 시 'nda'가 fu·nda·mentals / sta·nda·rd / age·nda 에 걸려
+    //   비바이오 종목(APH 등)에 임상 갭리스크 오탐 → 사이즈 ×0.3 → 진입 스킵까지 유발했음.
+    var _kwHit = _clinicalKw.filter(function(k){
+      var re = new RegExp('(^|[^a-z0-9])' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])');
+      return re.test(_newsLow);
+    });
     if(_kwHit.length > 0){
       result.clinical_catalyst = true;
       result.clinical_kw = _kwHit.slice(0,2);  // 카드 표시용 (최대 2개)
@@ -4302,13 +4359,38 @@ async function fetchYahooData(ticker){
 
   }catch(e){ console.warn('[Yahoo]',ticker,e.message); }
 
-  // A안: marketCap_b 보완 (Yahoo v8에 없는 필드, Webull 캐시에서 조회)
+  // 시총 보완 (Yahoo v8 차트 메타엔 없음) — 체인: KIS price-detail → Yahoo quoteSummary → Webull 무버 캐시 (2026-08)
   var _capFromCache = false;
+  result.marketCap_src = null;
+  if(!result.marketCap_b){
+    try{
+      var _mi = await fetchMarketCapInfo(ticker, result.exchange);
+      if(_mi && _mi.capB){
+        result.marketCap_b = _mi.capB; result.marketCap_src = _mi.src;
+        if(_mi.detail){
+          result.kis_detail = _mi.detail;   // 52주 고저·PER/PBR/EPS·상장주수·업종 (카드/T2 캡 재활용 가능)
+          if(!result.fiftyTwoWeekHigh && _mi.detail.h52p) result.fiftyTwoWeekHigh = _mi.detail.h52p;
+          if(!result.fiftyTwoWeekLow  && _mi.detail.l52p) result.fiftyTwoWeekLow  = _mi.detail.l52p;
+        }
+      }
+    }catch(_){}
+  }
   if(!result.marketCap_b){
     try{
       await _ensureWbMarketCapCache();
-      if(_WB_CAP_CACHE.map[ticker]){ result.marketCap_b = _WB_CAP_CACHE.map[ticker]; _capFromCache = true; }
+      if(_WB_CAP_CACHE.map[ticker]){ result.marketCap_b = _WB_CAP_CACHE.map[ticker]; result.marketCap_src = 'webull'; _capFromCache = true; }
     }catch(_){}
+  }
+
+  // ── 임상 갭리스크 프로파일 게이트 (2026-08) ──
+  //   감지 목적은 "임상 바이오텍 catalyst 임박 → ±50~90% 바이너리 갭 → 사이즈 강제 축소".
+  //   BMY($130B) 같은 라지캡 제약의 승인 헤드라인은 그런 갭 리스크가 아닌데도 ×0.3이 걸렸음.
+  //   시총 CLINICAL_LARGECAP_B 이상이면 키워드 배지는 남기되(정보) 사이즈 축소 플래그는 끈다.
+  if(result.clinical_catalyst && CLINICAL_LARGECAP_B > 0 && result.marketCap_b && result.marketCap_b >= CLINICAL_LARGECAP_B){
+    result.clinical_kw_muted     = result.clinical_kw || [];
+    result.clinical_muted_reason = '라지캡 $'+result.marketCap_b+'B';
+    result.clinical_catalyst     = false;
+    result.clinical_kw           = null;
   }
 
   // 어닝일 폴백 — chart meta에 없으면 quoteSummary calendarEvents로 (어닝 임박 경고 작동)
@@ -4321,7 +4403,7 @@ async function fetchYahooData(ticker){
 
   // ── data_confidence 종합 (과신 방지) ──
   if(result.data_confidence){
-    result.data_confidence.marketCap = result.marketCap_b ? (_capFromCache ? 'cached' : 'confirmed') : 'missing';
+    result.data_confidence.marketCap = result.marketCap_b ? ((result.marketCap_src==='webull' || _capFromCache) ? 'cached' : 'confirmed') : 'missing';
     result.data_confidence.spread = (result.spread_pct !== null && result.spread_pct !== undefined) ? 'confirmed' : 'missing';
     result.data_confidence.rvol = result.rvol_anomaly ? 'anomaly' : (result.rvol ? 'measured' : 'missing');
   }
@@ -4419,6 +4501,112 @@ function findResistanceLevels(bars, vol20avg, opts){
 //   반환: { daysAway, dateStr } | null
 //   24h 캐시 (localStorage) — 같은 날 재조회 방지
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════
+// 시총(B$) 조회 체인 (2026-08): KIS price-detail → Yahoo quoteSummary → (호출부) Webull 무버 캐시
+//   배경: 분석 경로의 시총이 Webull 무버 캐시(상위 50)에만 의존해 대부분 null → swingEngine 시총 필터
+//         (min BLOCK / max 라지캡 경고)·라지캡 임상 게이트가 조용히 미작동했음. 카드 헤더에 시총이 안 찍히던 이유.
+//   순서 근거: 자기 브로커(KIS, 이미 Worker→VM 배관) → US 소스(Yahoo) → 중국계(Webull)는 마지막.
+// ═══════════════════════════════════════
+// Yahoo exchangeName → KIS EXCD
+function _kisExcdFromYahoo(ex){
+  if(!ex) return null;
+  ex = String(ex).toUpperCase();
+  if(/^(NMS|NGM|NCM|NAS|NASDAQ|NGS)$/.test(ex)) return 'NAS';
+  if(/^(NYQ|NYS|NYSE)$/.test(ex))              return 'NYS';
+  if(/^(ASE|AMS|AMEX|PCX|ARCA|BTS|BATS)$/.test(ex)) return 'AMS';
+  return null;
+}
+
+// KIS 해외주식 현재가상세 (HHDFS76200200) — 시총·상장주수·52주 고저·PER/PBR/EPS·업종
+//   반환: { capB, excd, last, shar, tomv, h52p, l52p, per, pbr, eps, sector } | null
+//   단위 안전장치: 시총 1차 = shar×last (단위 모호성 없음). tomv는 교차검증(달러/천달러 자동 판별)용.
+async function fetchKisPriceDetail(ticker, excdHint){
+  if(typeof KIS === 'undefined' || !KIS.appKey || !KIS.appSecret) return null;
+  var T = String(ticker||'').toUpperCase().replace(/[^A-Z0-9.\-]/g,'');
+  if(!T) return null;
+  var ck = 'kisdet_' + T;
+  try{
+    var cached = JSON.parse(localStorage.getItem(ck) || 'null');
+    if(cached && (Date.now() - cached.ts < (cached.val ? 24 : 6)*3600*1000)) return cached.val;  // 실패(null)는 6h만 캐시
+  }catch(e){}
+  var order = ['NAS','NYS','AMS'];
+  if(excdHint && order.indexOf(excdHint) >= 0) order = [excdHint].concat(order.filter(function(x){ return x !== excdHint; }));
+  var out = null;
+  try{
+    var headers = await kisAuthHeaders('HHDFS76200200');
+    for(var i=0; i<order.length && !out; i++){
+      try{
+        var d = await kisGet('/uapi/overseas-price/v1/quotations/price-detail', { AUTH:'', EXCD: order[i], SYMB: T }, headers);
+        if(!d || d.rt_cd !== '0') continue;
+        var o = d.output || {};
+        var last = parseFloat(o.last), shar = parseFloat(o.shar), tomv = parseFloat(o.tomv);
+        if(!(last > 0)) continue;  // 해당 거래소에 없는 심볼은 rt_cd 0 + 빈 output
+        var capUsd = (shar > 0) ? shar * last : null;
+        if(tomv > 0){
+          if(!capUsd) capUsd = tomv;                          // shar 없으면 tomv 원값 가정
+          else {
+            var ratio = capUsd / tomv;                        // ≈1 → tomv 달러, ≈1000 → tomv 천달러
+            if(ratio > 300 && ratio < 3000){ /* tomv 천달러: shar×last 유지 */ }
+            else if(ratio > 0.5 && ratio < 2){ /* tomv 달러: 일치 */ }
+            else { console.warn('[KIS 시총] '+T+' shar×last vs tomv 불일치 ratio='+ratio.toFixed(2)+' — shar×last 채택'); }
+          }
+        }
+        if(!(capUsd > 0)) continue;
+        out = {
+          capB: parseFloat((capUsd/1e9).toFixed(4)), excd: order[i], last: last,
+          shar: shar > 0 ? shar : null, tomv: tomv > 0 ? tomv : null,
+          h52p: parseFloat(o.h52p) > 0 ? parseFloat(o.h52p) : null,
+          l52p: parseFloat(o.l52p) > 0 ? parseFloat(o.l52p) : null,
+          per:  isFinite(parseFloat(o.perx)) ? parseFloat(o.perx) : null,
+          pbr:  isFinite(parseFloat(o.pbrx)) ? parseFloat(o.pbrx) : null,
+          eps:  isFinite(parseFloat(o.epsx)) ? parseFloat(o.epsx) : null,
+          sector: o.e_icod || null,
+        };
+      }catch(_e){ /* 다음 거래소 시도 */ }
+    }
+  }catch(e){ out = null; }
+  try{ localStorage.setItem(ck, JSON.stringify({ ts: Date.now(), val: out })); }catch(e){}
+  return out;
+}
+
+// Yahoo quoteSummary price 모듈 (24h 캐시, null도 캐시)
+async function fetchYahooMarketCapB(ticker){
+  var ck = 'mcap_' + ticker.toUpperCase();
+  try{
+    var cached = JSON.parse(localStorage.getItem(ck) || 'null');
+    if(cached && (Date.now() - cached.ts < 24*3600*1000)) return cached.val;
+  }catch(e){}
+  var out = null;
+  try{
+    var dm = await fetchWithProxy(
+      'https://query1.finance.yahoo.com/v10/finance/quoteSummary/'+ticker+'?modules=price,summaryDetail'
+    );
+    var q0 = dm?.quoteSummary?.result?.[0] || {};
+    var mc = q0?.price?.marketCap?.raw ?? q0?.summaryDetail?.marketCap?.raw ?? null;
+    if(typeof mc === 'number' && mc > 0) out = parseFloat((mc/1e9).toFixed(4));
+  }catch(e){ out = null; }
+  try{ localStorage.setItem(ck, JSON.stringify({ ts: Date.now(), val: out })); }catch(e){}
+  return out;
+}
+
+// 통합: { capB, src:'kis'|'yahoo', detail? } | null   (Webull 폴백은 호출부에서)
+async function fetchMarketCapInfo(ticker, exchangeHint){
+  try{
+    var kd = await fetchKisPriceDetail(ticker, _kisExcdFromYahoo(exchangeHint));
+    if(kd && kd.capB) return { capB: kd.capB, src: 'kis', detail: kd };
+  }catch(_){}
+  try{
+    var yb = await fetchYahooMarketCapB(ticker);
+    if(yb) return { capB: yb, src: 'yahoo', detail: null };
+  }catch(_){}
+  return null;
+}
+// 하위 호환: 숫자만 필요할 때
+async function fetchMarketCapB(ticker, exchangeHint){
+  var mi = await fetchMarketCapInfo(ticker, exchangeHint);
+  return mi ? mi.capB : null;
+}
+
 async function fetchEarningsDate(ticker){
   var ck = 'earn_' + ticker.toUpperCase();
   try{
@@ -5239,20 +5427,20 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade, babylonResul
   // exitEngine 1차 청산 결정 주입 (swing/momo) — 규칙이 먼저
   var exitStr = '';
   if(exitDecision && exitDecision.action){
-    exitStr = '\\n[청산엔진 결정 - 규칙기반 1차판단]\\n결정: '+exitDecision.action+(exitDecision.sell_pct?' ('+exitDecision.sell_pct+'%)':'')+'\\n';
-    if(exitDecision.reasons && exitDecision.reasons.length) exitStr += '근거: '+exitDecision.reasons.join(' / ')+'\\n';
-    if(exitDecision.stop_update) exitStr += '손절 상향 제안: $'+exitDecision.stop_update+'\\n';
-    if(exitDecision.protective)  exitStr += '(이익보호 구간 - 손절선이 진입가 위)\\n';
-    exitStr += '* 이 엔진 결정이 1차 기준. SELL이면 근거 설명하고 반대 데이터(거래량 급증 등) 없으면 따를 것. HOLD면 노이즈로 보고 유지하되 위험신호만 경고.\\n';
+    exitStr = '\n[청산엔진 결정 - 규칙기반 1차판단]\n결정: '+exitDecision.action+(exitDecision.sell_pct?' ('+exitDecision.sell_pct+'%)':'')+'\n';
+    if(exitDecision.reasons && exitDecision.reasons.length) exitStr += '근거: '+exitDecision.reasons.join(' / ')+'\n';
+    if(exitDecision.stop_update) exitStr += '손절 상향 제안: $'+exitDecision.stop_update+'\n';
+    if(exitDecision.protective)  exitStr += '(이익보호 구간 - 손절선이 진입가 위)\n';
+    exitStr += '* 이 엔진 결정이 1차 기준. SELL이면 근거 설명하고 반대 데이터(거래량 급증 등) 없으면 따를 것. HOLD면 노이즈로 보고 유지하되 위험신호만 경고.\n';
   }
   var babyStr2 = '';
   if(mode === 'core' && babylonResult && babylonResult.verdict && babylonResult.verdict !== 'ERROR'){
-    babyStr2 = '\\n[SEC 펀더(BABYLON) - 1차 청산근거]\\n판정: '+babylonResult.verdict+(babylonResult.reason?' ('+babylonResult.reason+')':'')+'\\n';
+    babyStr2 = '\n[SEC 펀더(BABYLON) - 1차 청산근거]\n판정: '+babylonResult.verdict+(babylonResult.reason?' ('+babylonResult.reason+')':'')+'\n';
     if(babylonResult.exit_signals && babylonResult.exit_signals.signals && babylonResult.exit_signals.signals.length){
-      babyStr2 += '펀더 청산신호 ['+babylonResult.exit_signals.severity+']:\\n';
-      babylonResult.exit_signals.signals.forEach(function(s){ babyStr2 += '  - ['+s.severity+'] '+s.message+'\\n'; });
-      babyStr2 += '* severity=exit이면 SELL 적극 고려. 신호 없으면 단순 하락만으로 매도 금지.\\n';
-    } else { babyStr2 += '펀더 청산신호 없음 - 훼손 징후 없음. 단순 하락은 매도 사유 아님.\\n'; }
+      babyStr2 += '펀더 청산신호 ['+babylonResult.exit_signals.severity+']:\n';
+      babylonResult.exit_signals.signals.forEach(function(s){ babyStr2 += '  - ['+s.severity+'] '+s.message+'\n'; });
+      babyStr2 += '* severity=exit이면 SELL 적극 고려. 신호 없으면 단순 하락만으로 매도 금지.\n';
+    } else { babyStr2 += '펀더 청산신호 없음 - 훼손 징후 없음. 단순 하락은 매도 사유 아님.\n'; }
   }
   var dataStr =
     '현재가: $'+(curP||'알수없음')+'\n' +
@@ -5345,10 +5533,13 @@ function _makeHoldPrompt(mode, ticker, ydata, swingData, openTrade, babylonResul
       '이 포지션을 스윙 관점에서 어떻게 관리해야 하는지 분석하고 반드시 순수 JSON만 반환하세요.\n\n' +
       'SWING 포지션 관리 기준:\n' +
       '- 추가매수(피라미딩): 수익 +2% 이상 필수 + MA20 눌림목 + 거래량 지지 + RSI 55 이하\n' +
-      '- 1차 익절(50%): 10일 최고가(저항) 근접 또는 +1R 도달\n' +
+      (function(){ var _p=(typeof EXIT_DEFAULTS!=='undefined'&&EXIT_DEFAULTS.swing&&EXIT_DEFAULTS.swing.t1SellPct)||100;
+                   return _p>=100 ? '- 익절: T1 도달 시 전량 (청산엔진 규칙 · 백테스트 최적) — T1 전 10일 최고가(저항) 근접 시 부분 익절 검토 가능\n'
+                                  : '- 1차 익절('+_p+'%): 10일 최고가(저항) 근접 또는 T1 도달, 잔여 손절 BE 이동\n'; })() +
       '- 최종 익절: 52주 고가 근접 또는 추세 꺾임\n' +
-      '- 손절: MA5 종가 2일 연속 이탈 / RSI 72이상+음봉 / 진입가 -3%\n' +
-      '- 홀드: 정배열 유지 + VWAP/MA20 위 + 거래량 정상\n\n' +
+      '- 손절: 청산엔진 손절선 $'+(openTrade.stop||'?')+' 터치 = 자동 SELL_ALL (엔진 규칙, 진입 시 2×ATR/MA20-3% 산정). 이 선 위에서 임의 손절선(진입가 -3% 등) 만들지 말 것. MA5 종가 2일 연속 이탈·RSI 72+음봉은 "축소 검토" 경고로만\n' +
+      (function(){ var _hdEl=(typeof document!=='undefined'&&document.getElementById)?document.getElementById('swingHoldDays'):null; var _hd=(_hdEl&&_hdEl.textContent)||((typeof EXIT_DEFAULTS!=='undefined'&&EXIT_DEFAULTS.swing&&EXIT_DEFAULTS.swing.timeStopDays)||30); return '- 시간 청산: 보유 '+_hd+'일 경과 시 청산엔진이 시간 청산(SELL_ALL) — 셋업 유효기간 만료\n'; })() +
+      '- 홀드: 정배열 유지 + MA20 위 + 거래량 정상 (VWAP은 당일 참고치일 뿐 스윙 홀드 기준 아님)\n\n' +
       '{"hold_action":"ADD"|"SELL_HALF"|"SELL_ALL"|"HOLD"|"STOP_LOSS",'+
       '"urgency":"immediate"|"this_week"|"monitor",'+
       '"add_price":추가매수가(숫자,없으면null),'+
@@ -6815,6 +7006,8 @@ function _hydrateSwingLevels(r, swingData){
 
 function _hydrateResult(result, ydata){
   result.price          = ydata.price          || result.price || null;
+  result.clinical_kw_muted     = ydata.clinical_kw_muted     || result.clinical_kw_muted     || null;  // 라지캡 뮤트된 임상 키워드 (배지용)
+  result.clinical_muted_reason = ydata.clinical_muted_reason || result.clinical_muted_reason || null;
   result.gap_pct        = ydata.gap_pct        !== null ? ydata.gap_pct        : (result.gap_pct        || null);
   result.float_m        = ydata.float_m        !== null ? ydata.float_m        : (result.float_m        || null);
   result.short_pct      = ydata.short_pct      !== null ? ydata.short_pct      : (result.short_pct      || null);
@@ -6849,16 +7042,26 @@ function _hydrateResult(result, ydata){
 //  · journal(실제 매매 기록)과 별개 — 이건 "시그널이 맞았나" 객관 검증
 // ═══════════════════════════════════════════
 var G_reconTrack = JSON.parse(localStorage.getItem('reconTrack')||'[]');
+var _reconTrackInitState = {};
+var _syncSeqMap = { momo: 0, swing: 0, core: 0 };  // IIFE 앞에 선언 (함수 호이스팅만으로 부족)
+(async function _initTrackSync(){
+  var modes = ['momo','swing','core'];
+  var results = await Promise.allSettled(modes.map(function(m){ return syncReconTrack(m); }));
+  results.forEach(function(r, i){
+    if(r.status === 'rejected') console.warn('[_initTrackSync] 실패:', modes[i], r.reason);
+  });
+})();
 
 // 모드별 검증 시점 (ms)
 var TRACK_WINDOWS = {
   momo:  { p1: 0,                 p2: 1*24*3600*1000 },   // 당일, +1일(갭)
-  swing: { p1: 14*24*3600*1000,   p2: 30*24*3600*1000 }   // +2주, +1달
+  swing: { p1: 14*24*3600*1000,   p2: 30*24*3600*1000 },  // +2주, +1달
+  core:  { p1: 90*24*3600*1000,   p2: 365*24*3600*1000 }  // +3개월, +12개월
 };
 
 // 시그널 캡처 — 분석 완료 시 호출. ENTER만, 신규 진입만.
 function captureReconSignal(result, mode){
-  if(mode !== 'momo' && mode !== 'swing') return;
+  if(mode !== 'momo' && mode !== 'swing' && mode !== 'core') return;
   // [변경] ENTER뿐 아니라 WATCH도 추적 — 임계값 변별력 검증용 반사실(counterfactual) 확보 (API 비용 0)
   if(result.action !== 'ENTER' && result.action !== 'WATCH') return;
   if(!result.ticker || !result.price) return;
@@ -6884,6 +7087,8 @@ function captureReconSignal(result, mode){
     rvol:           result.rvol ?? null,
     gap_pct:        result.gap_pct ?? null,
     conditions_met: result.conditions_met ?? null,
+    score_raw:      result.score_raw ?? null,      // 스윙: 핵심조건 캡 적용 전 점수 (임계값 변별력 분석용)
+    coresMet:       (typeof result._coresMet === 'boolean') ? result._coresMet : null,
     breakout_wick:  result.breakout_wick_strength || null,
     vixRegime:      (typeof G!=='undefined'? G.vixRegime : null),
     spyAboveMA200:  (typeof G!=='undefined'? G.spyAboveMA200 : null),
@@ -6910,6 +7115,8 @@ function captureReconSignal(result, mode){
 
 // Worker 동기화 (양방향 머지)
 async function syncReconTrack(mode){
+  _syncSeqMap[mode] = (_syncSeqMap[mode]||0) + 1;
+  var seq = _syncSeqMap[mode];
   try{
     var mine = G_reconTrack.filter(function(t){ return t.mode===mode; });
     var resp = await fetch(WORKER_URL+'/recon/track', {
@@ -6917,13 +7124,22 @@ async function syncReconTrack(mode){
       body: JSON.stringify({ mode: mode, track: mine })
     });
     var data = await resp.json();
+    if(seq !== _syncSeqMap[mode]) return;
     if(data && data.ok && Array.isArray(data.track)){
-      // 클라우드 머지 결과로 해당 모드 교체
       var others = G_reconTrack.filter(function(t){ return t.mode!==mode; });
       G_reconTrack = others.concat(data.track);
       localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
+      if(_reconTrackInitState) _reconTrackInitState[mode] = { ok: true, ts: Date.now() };
+    } else {
+      // HTTP 성공이지만 ok:false 또는 형식 오류 — 성공 상태로 남기지 않음
+      var errMsg = (data && data.error) ? data.error : ('HTTP ' + (resp && resp.status));
+      console.warn('[syncReconTrack] 서버 거부:', mode, errMsg);
+      if(_reconTrackInitState) _reconTrackInitState[mode] = { ok: false, ts: Date.now(), err: errMsg };
     }
-  }catch(e){ /* 오프라인이어도 로컬엔 남음 */ }
+  }catch(e){
+    console.warn('[syncReconTrack] 오프라인 또는 서버 오류:', mode, e);
+    if(_reconTrackInitState) _reconTrackInitState[mode] = { ok: false, ts: Date.now(), err: e.message };
+  }
 }
 
 // 검증 — 만기 도래한 pending 레코드의 가격을 따서 p1/p2 채움
@@ -6952,10 +7168,10 @@ async function verifyReconTrack(){
       if(res){
         var ts = res.timestamp || [];
         var q  = (res.indicators && res.indicators.quote && res.indicators.quote[0]) || {};
-        var H=q.high||[], L=q.low||[], C=q.close||[];
+        var O=q.open||[], H=q.high||[], L=q.low||[], C=q.close||[];
         var arr=[];
         for(var i=0;i<ts.length;i++){
-          if(H[i]>0 && L[i]>0 && C[i]>0 && H[i]>=L[i]) arr.push({ ts: ts[i]*1000, h:H[i], l:L[i], c:C[i] });
+          if(H[i]>0 && L[i]>0 && C[i]>0 && H[i]>=L[i]) arr.push({ ts: ts[i]*1000, o: (O[i]>0 ? O[i] : null), h:H[i], l:L[i], c:C[i] });
         }
         out = arr;
       }
@@ -6997,26 +7213,38 @@ async function verifyReconTrack(){
     // 2) 체결 이후 손절/목표 탐색
     for(var j=fillIdx; j<seg.length; j++){
       var c = seg[j];
-      var hitStop = (stop !== null && stop !== undefined) ? (c.l <= stop) : false;
-      var hitT2   = (t2   !== null && t2   !== undefined) ? (c.h >= t2)   : false;
-      var hitT1   = (t1   !== null && t1   !== undefined) ? (c.h >= t1)   : false;
+      // 갭 하락: 시가(o)가 손절가 이하면 시가 체결 (손절가 가정 아님 — 시뮬레이션 가정)
+      var _exitFillPx = null;
+      var hitStop = false;
+      if(stop !== null && stop !== undefined){
+        // 갭 청산은 체결 봉 이후에만 적용 (진입봉 시가로 청산됐다고 기록하는 오류 방지)
+        if(j > fillIdx && c.o !== null && c.o > 0 && c.o <= stop){
+          hitStop = true; _exitFillPx = c.o;   // 갭 하락: 시가 청산
+        } else if(c.l <= stop){
+          hitStop = true; _exitFillPx = stop;  // 일반: 손절가 청산 가정
+        }
+      }
+      var hitT2 = (t2 !== null && t2 !== undefined) ? (c.h >= t2) : false;
+      var hitT1 = (t1 !== null && t1 !== undefined) ? (c.h >= t1) : false;
       // 같은 캔들에서 손절과 목표 동시 → 보수적으로 손절(패) 처리
       if(hitStop && (hitT1 || hitT2)){
-        return outcomeObj('loss', stop, c.ts);
+        return outcomeObj('loss', _exitFillPx, c.ts);
       }
-      if(hitStop) return outcomeObj('loss', stop, c.ts);
+      if(hitStop) return outcomeObj('loss', _exitFillPx, c.ts);
       if(hitT2)   return outcomeObj('win_t2', t2, c.ts);
       if(hitT1)   return outcomeObj('win_t1', t1, c.ts);
     }
-    // 3) 미터치 → 만기 마감가 평가(시가 평가)
-    return { fill:true, outcome:'expired', fillPrice:fillPrice,
+    // 3) 미터치 → 만기 마감가
+    return { fill:true, outcome:'expired',
+             entryFillPrice:fillPrice, exitFillPrice:lastClose, fillPrice:fillPrice,
              ret_pct: fillPrice>0 ? Number(((lastClose-fillPrice)/fillPrice*100).toFixed(2)) : null,
              terminalDate: new Date(seg[seg.length-1].ts).toISOString().slice(0,10),
              lastClose: lastClose };
 
-    function outcomeObj(outcome, lvl, tsMs){
-      return { fill:true, outcome:outcome, fillPrice:fillPrice,
-               ret_pct: fillPrice>0 ? Number(((lvl-fillPrice)/fillPrice*100).toFixed(2)) : null,
+    function outcomeObj(outcome, exitLvl, tsMs){
+      return { fill:true, outcome:outcome,
+               entryFillPrice:fillPrice, exitFillPrice:exitLvl, fillPrice:fillPrice,
+               ret_pct: (fillPrice>0 && exitLvl>0) ? Number(((exitLvl-fillPrice)/fillPrice*100).toFixed(2)) : null,
                terminalDate: new Date(tsMs).toISOString().slice(0,10),
                lastClose: lastClose };
     }
@@ -7030,10 +7258,13 @@ async function verifyReconTrack(){
     var ev = evaluatePath(t, candles);
     if(!ev) continue;
     t.eval = ev;
-    // 상태: p2 경과 또는 이미 종결(win/loss/no_fill)이면 complete
     var elapsed = now - t.scannedAt;
     var w = TRACK_WINDOWS[t.mode];
-    var terminal = (ev.outcome === 'win_t1' || ev.outcome === 'win_t2' || ev.outcome === 'loss' || ev.outcome === 'no_fill');
+    // no_fill: p2 경과 확정 미체결만 complete (데이터 부족 미체결은 판정불가로 계속 관찰)
+    var _noFillDone = ev.outcome === 'no_fill' && elapsed >= w.p2;
+    // win_t1: SWING 기본 100% 익절=전략 종결. CORE 청산 정책 미확정=계속 관찰
+    var _win1Done   = ev.outcome === 'win_t1' && t.mode !== 'core';
+    var terminal = (_win1Done || ev.outcome === 'win_t2' || ev.outcome === 'loss' || _noFillDone);
     t.status = (elapsed >= w.p2 || terminal) ? 'complete' : 'p1_done';
     var idx = G_reconTrack.findIndex(function(x){ return x.id===t.id; });
     if(idx>=0) G_reconTrack[idx] = t;
@@ -7041,7 +7272,7 @@ async function verifyReconTrack(){
   }
   if(verified){
     localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
-    syncReconTrack('momo'); syncReconTrack('swing');
+    syncReconTrack('momo'); syncReconTrack('swing'); syncReconTrack('core');
   }
   return verified;
 }
@@ -7105,9 +7336,9 @@ function buildTrackStatsPanel(mode){
 
   var html = '<div style="font-family:var(--mono);font-size:10px;color:var(--t2);background:var(--bg2);border-radius:8px;padding:10px 11px;margin-bottom:10px;line-height:1.7">';
   html += '<div style="color:'+col1+';font-weight:700;margin-bottom:4px">🎯 시그널 성과 ('+mode.toUpperCase()+', 평가 '+A.n+'건)</div>';
-  html += '<div>승률(종결 '+A.resolved+'건): <span style="color:'+wrColor+';font-weight:700">'+pct(A.winRate)+'</span>'+
+  html += '<div>승률(종결 '+A.resolved+'건, 만기 제외): <span style="color:'+wrColor+';font-weight:700">'+pct(A.winRate)+'</span>'+
           ' · 기대값/건: <span style="color:'+expColor+'">'+(A.expectancy===null?'—':sgn(A.expectancy))+'</span></div>';
-  html += '<div style="color:var(--t3)">체결률 '+pct(A.fillRate)+' (미체결 '+A.nofill+') · 만기보유 '+A.expired+'건 · 평균손익(체결) '+sgn(A.avgRet)+'</div>';
+  html += '<div style="color:var(--t3)">체결률 '+pct(A.fillRate)+' (미체결 '+A.nofill+') · 만기보유 '+A.expired+'건 · 평균손익(체결+만기) '+sgn(A.avgRet)+'</div>';
   html += '<div style="color:var(--t3)">평균익절 <span style="color:var(--g)">'+sgn(A.avgWin)+'</span> · 평균손절 <span style="color:var(--r)">'+sgn(A.avgLoss)+'</span></div>';
 
   // ── ENTER vs WATCH 반사실 비교 (임계값 변별력) ──
@@ -7246,6 +7477,11 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
   });
   var result_stopFresh = null, result_t1Fresh = null, result_t2Fresh = null;  // 보유 재분석 시 엔진 재계산 값
   var exitDecision = null;  // exitEngine 청산 결정 (swing/momo 보유)
+  var _d3Key = mode + ':' + ticker;
+  var _d3Seq = (G_scanSeqMap[_d3Key] || 0) + 1;
+  G_scanSeqMap[_d3Key] = _d3Seq;
+  var _d3TradeId = openTrade ? openTrade.id : null;
+  var _d3TradeRef = openTrade ? { stop: openTrade.stop, t1: openTrade.t1, t2: openTrade.t2, entry: openTrade.entry } : null;
 
   analyzeEl.innerHTML =
     '<div class="analyzing-card">'+
@@ -7390,12 +7626,16 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     //   core는 babylon 펀더 신호가 이미 1차 근거(프롬프트 주입)라 exitEngine 생략.
     if((mode==='swing' || mode==='momo') && typeof exitEngine === 'function'){
       try{
+        // entryTs: 진입일 → 시간 청산 판정용 (2026-08 — 이전엔 안 넘겨서 exitEngine 시간청산이 한 번도 안 돌았음)
+        var _entryTs = null;
+        try{ if(openTrade.date){ var _et = new Date(String(openTrade.date).replace(/\./g,'-')).getTime(); if(isFinite(_et)) _entryTs = _et; } }catch(_){}
         var _pos = {
           ticker: ticker, mode: mode,
           entry: openTrade.entry, stop: openTrade.stop,
-          t1: result_t1Fresh || openTrade.t1, t2: result_t2Fresh || openTrade.t2,
+          t1: openTrade.t1, t2: openTrade.t2,
           phase: openTrade.phase || null,
           highWatermark: openTrade.highWatermark || null,
+          entryTs: _entryTs,
         };
         var _snap = {
           price: ydata.price,
@@ -7405,9 +7645,44 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
           closedBelowMA20: (swingData && swingData.below_ma20_close) || false,
           earningsDaysAway: (ydata.earningsDaysAway !== undefined) ? ydata.earningsDaysAway : null,
         };
-        exitDecision = exitEngine(_pos, _snap);
+        // 시간 청산 일수 = 설정 '시간 손절 (일)'(swingHoldDays)과 단일화 — 카드·프롬프트·청산엔진이 같은 값을 보게 (2026-08)
+        //   exitEngine _mergeCfg는 얕은 병합이라 swing 객체 전체를 넘겨야 t1SellPct 등이 유지됨
+        var _exitCfg = null;
+        if(mode==='swing' && typeof EXIT_DEFAULTS!=='undefined' && EXIT_DEFAULTS.swing){
+          var _hd = parseInt((document.getElementById('swingHoldDays')||{textContent:''}).textContent||'',10);
+          if(isFinite(_hd) && _hd > 0) _exitCfg = { swing: Object.assign({}, EXIT_DEFAULTS.swing, { timeStopDays: _hd }) };
+        }
+        exitDecision = _exitCfg ? exitEngine(_pos, _snap, _exitCfg) : exitEngine(_pos, _snap);
         console.log('[exitEngine]', ticker, exitDecision.action, exitDecision.sell_pct+'%', exitDecision.reasons.join(' / '));
       }catch(e){ console.warn('[exitEngine] 실패:', e.message); }
+    }
+
+    // D1 전 현재성 검사: 시세/지표 대기 중 더 최신 호출이 완료됐거나 거래 상태가 바뀌었으면 저장·표시 차단
+    if(G_scanSeqMap[_d3Key] !== _d3Seq) return;
+    if(_d3TradeId !== null){
+      var _d1CurTrade = G_journal.find(function(t){ return t.id === _d3TradeId; });
+      if(!_d1CurTrade || _d1CurTrade.deleted || (_d1CurTrade.status !== 'open' && _d1CurTrade.status !== 'partial')) return;
+      if(_d3TradeRef && (_d1CurTrade.stop !== _d3TradeRef.stop || _d1CurTrade.t1 !== _d3TradeRef.t1 || _d1CurTrade.t2 !== _d3TradeRef.t2 || _d1CurTrade.entry !== _d3TradeRef.entry)) return;
+    } else {
+      var _d1NowOpen = G_journal.find(function(t){ return !t.deleted && t.ticker === ticker && (t.status === 'open' || t.status === 'partial') && (!t.mode || t.mode === mode); });
+      if(_d1NowOpen) return;
+    }
+    // D1: 엔진 결정 즉시 저장 — LLM 전 결정 소실 방지 (HOLD 포함)
+    if(openTrade && exitDecision){
+      var _earlyReason = (exitDecision.reasons && exitDecision.reasons.join(' / ')) || null;
+      openTrade.exitSignal = {
+        action: exitDecision.action, add_price: null, add_reason: null,
+        reason: _earlyReason, engine_action: exitDecision.action, at: Date.now()
+      };
+      openTrade.updatedAt = Date.now();
+      saveJournal();
+      var _preResult = {
+        hold_action: exitDecision.action, reason: _earlyReason,
+        ticker: ticker, price: ydata.price,
+        stop: openTrade.stop, target1: openTrade.t1, target2: openTrade.t2,
+        t1: openTrade.t1, t2: openTrade.t2, _pending_llm: true
+      };
+      resultEl.innerHTML = holdCardHTML(_preResult, mode, openTrade);
     }
 
     prompt = makePrompt(mode, ticker, ydata, swingData, openTrade, coreData, babylonResult, exitDecision);
@@ -7585,6 +7860,11 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     var jsonStart = rawText.indexOf('{');
     if(jsonStart > 0) rawText = rawText.slice(jsonStart);
 
+    if(G_scanSeqMap[_d3Key] !== _d3Seq) return;
+    var _currentTrade = _d3TradeId ? G_journal.find(function(t){ return t.id === _d3TradeId; }) : null;
+    if(_d3TradeId && (!_currentTrade || _currentTrade.deleted || (_currentTrade.status !== 'open' && _currentTrade.status !== 'partial'))) return;
+    if(!_d3TradeId){ var _nowOpen=G_journal.find(function(t){ return !t.deleted&&t.ticker===ticker&&(t.status==='open'||t.status==='partial')&&(!t.mode||t.mode===mode); }); if(_nowOpen) return; }
+    if(_d3TradeId&&_currentTrade&&_d3TradeRef&&(_currentTrade.stop!==_d3TradeRef.stop||_currentTrade.t1!==_d3TradeRef.t1||_currentTrade.t2!==_d3TradeRef.t2||_currentTrade.entry!==_d3TradeRef.entry)) return;
     var result;
     if(openTrade){
       // ── 보유 포지션: Claude 전체 판단 (hold_action) ──
@@ -7675,7 +7955,7 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     applyHistory(result);
     // _dumpScore 계산 (MOMO 카드 표시용)
     if(mode==='momo' && !openTrade) result._dumpScore = getDumpScore(result);
-    // hardFilter: openTrade는 그대로, 신규는 SPY/Phase 오버라이드 생략 (엔진이 이미 처리)
+    // hardFilter: 보유 재분석에만 적용. 신규 진입의 SPY MA200 게이트는 swingEngine 안으로 단일화됨 (2026-08 — 이전엔 어느 쪽에서도 안 걸리고 있었음)
     if(openTrade) result.action = hardFilter(result, mode);
 
     // MOMO: PM 타이밍 경고 (분석 완료 시각 기준 PM 위치)
@@ -7740,16 +8020,14 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       var _newStop = parseFloat(_us.toFixed(2));
       var _newT1   = parseFloat(_u1.toFixed(2));
       var _newT2   = parseFloat(_u2.toFixed(2));
-      var _changed = (_newStop !== openTrade.stop) || (_newT1 !== openTrade.t1) || (_newT2 !== openTrade.t2);
-      if(_changed){
+      // A3: 상향(이익보호선 갱신)만 허용 — 하향 금지
+      if(_newStop > openTrade.stop){
         openTrade.stop = _newStop;
-        openTrade.t1   = _newT1;
-        openTrade.t2   = _newT2;
         openTrade.updatedAt = Date.now();
         saveJournal();
-        console.log('[재분석 자동갱신]', ticker, '손절→$'+_newStop, 'T1→$'+_newT1, 'T2→$'+_newT2);
+        console.log('[손절 상향]', ticker, '→$'+_newStop);
       }
-      // 카드에도 즉시 반영 (holdCardHTML은 result 사용)
+      // A2b: T1/T2는 openTrade에 쓰지 않음 — 적용 계획 보호. 카드 표시용만.
       result.stop = _newStop; result.target1 = _newT1; result.target2 = _newT2;
       result.t1 = _newT1; result.t2 = _newT2;
     }
@@ -7758,12 +8036,20 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     //   stop 유무와 무관하게 — CORE는 손절선이 아니라 액션(SELL/ADD/HOLD)이 핵심
     //   ★ swing/momo는 exitEngine(규칙)이 1차. 엔진이 SELL이면 그걸 우선, 아니면 Claude 액션.
     if(openTrade && (result.hold_action || exitDecision)){
-      var _finalAction = result.hold_action || 'HOLD';
-      var _finalReason = result.hold_reason || result.exit_reason || null;
-      // exitEngine이 SELL 계열을 결정했으면 규칙 우선 (Claude가 HOLD라 해도 엔진 SELL이 이김)
-      if(exitDecision && (exitDecision.action === 'SELL_ALL' || exitDecision.action === 'SELL_HALF')){
+      var _finalAction, _finalReason;
+      if(exitDecision){
+        // exitDecision 있으면 엔진 결정 우선 (HOLD든 SELL이든) — LLM은 설명만
         _finalAction = exitDecision.action;
-        _finalReason = (exitDecision.reasons && exitDecision.reasons.join(' / ')) || _finalReason;
+        _finalReason = (exitDecision.reasons && exitDecision.reasons.join(' / ')) || result.hold_reason || result.exit_reason || null;
+      } else if(mode === 'core'){
+        // CORE는 exitEngine 미사용 정상 케이스 → LLM 액션 사용 (babylonEngine이 별도 판단)
+        _finalAction = result.hold_action || 'HOLD';
+        _finalReason = result.hold_reason || result.exit_reason || null;
+      } else {
+        // SWING/MOMO 엔진 실패로 exitDecision=null → LLM에 결정권 안 넘김
+        _finalAction = 'HOLD';
+        _finalReason = '[안전 기본값] exitEngine 실패 — 수동 재평가 필요';
+        if(typeof console !== 'undefined' && console.warn) console.warn('[D2] SWING/MOMO exitEngine 실패, HOLD 안전 기본값 적용');
       }
       openTrade.exitSignal = {
         action:     _finalAction,
@@ -7779,11 +8065,27 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
     }
 
     analyzeEl.innerHTML = '';
-    resultEl.innerHTML = openTrade ? holdCardHTML(result, mode, openTrade) : cardHTML(result, mode);
+    // D2: 화면도 엔진 결정 사용 — LLM result.hold_action 그대로 쓰지 않음
+    var _rDisp = openTrade ? Object.assign({}, result, {
+      hold_action: _finalAction, reason: _finalReason,
+      ticker: ticker, price: (typeof ydata !== 'undefined') ? ydata.price : null,
+      stop: openTrade.stop, target1: openTrade.t1, target2: openTrade.t2,
+      t1: openTrade.t1, t2: openTrade.t2
+    }) : result;
+    resultEl.innerHTML = openTrade ? holdCardHTML(_rDisp, mode, openTrade) : cardHTML(result, mode);
     // MOMO: 오늘 분석 카드 목록 갱신
     if(mode === 'momo') renderMomoTodayCards();
 
   }catch(e){
+    if(G_scanSeqMap[_d3Key] !== _d3Seq) return;
+    if(_d3TradeId !== null){
+      var _catchCurTrade = G_journal.find(function(t){ return t.id === _d3TradeId; });
+      if(!_catchCurTrade || _catchCurTrade.deleted || (_catchCurTrade.status !== 'open' && _catchCurTrade.status !== 'partial')) return;
+      if(_d3TradeRef && (_catchCurTrade.stop !== _d3TradeRef.stop || _catchCurTrade.t1 !== _d3TradeRef.t1 || _catchCurTrade.t2 !== _d3TradeRef.t2 || _catchCurTrade.entry !== _d3TradeRef.entry)) return;
+    } else {
+      var _catchNowOpen = G_journal.find(function(t){ return !t.deleted && t.ticker === ticker && (t.status === 'open' || t.status === 'partial') && (!t.mode || t.mode === mode); });
+      if(_catchNowOpen) return;
+    }
     analyzeEl.innerHTML='';
     var isOverload = e.message && (
       e.message.toLowerCase().includes('overload') ||
@@ -7826,13 +8128,26 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       return;
     }
 
-    // 폴백 불가 (보유 포지션) → 에러만 표시
-    resultEl.innerHTML='<div class="alert-card" style="margin:4px 0 10px">'+
-      '<div class="alert-msg" style="color:'+(isOverload?'var(--a)':'var(--r)')+'">'+
-        (isOverload ? ticker+' — API 과부하, 재시도해 주세요' : ticker+' 오류: '+e.message)+
-      '</div>'+
-      (isOverload?'<div style="font-size:10px;color:var(--t3);margin-top:4px;font-family:var(--mono)">잠시 후 다시 시도해 주세요</div>':'')+
-      '</div>';
+    // 폴백 불가 (보유 포지션) → 엔진 결정 카드 유지 + 오류 보조 표시 (HOLD 포함)
+    if(openTrade && exitDecision){
+      var _errResult = {
+        hold_action: exitDecision.action,
+        reason: (exitDecision.reasons && exitDecision.reasons.join(' / ')) || null,
+        ticker: ticker, price: ydata.price,
+        stop: openTrade.stop, target1: openTrade.t1, target2: openTrade.t2,
+        t1: openTrade.t1, t2: openTrade.t2
+      };
+      resultEl.innerHTML = holdCardHTML(_errResult, mode, openTrade) +
+        '<div class="alert-card" style="margin:4px 0 10px">'+
+          '<div class="alert-msg" style="color:var(--t3);font-size:11px">AI 분석 실패 (엔진 결정은 위에 표시됨)</div></div>';
+    } else {
+      resultEl.innerHTML='<div class="alert-card" style="margin:4px 0 10px">'+
+        '<div class="alert-msg" style="color:'+(isOverload?'var(--a)':'var(--r)')+'">'+
+          (isOverload ? ticker+' — API 과부하, 재시도해 주세요' : ticker+' 오류: '+e.message)+
+        '</div>'+
+        (isOverload?'<div style="font-size:10px;color:var(--t3);margin-top:4px;font-family:var(--mono)">잠시 후 다시 시도해 주세요</div>':'')+
+        '</div>';
+    }
   }
 }
 // ═══════════════════════════════════════
@@ -8458,6 +8773,10 @@ function cardHTML(r, mode){
   var ea = (r._mode === 'swing' && typeof calcSwingEntrySignal === 'function')
     ? calcSwingEntrySignal(r)
     : calcEntryAction(r);
+  // 사이징 선계산 (2026-08): 셋업은 유효(ENTER)인데 계좌 적합성으로 0주면 상단 진입 박스에도 그 사실을 표시
+  var _szPre = ((r._mode==='swing'||r._mode==='momo') && ac!=='BLOCK' && typeof computeSizeInfo==='function') ? computeSizeInfo(r) : null;
+  var _szSkipNote = (_szPre && _szPre.sz && (_szPre.sz.skip || !_szPre.sz.shares))
+    ? '<div class="as-trigger" style="color:var(--a)">⚠ 권장수량 0주 — 셋업은 유효하나 계좌 적합성 미달(실행 불가) · 하단 사이징 참조</div>' : '';
   var st = calcSellTargets(r);
 
   // VWAP 바 (intraday — CORE 제외)
@@ -8466,7 +8785,7 @@ function cardHTML(r, mode){
     var vp=r.vwap_pct!==null?r.vwap_pct:0;
     var barPct=Math.max(5,Math.min(95,50+vp/10*50));
     var vpColor=vp>=0?'var(--g)':'var(--r)';
-    vwapHtml='<div class="vwap-row"><span style="color:var(--t2)">VWAP</span><span style="font-family:var(--mono);font-size:11px;color:var(--t2)">$'+r.vwap+'</span><div class="vwap-bar-wrap"><div class="vwap-bar-fill" style="width:'+barPct+'%;background:'+vpColor+';opacity:.7"></div></div><span style="color:'+vpColor+';font-size:11px">'+(vp>=0?'+':'')+vp+'%</span></div>';
+    vwapHtml='<div class="vwap-row"><span style="color:var(--t2)">VWAP'+(r._mode==='swing'?'<span style="font-size:8px;color:var(--t3)">(당일·참고)</span>':'')+'</span><span style="font-family:var(--mono);font-size:11px;color:var(--t2)">$'+r.vwap+'</span><div class="vwap-bar-wrap"><div class="vwap-bar-fill" style="width:'+barPct+'%;background:'+vpColor+';opacity:.7"></div></div><span style="color:'+vpColor+';font-size:11px">'+(vp>=0?'+':'')+vp+'%</span></div>';
   }
 
   // 태그
@@ -8501,9 +8820,13 @@ function cardHTML(r, mode){
     }
   }
   // 임상 바이오텍 catalyst 경고 (갭 리스크 — 사이즈 자동 축소됨)
+  if(!r.clinical_catalyst && r.clinical_kw_muted && r.clinical_kw_muted.length){
+    tags+='<span class="tag" style="color:var(--t2);background:rgba(255,255,255,.04);border:1px solid var(--t3)" title="임상 키워드는 있으나 '+(r.clinical_muted_reason||'라지캡')+' — 바이너리 갭 리스크 아님, 사이즈 축소 안 함">🧬 임상 키워드 ('+r.clinical_kw_muted.join('/')+') · '+(r.clinical_muted_reason||'라지캡')+' → 사이즈 무영향</span>';
+  }
   if(r.clinical_catalyst){
     var _ckw = (r.clinical_kw && r.clinical_kw.length) ? (' ('+r.clinical_kw.join('/')+')') : '';
-    tags+='<span class="tag" style="color:var(--r);background:rgba(255,45,78,.12);border:1px solid var(--r);font-weight:700">🧬 임상 갭리스크'+_ckw+'</span>';
+    var _cmult = (typeof SIZE_DEFAULTS!=='undefined' && SIZE_DEFAULTS.clinicalMult) ? SIZE_DEFAULTS.clinicalMult : 0.3;
+    tags+='<span class="tag" style="color:var(--r);background:rgba(255,45,78,.12);border:1px solid var(--r);font-weight:700" title="임상 이벤트 키워드 감지 — 바이너리 갭 리스크로 권장 사이즈 ×'+_cmult+'">🧬 임상 갭리스크'+_ckw+' · 사이즈×'+_cmult+'</span>';
   }
   // 데이터 부실 강등 배지 (MOMO — ENTER→WATCH 사유)
   if(r.data_downgrade && r.data_downgrade_reason){
@@ -8581,15 +8904,25 @@ function cardHTML(r, mode){
   var swingChecklistHtml='';
   if(r._mode==='swing'&&r.conditions_met!==undefined&&r.swing_detail&&r.swing_detail.length){
     var sc=r.conditions_met, scPct=Math.round(sc/8*100);
-    var scColor=sc>=5?'var(--bl)':sc>=3?'var(--a)':'var(--t3)';
-    var scLabel=sc>=5?'진입 가능':sc>=3?'관찰 구간':'진입 불가';
+    // 라벨은 엔진 판정(r.action)을 따름 — 예전 "≥5면 진입 가능"은 엔진 ENTER 기준(≥6 + 핵심조건 전부)과 어긋나
+    //   WATCH 카드에도 "진입 가능"이 찍혔음 (2026-08 정합)
+    var _act = r.action || (sc>=6?'ENTER':sc>=4?'WATCH':'BLOCK');
+    var scColor=_act==='ENTER'?'var(--bl)':_act==='WATCH'?'var(--a)':'var(--t3)';
+    var scLabel=_act==='ENTER'?'진입 가능':_act==='WATCH'?(r._coresMet===false?'관망 · 핵심조건 대기':'관망'):'진입 불가';
     var typeLabels={'A':'Type A 눌림목','B':'Type B 돌파','C':'Type C 반전'};
-    var typeStr = r.swing_type ? ' · <span style="color:var(--bl)">'+(typeLabels[r.swing_type]||'')+'</span>' : '';
-    var rows=r.swing_detail.map(function(d){
+    // 타입별 핵심조건 인덱스 (swingEngine.js SWING_TYPE_CORE와 동일 — 로드 순서 대비 폴백 포함)
+    var _coreMap = (typeof SWING_TYPE_CORE!=='undefined') ? SWING_TYPE_CORE : {'A':[0,1,2,5,6],'B':[1,4,5,7],'C':[1,5,6]};
+    var _coreIdx = (r.swing_type && _coreMap[r.swing_type]) ? _coreMap[r.swing_type] : [];
+    var _corePassed = 0; _coreIdx.forEach(function(i){ if((r.swing_detail[i]||'').startsWith('✓')) _corePassed++; });
+    var typeStr = r.swing_type
+      ? ' · <span style="color:var(--bl)">'+(typeLabels[r.swing_type]||'')+'</span><span style="font-family:var(--mono);font-size:9px;color:'+(_corePassed===_coreIdx.length?'var(--g)':'var(--a)')+';margin-left:4px">★핵심 '+_corePassed+'/'+_coreIdx.length+'</span>'
+      : ' · <span style="font-family:var(--mono);font-size:9px;color:var(--t3)" title="눌림목(A)·돌파(B)·반전(C) 셋업 미인식 — 일반 조건 수 기준 판정">타입 미확정 · 일반조건</span>';
+    var rows=r.swing_detail.map(function(d,i){
       var ok=d.startsWith('✓');
+      var isCore=_coreIdx.indexOf(i)>=0;
       return '<div style="display:flex;align-items:baseline;gap:5px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)">'+
         '<span style="font-size:10px;flex-shrink:0;color:'+(ok?'var(--g)':'var(--r)')+';">'+(ok?'✓':'✗')+'</span>'+
-        '<span style="font-size:10px;color:'+(ok?'var(--t)':'var(--t2)')+';flex:1;line-height:1.4">'+d.substring(2)+'</span>'+
+        '<span style="font-size:10px;color:'+(ok?'var(--t)':'var(--t2)')+';flex:1;line-height:1.4">'+(isCore?'<span style="color:var(--a)" title="Type '+r.swing_type+' 핵심조건 — 미충족 시 ENTER 불가">★</span> ':'')+d.substring(2)+'</span>'+
       '</div>';
     }).join('');
     swingChecklistHtml=
@@ -8616,6 +8949,10 @@ function cardHTML(r, mode){
       var typeColors={'A':'var(--a)','B':'var(--bl)','C':'var(--r)'};
       var typeC = typeColors[r.momo_type]||'var(--t2)';
       modeBadge += '<span style="font-family:var(--mono);font-size:9px;color:'+typeC+';background:rgba(255,255,255,.04);border:1px solid '+typeC+';border-radius:4px;padding:1px 5px;margin-left:3px">Type '+r.momo_type+'</span>';
+    }
+    // SWING 타입 미확정 배지 (일반 조건 수로만 판정된 카드 — 눌림목/돌파/반전과 동급으로 오인 방지)
+    if(r._mode==='swing' && !r.swing_type && r.action!=='BLOCK'){
+      modeBadge += '<span style="font-family:var(--mono);font-size:9px;color:var(--t3);background:rgba(255,255,255,.04);border:1px solid var(--t3);border-radius:4px;padding:1px 5px;margin-left:3px" title="눌림목(A)·돌파(B)·반전(C) 셋업 미인식 — 일반 조건 수 기준">타입 미확정</span>';
     }
     // SWING 타입 배지
     if(r._mode==='swing' && r.swing_type){
@@ -8644,7 +8981,7 @@ function cardHTML(r, mode){
   // 별도 signals/warnings는 B안 승격 메시지 등 실제 판단 신호만 표시
   var allSigs=[
     ...(r.signals||[]).slice(0,2).map(function(s){return '<div class="sig-line"><span class="sig-icon" style="color:var(--g)">✓</span>'+s+'</div>';}),
-    ...(r.warnings||[]).slice(0,2).map(function(w){return '<div class="sig-line"><span class="sig-icon" style="color:var(--a)">⚠</span>'+w+'</div>';}),
+    ...(r.warnings||[]).slice(0,(r._mode==='swing'?3:2)).map(function(w){return '<div class="sig-line"><span class="sig-icon" style="color:var(--a)">⚠</span>'+w+'</div>';}),  // swing: 캡·핵심조건·수급 경고 3줄까지 (2026-08)
     ...(r.blockers||[]).slice(0,3).map(function(b){return '<div class="sig-line"><span class="sig-icon" style="color:var(--r)">✗</span>'+b+'</div>';}),
   ];
   var sigs=allSigs.length?'<div class="card-signals">'+allSigs.join('')+'</div>':'';
@@ -8655,10 +8992,28 @@ function cardHTML(r, mode){
   // 매도 전략
   var sellHtml='';
   if(st&&ac!=='BLOCK'){
-    sellHtml='<div style="font-size:9px;color:var(--t2);letter-spacing:.08em;margin:10px 0 5px;text-transform:uppercase">매도 전략</div>'+
+    // R 배수는 실제 계획(진입-손절)에서 계산 — 예전 '+1R/+2R'은 고정 문자열이라 실제(예: 1.3R/4.2R)와 달랐음 (2026-08)
+    var _r1 = (r.entry&&st.risk>0)?((st.t1-r.entry)/st.risk):null;
+    var _r2v= (r.entry&&st.risk>0)?((st.t2-r.entry)/st.risk):null;
+    var _r1s= _r1!==null?('+'+_r1.toFixed(1)+'R'):'+1R';
+    var _r2s= _r2v!==null?('+'+_r2v.toFixed(1)+'R'):'+2R';
+    // SWING: 청산 엔진(exitEngine) 설정을 그대로 표시 — 카드가 약속한 계획과 실제 청산 규칙이 달랐던 문제 제거.
+    //   현재 EXIT_DEFAULTS.swing.t1SellPct=100(백테스트: T1 전량 > 절반+BE). 50/50 러너로 바꾸려면 그 값만 바꾸면 카드도 따라감.
+    var _t1SellPct = 50;
+    if(r._mode==='swing' && typeof EXIT_DEFAULTS!=='undefined' && EXIT_DEFAULTS.swing && EXIT_DEFAULTS.swing.t1SellPct){
+      _t1SellPct = EXIT_DEFAULTS.swing.t1SellPct;
+    }
+    var _t1Full = _t1SellPct>=100;
+    var _t1Label = _t1Full ? 'T1 · 전량 매도' : 'T1 · '+_t1SellPct+'% 매도';
+    var _t1Sub   = _t1Full ? _r1s+' · 청산엔진 기본(백테스트: 전량 > 절반+BE)' : _r1s+' · 잔여 손절 breakeven';
+    var _t2Label = _t1Full ? 'T2 · 추세 목표(참고)' : 'T2 · 잔량 전량';
+    var _t2Sub   = _r2s + (r._mode==='swing'&&r.t2_basis?' · '+r.t2_basis:'')
+                 + (_t1Full?' · 부분청산 설정 시 잔량 목표':'')
+                 + (r.fiftyTwoWeekHigh&&st.t2===parseFloat(r.fiftyTwoWeekHigh.toFixed(2))?' · 52주 고가':'');
+    sellHtml='<div style="font-size:9px;color:var(--t2);letter-spacing:.08em;margin:10px 0 5px;text-transform:uppercase">매도 전략'+(r._mode==='swing'?' <span style="text-transform:none;color:var(--t3)">(exitEngine 규칙 기준)</span>':'')+'</div>'+
       '<div class="sell-targets">'+
-        '<div class="sell-target st-t1"><div class="st-label">T1 · 50% 매도</div><div class="st-price">$'+st.t1+'</div><div class="st-sub">+1R · 잔여 손절 breakeven</div></div>'+
-        '<div class="sell-target st-t2"><div class="st-label">T2 · 전량 매도</div><div class="st-price">$'+st.t2+'</div><div class="st-sub">+2R'+(r.fiftyTwoWeekHigh&&st.t2===parseFloat(r.fiftyTwoWeekHigh.toFixed(2))?' · 52주 고가':'')+'</div></div>'+
+        '<div class="sell-target st-t1"><div class="st-label">'+_t1Label+'</div><div class="st-price">$'+st.t1+'</div><div class="st-sub">'+_t1Sub+'</div></div>'+
+        '<div class="sell-target st-t2"><div class="st-label">'+_t2Label+'</div><div class="st-price">$'+st.t2+'</div><div class="st-sub">'+_t2Sub+'</div></div>'+
       '</div>'+parabolicHtml;
   }
 
@@ -8726,6 +9081,12 @@ function cardHTML(r, mode){
   // 날짜/시간
   var tsStr='';
   if(r._ts){ var d=new Date(r._ts); tsStr='<span style="font-family:var(--mono);font-size:9px;color:var(--t3)">'+d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})+'</span>'; }
+  // 스윙 카드 세션 힌트 (2026-08): 폐장 후 스캔이면 조건·진입각이 직전 종가 기준임을 명시 (장중이면 당일 미완성 봉 포함)
+  if(r._mode==='swing' && typeof G!=='undefined' && G.marketPhase){
+    var _ph=G.marketPhase;
+    var _phTxt = _ph==='CLOSED' ? '폐장 후 · 직전 종가 기준' : _ph==='PRE' ? '프리마켓 · 직전 종가 기준' : '장중 · 당일 미완성 봉 포함';
+    tsStr += '<span style="font-family:var(--mono);font-size:9px;color:var(--t3);margin-left:6px" title="스윙 조건·진입각은 일봉 기준. 폐장 후엔 다음 개장 시가에 따라 재분석 권장">'+_phTxt+'</span>';
+  }
 
   // ── 💎 베이비 자이언트 배너 (CORE 모드만) ──
   var babylonBanner = '';
@@ -9190,9 +9551,11 @@ function cardHTML(r, mode){
           '<div class="card-ticker">'+r.ticker+'</div>'+
           modeBadge+tsStr+
         '</div>'+
-        '<div class="card-sub">'+(r.float_m&&r._mode!=='core'?r.float_m.toFixed(1)+'M float · ':'')+(r._mode==='swing'&&r.conditions_met!==undefined?'조건 '+r.conditions_met+'/8 · ':'')+(r._mode==='swing'&&r.marketCap_b?'시총 $'+r.marketCap_b+'B · ':'')+(r._mode==='core'&&r.marketCap_b?'시총 $'+r.marketCap_b+'B · ':'')+(r._mode==='core' ? '' : (r.news_quality||'--'))+
+        '<div class="card-sub">'+(r.float_m&&r._mode!=='core'?r.float_m.toFixed(1)+'M float · ':'')+(r._mode==='swing'&&r.conditions_met!==undefined?'조건 '+r.conditions_met+'/8 · ':'')+(r._mode==='swing'&&r.marketCap_b?'<span title="시총 출처: '+({kis:'KIS price-detail',yahoo:'Yahoo quoteSummary',webull:'Webull 무버 캐시'}[r.marketCap_src]||'-')+'">시총 $'+r.marketCap_b+'B</span> · ':'')+(r._mode==='core'&&r.marketCap_b?'시총 $'+r.marketCap_b+'B · ':'')+(r._mode==='core' ? '' : ({factual:'뉴스:팩트',vague:'뉴스:모호',none:'뉴스:없음'}[r.news_quality]||r.news_quality||'--'))+
           (function(){ 
-            if(r._mode === 'core') return '';  // CORE는 PM zone 의미 없음
+            // PM zone(프리마켓 레인지 내 위치)은 MOMO 당일 개념. SWING 카드에 '고점 근처 134%'로 찍히면
+            //   52주 고점/랠리 위치로 오독됨(2026-08 실측) → MOMO 전용.
+            if(r._mode !== 'momo') return '';
             var z=getPMZone(r); return z?' · <span style="color:'+z.color+'">'+z.label+' '+z.pct+'%</span>':''; 
           })()+
         '</div>'+
@@ -9213,6 +9576,7 @@ function cardHTML(r, mode){
           '<div class="as-label '+ea.css+'">'+ea.label+'</div>'+
           '<div class="as-reason">'+ea.reason+'</div>'+
           (ea.trigger?'<div class="as-trigger">'+ea.trigger+'</div>':'')+
+          _szSkipNote+
           (r.trade_note?'<div style="font-size:10px;color:var(--t3);margin-top:4px">💡 '+r.trade_note+'</div>':
            r.entry_reason?'<div style="font-size:10px;color:var(--t3);margin-top:4px">'+r.entry_reason+'</div>':'')+
         '</div>'+
@@ -9288,24 +9652,27 @@ function cardHTML(r, mode){
       '<div class="levels" style="'+(r._mode!=='core'&&r.slippage_risk==='high'?'opacity:.7':'')+'">'+
         '<div class="lv lv-entry"><div class="lv-label">진입</div><div class="lv-val">'+(r.entry?'$'+r.entry:'--')+'</div></div>'+
         '<div class="lv lv-stop"><div class="lv-label">'+(r._mode==='core'?(r.entry&&r.stop?'손절('+((r.stop-r.entry)/r.entry*100).toFixed(0)+'%)':'손절'):r._mode==='swing'?(r.stop_type||'손절'):r.momo_type==='C'?'손절(-15%)':r.momo_type==='B'?'손절(-10%)':'손절(-7%)')+'</div><div class="lv-val">'+(r.stop?'$'+r.stop:'--')+'</div></div>'+
-        '<div class="lv lv-t1"><div class="lv-label">'+(r._mode==='core'?'익절1 (25%)':'T1(50%)')+(r._mode==='swing'?((r.t1_strong?' ★':'')+(r.t1_src==='est'?' <span style="color:var(--a);font-size:8px">추정</span>':'')):'')+'</div><div class="lv-val">'+(r._mode==='swing'?(r.target1?'$'+r.target1:'--'):(st?'$'+st.t1:r.target1?'$'+r.target1:'--'))+'</div></div>'+
+        '<div class="lv lv-t1"><div class="lv-label">'+(r._mode==='core'?'익절1 (25%)':(r._mode==='swing'?('T1('+(function(){ var _p=(typeof EXIT_DEFAULTS!=='undefined'&&EXIT_DEFAULTS.swing&&EXIT_DEFAULTS.swing.t1SellPct)||100; return _p>=100?'전량':(_p+'%'); })()+')'):'T1(50%)'))+(r._mode==='swing'?((r.t1_strong?' ★':'')+(r.t1_basis?' <span style="color:var(--t3);font-size:8px">'+r.t1_basis+'</span>':(r.t1_src==='est'?' <span style="color:var(--a);font-size:8px">추정</span>':''))):'')+'</div><div class="lv-val">'+(r._mode==='swing'?(r.target1?'$'+r.target1:'--'):(st?'$'+st.t1:r.target1?'$'+r.target1:'--'))+'</div></div>'+
         '<div class="lv lv-rr"><div class="lv-label">'+(r._mode==='core'?'익절1 상승률':r._mode==='swing'?'T1 상승률':'손익비')+'</div><div class="lv-val">'+
           (r._mode==='momo'
             ? (r.rr?r.rr+'R':'--')
-            : (r.entry&&r.target1?'+'+((r.target1-r.entry)/r.entry*100).toFixed(0)+'%':'--')
+            : (r.entry&&r.target1?'+'+((r.target1-r.entry)/r.entry*100).toFixed(0)+'%'+(r._mode==='swing'&&r.rr?' <span style="font-size:9px;color:var(--t2)">'+r.rr+'R</span>':''):'--')
           )+'</div></div>'+
       '</div>'+
       ((r._mode==='swing')&&r.target2?
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:5px;padding:6px 10px;background:rgba(43,159,255,.06);border:1px solid rgba(43,159,255,.15);border-radius:8px">'+
-          '<span style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.08em">T2 최종목표 (잔량)'+(r.t2_strong?' ★':'')+(r.t2_src==='est'?' · 추정':'')+'</span>'+
+          '<span style="font-family:var(--mono);font-size:9px;color:var(--bl);letter-spacing:.08em">'+(function(){ var _p=(typeof EXIT_DEFAULTS!=='undefined'&&EXIT_DEFAULTS.swing&&EXIT_DEFAULTS.swing.t1SellPct)||100; return _p>=100?'T2 추세 목표 (참고)':'T2 최종목표 (잔량)'; })()+(r.t2_strong?' ★':'')+(r.t2_basis?' · '+r.t2_basis:(r.t2_src==='est'?' · 추정':''))+'</span>'+
           '<span style="font-family:var(--mono);font-size:13px;color:var(--bl)">$'+r.target2+'</span>'+
-          (r.entry?'<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">+'+((r.target2-r.entry)/r.entry*100).toFixed(0)+'%</span>':'')+
+          (r.entry?'<span style="font-family:var(--mono);font-size:10px;color:var(--t2)">+'+((r.target2-r.entry)/r.entry*100).toFixed(0)+'%'+(r.rr2?' · '+r.rr2+'R':'')+'</span>':'')+
         '</div>'
+      :'')+
+      ((r._mode==='swing')&&r.rr?
+        '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:3px;text-align:right" title="점수는 셋업 완성도지 승률이 아님. 이 R:R에서 손익 0이 되는 최소 승률">손익분기 승률 '+Math.round(100/(1+r.rr))+'% (T1 '+r.rr+'R 전량 청산 가정) · 점수≠확률</div>'
       :'')+
       ((r._mode==='swing')&&r.vpoc?
         '<div style="font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:3px;text-align:right">VPOC(매물대 자석) $'+r.vpoc+(r.t1_src==='est'&&r.t2_src==='est'?' · 머리 위 저항 없음(신고가권)':'')+'</div>'
       :'')+
-      ((r._mode==='swing'||r._mode==='momo')&&ac!=='BLOCK'?renderSizeLine(r):'')+
+      ((r._mode==='swing'||r._mode==='momo')&&ac!=='BLOCK'?renderSizeLine(r,_szPre):'')+
       (r._mode==='core'&&r.target2&&ac!=='BLOCK'?
         '<div style="margin-top:5px;padding:8px 10px;background:rgba(159,122,255,.06);border:1px solid rgba(159,122,255,.2);border-radius:8px">'+
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
@@ -9388,6 +9755,7 @@ function cardHTML(r, mode){
 
     (r._mode !== 'core' ? 
       '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--t3)">'+
+        (r._mode==='swing'&&(r.pm_high||r.orb_high)?'<span style="opacity:.7">인트라데이 참고 ·</span>':'')+
         (r.pm_high?'<span>PM↑ $'+r.pm_high.toFixed(2)+'</span>':'')+
         (r.pm_low?'<span>PM↓ $'+r.pm_low.toFixed(2)+'</span>':'')+
         (r.orb_high?'<span style="color:var(--bl)">ORB $'+r.orb_high.toFixed(2)+'</span>':'')+
@@ -10113,40 +10481,63 @@ function renderExitGuide(t, mode){
 }
 
 // 진입 카드용 — 권장 수량 한 줄 (계좌 평가액 설정 시에만 표시)
-function renderSizeLine(r){
+// 사이징 계산만 (렌더 없음) — 카드 상단 진입 박스에서도 "실행 불가" 표시에 쓰기 위해 분리 (2026-08)
+//   반환: { rs, sz } 또는 null(계좌 미설정/입력 부족)
+function computeSizeInfo(r){
   try{
-    if(typeof sizeEngine !== 'function') return '';
+    if(typeof sizeEngine !== 'function') return null;
     var mode = (typeof G !== 'undefined' && G.currentMode) || 'swing';
     var rs = getRiskSettings(mode);
-    if(!rs.equity) return '';  // 이 모드 계좌 미설정 → 표시 안 함
-    if(!r || !r.entry || !r.stop) return '';
+    if(!rs.equity) return null;  // 이 모드 계좌 미설정 → 표시 안 함
+    if(!r || !r.entry || !r.stop) return null;
     var plan = {
       ticker: r.ticker || r.stock && r.stock.ticker,
       entry: r.entry, stop: r.stop,
       type: r.swing_type || (r.swingType) || null,
-      action: r.action || 'ENTER',
+      action: r.action,
       vixRegime: (typeof G !== 'undefined' && G.vixRegime) || 'CALM',
       clinical_catalyst: r.clinical_catalyst || false,
     };
-    var sz = sizeEngine(plan, { equity: rs.equity, cashAvailable: rs.equity },
+    var sz = sizeEngine(plan, { equity: rs.equity, cashAvailable: rs.equity, assumed: true },
                         { riskPctPerTrade: rs.riskPctPerTrade, maxPositionPct: rs.maxPositionPct });
+    return { rs: rs, sz: sz };
+  }catch(e){ return null; }
+}
+
+function renderSizeLine(r, info){
+  try{
+    info = info || computeSizeInfo(r);
+    if(!info) return '';
+    var rs = info.rs, sz = info.sz;
+    // 실효 리스크 산출 근거 (2026-08): 설정 1%가 타입/VIX/WATCH/임상 배수로 0.24%가 되는 걸 카드에서 바로 보이게
+    var _effNote = '';
+    if(sz.effRiskPct!=null && sz.baseRiskPct!=null && sz.multNote){
+      _effNote = '리스크 '+sz.baseRiskPct+'% → 실효 '+sz.effRiskPct+'% ('+sz.multNote+')';
+    } else if(sz.baseRiskPct!=null){
+      _effNote = '리스크 '+sz.baseRiskPct+'%';
+    } else {
+      _effNote = '리스크 '+rs.riskPctPerTrade+'%';
+    }
     if(sz.skip || !sz.shares){
       // 1주 가격이 리스크 예산을 초과하는 경우(고가주 + 소액 계좌) 명확히 안내
       var oneShareRisk = (r.entry - r.stop);
-      var riskBudget = rs.equity * rs.riskPctPerTrade / 100;
+      var riskBudget = (sz.riskBudget!=null) ? sz.riskBudget : rs.equity * rs.riskPctPerTrade / 100;
       var msg;
       if(oneShareRisk > riskBudget){
-        var need1pct = Math.ceil(oneShareRisk / (rs.riskPctPerTrade/100));
-        msg = '1주 손절액 $'+oneShareRisk.toFixed(0)+' > 리스크 예산 $'+riskBudget.toFixed(0)+' — 계좌 대비 고가주. 리스크 '+rs.riskPctPerTrade+'%로 진입하려면 ~$'+need1pct.toLocaleString()+' 필요';
+        var _effPct = (sz.effRiskPct!=null) ? sz.effRiskPct : rs.riskPctPerTrade;
+        var need1pct = Math.ceil(oneShareRisk / (_effPct/100));
+        msg = '1주 손절액 $'+oneShareRisk.toFixed(2)+' > 리스크 예산 $'+riskBudget.toFixed(2)+' — 계좌 대비 고가주. 실효 리스크 '+_effPct+'%로 1주 진입하려면 ~$'+need1pct.toLocaleString()+' 필요';
       } else {
         msg = sz.reasons[0] || '계산 불가';
       }
-      return '<div style="font-family:var(--mono);font-size:10px;color:var(--a);margin-bottom:4px;line-height:1.5">⚠ 권장 수량 0주 — '+msg+'</div>';
+      return '<div style="font-family:var(--mono);font-size:10px;color:var(--a);margin-bottom:4px;line-height:1.5">⚠ 권장 수량 0주 — '+msg+
+        ' <span style="color:var(--t3)">['+_effNote+']</span></div>';
     }
-    var capLabel = sz.boundBy === 'risk' ? '리스크 '+rs.riskPctPerTrade+'%'
-                 : sz.boundBy === 'position' ? '비중 '+rs.maxPositionPct+'% 한도'
+    var capLabel = sz.boundBy === 'risk' ? _effNote
+                 : sz.boundBy === 'position' ? '비중 '+rs.maxPositionPct+'% 한도 · '+_effNote
                  : sz.boundBy === 'cash' ? '현금 한도' : sz.boundBy;
-    return '<div style="font-family:var(--mono);font-size:10px;color:var(--g);margin-bottom:4px">'+
+    var _watchPre = (r.action==='WATCH') ? '<span style="color:var(--a)">WATCH 조기진입 시</span> ' : '';
+    return '<div style="font-family:var(--mono);font-size:10px;color:var(--g);margin-bottom:4px">'+_watchPre+
       '권장 '+sz.shares+'주 · $'+sz.notional+' (비중 '+(sz.notional/rs.equity*100).toFixed(1)+'%) · 실리스크 '+sz.riskPctActual+'% <span style="color:var(--t3)">['+capLabel+']</span></div>';
   }catch(e){ return ''; }
 }
@@ -11154,674 +11545,6 @@ document.addEventListener('visibilitychange', function(){
 // BABYLON ENGINE — CORE 베이비 자이언트 엔진 (2026-04-24 추가)
 // ═══════════════════════════════════════════════════════════════════
 
-window.babylonEngine = (function() {
-
-const SEC_PROXY_BASE = 'https://dart.minon.kr/sec';
-
-const CONFIG = {
-  ACCEL_THRESHOLD_PP: 10,
-  ACCEL_MIN_YOY: 10,
-  ACCEL_CONSEC_QUARTERS: 2,
-  ACCEL_STRONG_JUMP: 20,
-  TURNAROUND_MIN_POSITIVE: 5,
-  TURNAROUND_MIN_IMPROVEMENT: 15,
-  UPTREND_CONSEC: 3,
-  UPTREND_MIN_TOTAL: 10,
-  IPO_MIN_YOY: 50,
-  MICRO_REV_TTM_MIN: 30_000_000,   // 누수차단 선1: TTM(최근4분기합) 매출이 이 값 미만이면 "매출 미미"
-  MICRO_REV_QOQ_MIN: 5_000_000,    // 누수차단 선2: 직전분기 대비 매출 증가액이 이 값 미만이면 "실증가 없음"
-  MIN_MARKET_CAP: 500_000_000,
-  PENNY_STOCK_PRICE: 5,
-  MARGIN_IMPROVEMENT_PP: 3,
-  B1_NEGATIVE_REV_QUARTERS: 2,
-  B2_PULL_FORWARD_PEAK: 200,
-  B2_PULL_FORWARD_DECEL: 30,
-  B4_MARGIN_COLLAPSE_PP: 10,
-  B4_MARGIN_COLLAPSE_QUARTERS: 3,
-  W1_CONCURRENT_THRESHOLD: 100,
-  W3_MARGIN_DECLINE_QUARTERS: 3,
-  W3_MARGIN_DECLINE_PP: 2
-};
-
-const REVENUE_TAGS = ['Revenues','RevenueFromContractWithCustomerExcludingAssessedTax','SalesRevenueNet','RevenueFromContractWithCustomerIncludingAssessedTax','SalesRevenueGoodsNet'];
-const IFRS_REVENUE_TAGS = ['Revenue','RevenueFromContractsWithCustomers','RevenueFromSaleOfGoods'];
-const GROSS_PROFIT_TAGS = ['GrossProfit'];
-const OP_INCOME_TAGS = ['OperatingIncomeLoss','OperatingIncome'];
-
-let tickerCIKCache = null;
-// ★ 2026-05-31 (메모리 픽스): factsCache를 LRU 캐시로 전환
-//   - SEC company facts 응답은 종목당 1~5MB. 무한 누적 시 500종목 스캔에 500MB~2GB 폭증.
-//   - JS Map은 insertion order 보존하므로, set 시 size 초과면 oldest key delete.
-//   - 같은 종목 재방문 시(across-scan or rescan) hit하면 끝으로 이동(touch).
-const factsCache = new Map();
-const FACTS_CACHE_MAX = 20;
-function _factsCacheGet(key){
-  if(!factsCache.has(key)) return undefined;
-  const v = factsCache.get(key);
-  factsCache.delete(key); factsCache.set(key, v);  // touch → 끝으로
-  return v;
-}
-function _factsCacheSet(key, value){
-  if(factsCache.has(key)) factsCache.delete(key);  // 재삽입은 끝으로
-  factsCache.set(key, value);
-  if(factsCache.size > FACTS_CACHE_MAX){
-    const oldest = factsCache.keys().next().value;
-    factsCache.delete(oldest);
-  }
-}
-
-async function loadTickerCIKMap(_retry) {
-  if (tickerCIKCache) return tickerCIKCache;
-  const res = await fetch(`${SEC_PROXY_BASE}/files/company_tickers.json`, {cache:'no-store'});
-  if (!res.ok) throw new Error(`[SEC CIK맵] HTTP ${res.status}`);
-  let data;
-  try {
-    data = JSON.parse(await res.text());
-  } catch(pe) {
-    if (!_retry) { await new Promise(r=>setTimeout(r,600)); return loadTickerCIKMap(true); }
-    throw new Error(`[SEC CIK맵] 응답 잘림 — ${pe.message}`);
-  }
-  const map = {};
-  for (const key in data) {
-    const e = data[key];
-    map[e.ticker.toUpperCase()] = { cik: String(e.cik_str).padStart(10, '0'), title: e.title };
-  }
-  tickerCIKCache = map;
-  return map;
-}
-
-async function tickerToCIK(ticker) {
-  const map = await loadTickerCIKMap();
-  const entry = map[ticker.toUpperCase()];
-  if (!entry) throw new Error(`CIK not found: ${ticker}`);
-  return entry;
-}
-
-async function fetchCompanyFacts(ticker, _retry) {
-  const key = ticker.toUpperCase();
-  const cached = _factsCacheGet(key);
-  if (cached) return cached;
-  const { cik, title } = await tickerToCIK(ticker);
-  const url = `${SEC_PROXY_BASE}/api/xbrl/companyfacts/CIK${cik}.json`;
-  const res = await fetch(url, {cache:'no-store'});
-  if (!res.ok) throw new Error(`[SEC facts] ${ticker} HTTP ${res.status}`);
-  // 대용량(1~5MB) facts는 전송 중 잘릴 수 있음 → 잘림 감지 시 1회 재시도
-  let data;
-  try {
-    data = JSON.parse(await res.text());
-  } catch(pe) {
-    if (!_retry) { await new Promise(r=>setTimeout(r,800)); return fetchCompanyFacts(ticker, true); }
-    throw new Error(`[SEC facts] ${ticker} 응답 잘림 (재시도 실패) — ${pe.message}`);
-  }
-  const result = { cik, title, facts: data.facts };
-  _factsCacheSet(key, result);
-  return result;
-}
-
-function extractAllRevenueData(facts, preferredUnit = null) {
-  const namespaces = ['us-gaap', 'ifrs-full'];
-  const allResults = [];
-  let unitUsed = null;
-  for (const ns of namespaces) {
-    if (!facts[ns]) continue;
-    const tagList = ns === 'us-gaap' ? REVENUE_TAGS : IFRS_REVENUE_TAGS;
-    for (const tag of tagList) {
-      const units = facts[ns][tag]?.units;
-      if (!units) continue;
-      let selectedUnit = null;
-      if (preferredUnit && units[preferredUnit]) selectedUnit = preferredUnit;
-      else if (units.USD && units.USD.length > 0) selectedUnit = 'USD';
-      else {
-        const available = Object.keys(units).filter(u => units[u] && units[u].length > 0 && u !== 'pure' && u !== 'shares');
-        if (available.length > 0) selectedUnit = available.sort((a, b) => units[b].length - units[a].length)[0];
-      }
-      if (!selectedUnit) continue;
-      const unitData = units[selectedUnit];
-      if (unitData && unitData.length > 0) {
-        if (!unitUsed) unitUsed = selectedUnit;
-        allResults.push({
-          tag, namespace: ns, unit: selectedUnit,
-          data: unitData.map(r => ({ ...r, _sourceTag: tag, _namespace: ns, _unit: selectedUnit }))
-        });
-      }
-    }
-  }
-  if (allResults.length === 0) return null;
-  return {
-    tag: allResults.map(r => `${r.tag}[${r.unit}]`).join('+'),
-    unit: unitUsed,
-    data: allResults.flatMap(r => r.data)
-  };
-}
-
-function extractTagData(facts, tags, unit = 'USD') {
-  for (const ns of ['us-gaap', 'ifrs-full']) {
-    if (!facts[ns]) continue;
-    for (const tag of tags) {
-      const unitData = facts[ns][tag]?.units?.[unit];
-      if (unitData && unitData.length > 0) return { tag, namespace: ns, data: unitData };
-    }
-  }
-  return null;
-}
-
-function filterByDate(data, asOfDate) {
-  const cutoff = new Date(asOfDate);
-  const filtered = data.filter(r => {
-    const filed = r.filed ? new Date(r.filed) : new Date(r.end);
-    return filed <= cutoff;
-  });
-  function getDurationDays(r) {
-    if (!r.start || !r.end) return null;
-    return Math.round((new Date(r.end) - new Date(r.start)) / 86400000);
-  }
-  const isTrueQuarter = r => { const d = getDurationDays(r); return d !== null && d >= 80 && d <= 100; };
-  const isAnnual = r => { const d = getDurationDays(r); return d !== null && d >= 350 && d <= 380; };
-  return {
-    quarterly: dedupByEnd(filtered.filter(isTrueQuarter)),
-    annual: dedupByEnd(filtered.filter(isAnnual))
-  };
-}
-
-function dedupByEnd(records) {
-  const map = new Map();
-  for (const r of records) {
-    const existing = map.get(r.end);
-    if (!existing || new Date(r.filed) < new Date(existing.filed)) map.set(r.end, r);
-  }
-  return Array.from(map.values()).sort((a, b) => new Date(a.end) - new Date(b.end));
-}
-
-function computeYoYSeries(quarters) {
-  const result = [];
-  for (const q of quarters) {
-    const qEnd = new Date(q.end);
-    const priorYear = quarters.find(p => {
-      if (p === q) return false;
-      const d = Math.round((qEnd - new Date(p.end)) / 86400000);
-      return d >= 320 && d <= 410;
-    });
-    let yoy = null;
-    if (priorYear && priorYear.val > 0) yoy = ((q.val - priorYear.val) / priorYear.val) * 100;
-    result.push({
-      period: `FY${q.fy} ${q.fp}`, fy: q.fy, fp: q.fp,
-      end: q.end, val: q.val, filed: q.filed, yoy,
-      sourceTag: q._sourceTag
-    });
-  }
-  return result;
-}
-
-async function getRecentQuartersRevenue(ticker, asOfDate, n = 10) {
-  const { facts } = await fetchCompanyFacts(ticker);
-  const revData = extractAllRevenueData(facts);
-  if (!revData) return { quarters: [], noData: true };
-  const { quarterly } = filterByDate(revData.data, asOfDate);
-  const withYoY = computeYoYSeries(quarterly);
-  return { tag: revData.tag, unit: revData.unit, quarters: withYoY.slice(-n) };
-}
-
-async function getMarginData(ticker, asOfDate) {
-  const { facts } = await fetchCompanyFacts(ticker);
-  const revData = extractAllRevenueData(facts);
-  if (!revData) return { error: 'no revenue data' };
-  const revFiltered = filterByDate(revData.data, asOfDate);
-  const gpData = extractTagData(facts, GROSS_PROFIT_TAGS);
-  const gpFiltered = gpData ? filterByDate(gpData.data, asOfDate) : { quarterly: [] };
-  const opData = extractTagData(facts, OP_INCOME_TAGS);
-  const opFiltered = opData ? filterByDate(opData.data, asOfDate) : { quarterly: [] };
-  return {
-    revenue: revFiltered.quarterly,
-    grossProfit: gpFiltered.quarterly,
-    opIncome: opFiltered.quarterly
-  };
-}
-
-function computeQuarterlyMargins(marginData) {
-  const result = [];
-  for (const rev of marginData.revenue || []) {
-    const gp = (marginData.grossProfit || []).find(g => g.end === rev.end);
-    const op = (marginData.opIncome || []).find(o => o.end === rev.end);
-    const grossMargin = (gp && rev.val > 0) ? (gp.val / rev.val) * 100 : null;
-    const opMargin = (op && rev.val > 0) ? (op.val / rev.val) * 100 : null;
-    result.push({
-      period: `FY${rev.fy} ${rev.fp}`, fy: rev.fy, fp: rev.fp, end: rev.end,
-      revenue: rev.val, grossMargin, opMargin
-    });
-  }
-  return result;
-}
-
-function detectAcceleration(quarters) {
-  if (quarters.length < 2) return { accelerating: false, reason: 'insufficient_data', details: { quarter_count: quarters.length } };
-  const withYoY = quarters.filter(q => q.yoy !== null);
-  
-  if (withYoY.length >= 2) {
-    const allHigh = withYoY.every(q => q.yoy >= CONFIG.IPO_MIN_YOY);
-    if (allHigh) {
-      return {
-        accelerating: true, reason: 'ipo_momentum',
-        details: {
-          path: 'ipo_momentum',
-          quarters: withYoY.map(q => ({ period: q.period, end: q.end, revenue_m: Math.round(q.val / 1e6), yoy_pct: Number(q.yoy.toFixed(1)) })),
-          min_yoy: Math.min(...withYoY.map(q => q.yoy))
-        }
-      };
-    }
-  }
-  
-  if (quarters.length >= 3 && withYoY.length < 3) {
-    const recent = quarters.slice(-3);
-    const qoq1 = (recent[1].val - recent[0].val) / recent[0].val * 100;
-    const qoq2 = (recent[2].val - recent[1].val) / recent[1].val * 100;
-    if (qoq1 >= 15 && qoq2 >= 15) {
-      return {
-        accelerating: true, reason: 'ipo_early_qoq',
-        details: {
-          path: 'ipo_early_qoq',
-          quarters: recent.map(q => ({ period: q.period, end: q.end, revenue_m: Math.round(q.val / 1e6), yoy_pct: q.yoy !== null ? Number(q.yoy.toFixed(1)) : null })),
-          qoq_1: Number(qoq1.toFixed(1)), qoq_2: Number(qoq2.toFixed(1))
-        }
-      };
-    }
-  }
-  
-  if (withYoY.length < 3) return { accelerating: false, reason: 'insufficient_yoy_data', details: { yoy_count: withYoY.length } };
-  
-  const recent = withYoY.slice(-4);
-  const q_latest = recent[recent.length - 1];
-  const q_minus1 = recent[recent.length - 2];
-  const q_minus2 = recent.length >= 3 ? recent[recent.length - 3] : null;
-  const q_minus3 = recent.length >= 4 ? recent[recent.length - 4] : null;
-  
-  const latestJump = q_latest.yoy - q_minus1.yoy;
-  const prevJump = q_minus2 ? q_minus1.yoy - q_minus2.yoy : null;
-  const consecAccel = prevJump !== null && latestJump >= CONFIG.ACCEL_THRESHOLD_PP && prevJump >= CONFIG.ACCEL_THRESHOLD_PP;
-  const strongLatest = latestJump >= CONFIG.ACCEL_STRONG_JUMP;
-  const latestWithTrend = prevJump !== null && latestJump >= CONFIG.ACCEL_THRESHOLD_PP && prevJump >= 3;
-  
-  let turnaroundRecovery = false;
-  if (q_minus2 !== null) {
-    const wasNegative = q_minus2.yoy < 0 || q_minus1.yoy < 0;
-    const nowPositive = q_latest.yoy >= CONFIG.TURNAROUND_MIN_POSITIVE;
-    const totalImp = q_latest.yoy - q_minus2.yoy;
-    turnaroundRecovery = wasNegative && nowPositive && totalImp >= CONFIG.TURNAROUND_MIN_IMPROVEMENT;
-  }
-  
-  let sustainedUptrend = false;
-  if (q_minus2 !== null && q_minus3 !== null) {
-    const allAsc = q_latest.yoy > q_minus1.yoy && q_minus1.yoy > q_minus2.yoy && q_minus2.yoy > q_minus3.yoy;
-    const totalGain = q_latest.yoy - q_minus3.yoy;
-    sustainedUptrend = allAsc && totalGain >= CONFIG.UPTREND_MIN_TOTAL;
-  }
-  
-  const solidYoY = q_latest.yoy >= CONFIG.ACCEL_MIN_YOY;
-  const accelerating = ((consecAccel || strongLatest || latestWithTrend) && solidYoY) || turnaroundRecovery || sustainedUptrend;
-  
-  let path = 'none';
-  if (consecAccel && solidYoY) path = 'consec_accel';
-  else if (strongLatest && solidYoY) path = 'strong_latest';
-  else if (latestWithTrend && solidYoY) path = 'latest_with_trend';
-  else if (turnaroundRecovery) path = 'turnaround_recovery';
-  else if (sustainedUptrend) path = 'sustained_uptrend';
-  
-  return {
-    accelerating,
-    reason: accelerating ? path : 'no_acceleration',
-    details: {
-      path,
-      quarters: recent.map(q => ({ period: q.period, end: q.end, revenue_m: Math.round(q.val / 1e6), yoy_pct: q.yoy !== null ? Number(q.yoy.toFixed(1)) : null })),
-      latest_jump_pp: Number(latestJump.toFixed(1)),
-      prev_jump_pp: prevJump !== null ? Number(prevJump.toFixed(1)) : null
-    }
-  };
-}
-
-function detectMarginImprovement(margins) {
-  if (!margins || margins.length < 6) return { improved: false, reason: 'insufficient_data' };
-  const recent = margins.slice(-3);
-  let grossImproved = 0, opImproved = 0;
-  for (const recQ of recent) {
-    const priorQ = margins.find(m => {
-      const d = Math.round((new Date(recQ.end) - new Date(m.end)) / 86400000);
-      return d >= 320 && d <= 410;
-    });
-    if (!priorQ) continue;
-    if (recQ.grossMargin !== null && priorQ.grossMargin !== null && recQ.grossMargin - priorQ.grossMargin >= CONFIG.MARGIN_IMPROVEMENT_PP) grossImproved++;
-    if (recQ.opMargin !== null && priorQ.opMargin !== null && recQ.opMargin - priorQ.opMargin >= 5) opImproved++;
-  }
-  const improved = grossImproved >= 2 || opImproved >= 2;
-  let reason = 'no_margin_improvement';
-  if (grossImproved >= 2 && opImproved >= 2) reason = 'both_margin_improvement';
-  else if (opImproved >= 2) reason = 'operating_margin_improvement';
-  else if (grossImproved >= 2) reason = 'gross_margin_improvement';
-  return { improved, reason, details: { grossImproved, opImproved } };
-}
-
-// 영업이익 흑자전환 감지 — '첫 흑자' 변곡점 포착용 (BABYLON 보너스 가점, 게이트 아님)
-// 기준: 최신분기 OP > 0 AND 직전 2분기 OP <= 0 (3분기 패턴으로 일회성 흑자 노이즈 차단)
-function detectProfitTurnaround(marginData) {
-  if (!marginData || marginData.error) return { turned_profitable: false, reason: 'no_data' };
-  const ops = (marginData.opIncome || []).filter(o => o && o.val !== null && o.val !== undefined);
-  if (ops.length < 3) return { turned_profitable: false, reason: 'insufficient_data', quarters_available: ops.length };
-  const sorted = ops.slice().sort((a, b) => new Date(a.end) - new Date(b.end));
-  const latest = sorted[sorted.length - 1];
-  const prev   = sorted[sorted.length - 2];
-  const prev2  = sorted[sorted.length - 3];
-
-  if (latest.val > 0 && prev.val <= 0 && prev2.val <= 0) {
-    return {
-      turned_profitable: true,
-      reason: 'first_op_profit',
-      method: 'operating_income',
-      latest_op_m: Math.round(latest.val / 1e6),
-      prev_op_m: Math.round(prev.val / 1e6),
-      latest_end: latest.end
-    };
-  }
-  return {
-    turned_profitable: false,
-    reason: latest.val > 0 ? 'already_profitable' : 'still_unprofitable',
-    latest_op_m: Math.round(latest.val / 1e6)
-  };
-}
-
-function detectRevenueCollapse(quarters) {
-  if (quarters.length < 5) return { collapsing: false };
-  const withYoY = quarters.filter(q => q.yoy !== null);
-  if (withYoY.length < 5) return { collapsing: false };
-  const recent = withYoY.slice(-5);
-  const q_minus2 = recent[2], q_minus1 = recent[3], q_latest = recent[4];
-  const latestDecel = q_minus1.yoy - q_latest.yoy;
-  const prevDecel = q_minus2.yoy - q_minus1.yoy;
-  const consecSevere = latestDecel >= 30 && prevDecel >= 30;
-  const peakYoY = Math.max(...recent.map(q => q.yoy));
-  const deltaFromPeak = peakYoY - q_latest.yoy;
-  const peakFromHigh = peakYoY >= 100;
-  const postPeakCollapse = peakFromHigh && deltaFromPeak >= 50 && (latestDecel >= 30 || prevDecel >= 30);
-  const collapsing = consecSevere || postPeakCollapse;
-  return {
-    collapsing,
-    reason: collapsing ? (postPeakCollapse ? 'post_peak_collapse' : 'consecutive_decel') : 'stable',
-    latest_decel_pp: Number(latestDecel.toFixed(1)),
-    peak_yoy: Number(peakYoY.toFixed(1))
-  };
-}
-
-// ── 게이트 누수 차단: 미미한 매출의 가짜 % 가속 거르기 ──
-// val은 원시 매출(달러). TTM=최근4분기 합, QoQ증가=최신분기-직전분기 (절대액).
-// 종목 종류(트레저리/IPO 등) 안 따지고 "% 가 신뢰할 매출이냐"만 본다.
-function checkMicroRevenueBase(quarters) {
-  if (!quarters || quarters.length < 2) return { isMicro: false, ttm: null, qoqDelta: null };
-  const last4 = quarters.slice(-4);
-  const ttm = last4.reduce((s, q) => s + (q.val || 0), 0);
-  const qLatest = quarters[quarters.length - 1];
-  const qPrev = quarters[quarters.length - 2];
-  const qoqDelta = (qLatest.val || 0) - (qPrev.val || 0);
-  // AND 구조: 둘 다 미달일 때만 micro. 하나라도 살아있으면(규모 충분 OR 절대증가 큼) 통과.
-  const isMicro = ttm < CONFIG.MICRO_REV_TTM_MIN && qoqDelta < CONFIG.MICRO_REV_QOQ_MIN;
-  return { isMicro, ttm: Math.round(ttm), qoqDelta: Math.round(qoqDelta) };
-}
-
-function detectOneTimeDemand(quarters) {
-  if (quarters.length < 4) return false;
-  const withYoY = quarters.filter(q => q.yoy !== null);
-  if (withYoY.length < 3) return false;
-  const recent6 = withYoY.slice(-6);
-  const peakYoY = Math.max(...recent6.map(q => q.yoy));
-  const latest = recent6[recent6.length - 1];
-  const peakIdx = recent6.findIndex(q => q.yoy === peakYoY);
-  const extremePeak = peakYoY >= 200;
-  let postPeakDecel = false, deltaFromPeak = 0;
-  if (peakIdx < recent6.length - 1) {
-    deltaFromPeak = peakYoY - latest.yoy;
-    postPeakDecel = peakYoY >= 150 && deltaFromPeak >= 30;
-  }
-  if (extremePeak || postPeakDecel) {
-    return {
-      suspicious: true,
-      peak_yoy: Number(peakYoY.toFixed(1)),
-      latest_yoy: Number(latest.yoy.toFixed(1)),
-      delta_from_peak: Number(deltaFromPeak.toFixed(1))
-    };
-  }
-  return false;
-}
-
-function checkWarnings({ quarters, margins }) {
-  const warnings = [];
-  if (quarters && quarters.length >= 4) {
-    const ot = detectOneTimeDemand(quarters);
-    if (ot && ot.suspicious) {
-      warnings.push({
-        type: 'W1_ONE_TIME_DEMAND_SUSPECTED', severity: 'high',
-        message: `매출 peak +${ot.peak_yoy}% → 현재 +${ot.latest_yoy}%`,
-        details: ot
-      });
-    }
-  }
-  if (margins && margins.length >= 6) {
-    const recent = margins.slice(-3);
-    let decline = 0;
-    for (const recQ of recent) {
-      const priorQ = margins.find(m => {
-        const d = Math.round((new Date(recQ.end) - new Date(m.end)) / 86400000);
-        return d >= 320 && d <= 410;
-      });
-      if (priorQ && recQ.opMargin !== null && priorQ.opMargin !== null && priorQ.opMargin - recQ.opMargin >= CONFIG.W3_MARGIN_DECLINE_PP) decline++;
-    }
-    if (decline >= CONFIG.W3_MARGIN_DECLINE_QUARTERS) {
-      warnings.push({ type: 'W3_MARGIN_DETERIORATION', severity: 'medium', message: `영업이익률 ${decline}분기 YoY 악화` });
-    }
-  }
-  return warnings;
-}
-
-function checkBlocks({ quarters, margins }) {
-  const blocks = [];
-  if (quarters && quarters.length >= 3) {
-    const withYoY = quarters.filter(q => q.yoy !== null);
-    if (withYoY.length >= 2) {
-      const latest = withYoY[withYoY.length - 1];
-      const prev = withYoY[withYoY.length - 2];
-      if (latest.yoy < 0 && prev.yoy < 0) {
-        blocks.push({ type: 'B1_NEGATIVE_REVENUE_2Q', message: `매출 2분기 연속 YoY 감소 (${prev.yoy.toFixed(1)}%, ${latest.yoy.toFixed(1)}%)` });
-      }
-    }
-  }
-  if (quarters && quarters.length >= 4) {
-    const withYoY = quarters.filter(q => q.yoy !== null);
-    if (withYoY.length >= 4) {
-      const recent = withYoY.slice(-4);
-      const q_minus2 = recent[1], q_minus1 = recent[2], q_latest = recent[3];
-      const recent6 = withYoY.slice(-6);
-      const peakYoY = Math.max(...recent6.map(q => q.yoy));
-      const peakInRange = peakYoY >= CONFIG.B2_PULL_FORWARD_PEAK && peakYoY < 500;
-      const stillHigh = q_latest.yoy >= 30;
-      if (peakInRange && !stillHigh) {
-        const latestDecel = q_minus1.yoy - q_latest.yoy;
-        const prevDecel = q_minus2.yoy - q_minus1.yoy;
-        if (latestDecel >= CONFIG.B2_PULL_FORWARD_DECEL && prevDecel >= CONFIG.B2_PULL_FORWARD_DECEL) {
-          blocks.push({ type: 'B2_PULL_FORWARD_CONFIRMED', message: `Pull-forward 확정: peak +${peakYoY.toFixed(0)}% → 현재 +${q_latest.yoy.toFixed(1)}%` });
-        }
-      }
-    }
-  }
-  if (margins && margins.length >= 6) {
-    const recent = margins.slice(-3);
-    let severe = 0;
-    for (const recQ of recent) {
-      const priorQ = margins.find(m => {
-        const d = Math.round((new Date(recQ.end) - new Date(m.end)) / 86400000);
-        return d >= 320 && d <= 410;
-      });
-      if (priorQ && recQ.opMargin !== null && priorQ.opMargin !== null && recQ.opMargin - priorQ.opMargin < -CONFIG.B4_MARGIN_COLLAPSE_PP) severe++;
-    }
-    if (severe >= CONFIG.B4_MARGIN_COLLAPSE_QUARTERS) {
-      blocks.push({ type: 'B4_MARGIN_COLLAPSE', message: `Op Margin ${severe}분기 연속 -10%p+ 악화` });
-    }
-  }
-  return blocks;
-}
-
-function makeFinalDecision({ blocks, acceleration, marginImprovement, revenueCollapse, warnings, quarters }) {
-  if (blocks.length > 0) {
-    return { verdict: 'BLOCK', reason: 'hard_block', details: { blocks, position_size_pct: 0, sizing_rule: 'F_NO_ENTRY' } };
-  }
-  // 게이트 누수 차단: 매출 미미 + 실증가 없음 → 가속 % 가 노이즈이므로 ENTER 불가
-  const micro = checkMicroRevenueBase(quarters);
-  if (micro.isMicro) {
-    return { verdict: 'WATCH_WEAK', reason: 'micro_revenue_base', details: { ttm: micro.ttm, qoq_delta: micro.qoqDelta, position_size_pct: 0, sizing_rule: 'E_WATCH_ONLY', note: 'TTM 매출 미미 + QoQ 실증가 없음 — % 가속 신뢰 불가' } };
-  }
-  const hasGrowthSignal = acceleration.accelerating || marginImprovement?.improved;
-  if (!hasGrowthSignal) {
-    return { verdict: 'WATCH_WEAK', reason: 'no_acceleration_no_margin_improvement', details: { acceleration, marginImprovement, position_size_pct: 0, sizing_rule: 'E_WATCH_ONLY' } };
-  }
-  const highCount = warnings.filter(w => w.severity === 'high').length;
-  const mediumCount = warnings.filter(w => w.severity === 'medium').length;
-  const collapseFlag = revenueCollapse?.collapsing ? 1 : 0;
-  const mediumGroup = mediumCount >= 2 ? 1 : 0;
-  const totalRisk = highCount + collapseFlag + mediumGroup;
-  
-  if (totalRisk === 0) {
-    return {
-      verdict: 'ENTER', reason: acceleration.accelerating ? acceleration.reason : 'margin_improvement',
-      details: {
-        growth_path: acceleration.accelerating ? acceleration.details.path : 'margin_improvement',
-        position_size_pct: 100, sizing_rule: 'A_FULL_CLEAN', note: '신호 명확, 풀 매수 가능'
-      }
-    };
-  }
-  if (totalRisk === 1) {
-    return {
-      verdict: 'ENTER', reason: 'growth_with_context_warnings',
-      details: {
-        growth_path: acceleration.accelerating ? acceleration.details.path : 'margin_improvement',
-        warning_flags: warnings.map(w => ({ type: w.type, severity: w.severity })),
-        position_size_pct: 50, sizing_rule: 'B_HALF_WITH_WARNING', note: 'Warning 1개, 50% 시작'
-      }
-    };
-  }
-  return {
-    verdict: 'WATCH_CLAUDE', reason: 'multiple_risk_signals',
-    details: {
-      high_warnings: warnings.filter(w => w.severity === 'high').map(w => w.type),
-      revenue_collapsing: collapseFlag > 0,
-      position_size_pct: 30, sizing_rule: 'C_QUARTER_CLAUDE_CHECK', note: 'Claude 정성 판단 필요'
-    }
-  };
-}
-
-function detectExitSignals(quarters, margins) {
-  const signals = [];
-  if (!quarters || quarters.length < 4) return { signals: [], severity: 'insufficient_data' };
-  const withYoY = quarters.filter(q => q.yoy !== null);
-  if (withYoY.length < 3) return { signals: [], severity: 'insufficient_data' };
-  const recent = withYoY.slice(-5);
-  const q_latest = recent[recent.length - 1];
-  const q_minus1 = recent[recent.length - 2];
-  const q_minus2 = recent.length >= 3 ? recent[recent.length - 3] : null;
-  
-  if (q_minus2) {
-    const latestDecel = q_minus1.yoy - q_latest.yoy;
-    const prevDecel = q_minus2.yoy - q_minus1.yoy;
-    if (latestDecel >= 10 && prevDecel >= 10) {
-      signals.push({ type: 'EXIT_1_DECEL_2Q', severity: 'warn', message: `매출 2분기 연속 감속 (${prevDecel.toFixed(1)}%p, ${latestDecel.toFixed(1)}%p)` });
-    }
-  }
-  if (q_latest.yoy < 0) {
-    signals.push({ type: 'EXIT_2_NEGATIVE_YOY', severity: 'exit', message: `매출 YoY 감소 (${q_latest.yoy.toFixed(1)}%)` });
-  }
-  const recent6 = withYoY.slice(-6);
-  const peakYoY = Math.max(...recent6.map(q => q.yoy));
-  const deltaFromPeak = peakYoY - q_latest.yoy;
-  if (peakYoY >= 30 && deltaFromPeak >= 50) {
-    signals.push({ type: 'EXIT_3_PEAK_COLLAPSE', severity: 'exit', message: `Peak +${peakYoY.toFixed(1)}% → 현재 +${q_latest.yoy.toFixed(1)}%` });
-  }
-  if (margins && margins.length >= 6) {
-    const recent3 = margins.slice(-3);
-    let decline = 0;
-    for (const recQ of recent3) {
-      const priorQ = margins.find(m => {
-        const d = Math.round((new Date(recQ.end) - new Date(m.end)) / 86400000);
-        return d >= 320 && d <= 410;
-      });
-      if (priorQ && recQ.opMargin !== null && priorQ.opMargin !== null && recQ.opMargin - priorQ.opMargin < -2) decline++;
-    }
-    if (decline >= 3) signals.push({ type: 'EXIT_4_MARGIN_DETERIORATION', severity: 'warn', message: `영업이익률 3분기 YoY 악화` });
-  }
-  if (q_minus2) {
-    const peakHigh = peakYoY >= 150;
-    const latestDecel = q_minus1.yoy - q_latest.yoy;
-    const prevDecel = q_minus2.yoy - q_minus1.yoy;
-    if (peakHigh && latestDecel > 0 && prevDecel > 0) {
-      signals.push({ type: 'EXIT_5_PULL_FORWARD_CONFIRMED', severity: 'exit', message: `Pull-forward 확정 (peak +${peakYoY.toFixed(1)}%)` });
-    }
-  }
-  let overallSeverity = 'clean';
-  if (signals.some(s => s.severity === 'exit')) overallSeverity = 'exit';
-  else if (signals.some(s => s.severity === 'warn')) overallSeverity = 'warn';
-  else if (signals.length > 0) overallSeverity = 'watch';
-  return { signals, severity: overallSeverity, signal_count: signals.length };
-}
-
-async function analyze(ticker, options = {}) {
-  const asOfDate = options.asOfDate || new Date().toISOString().slice(0, 10);
-  const result = { ticker: ticker.toUpperCase(), asOfDate, timestamp: new Date().toISOString(), stages: {} };
-  try {
-    const [revData, marginData] = await Promise.all([
-      getRecentQuartersRevenue(ticker, asOfDate, 10).catch(e => ({ error: e.message, quarters: [] })),
-      getMarginData(ticker, asOfDate).catch(e => ({ error: e.message }))
-    ]);
-    if (!revData.quarters || revData.quarters.length === 0) {
-      result.verdict = 'NO_DATA';
-      result.reason = 'sec_data_insufficient';
-      result.error = revData.error;
-      return result;
-    }
-    result.stages.fundamentals = { revenue_quarters: revData.quarters.length, tag: revData.tag, unit: revData.unit };
-    const margins = !marginData.error ? computeQuarterlyMargins(marginData) : [];
-    const acceleration = detectAcceleration(revData.quarters);
-    const marginImprovement = detectMarginImprovement(margins);
-    const profitTurnaround = detectProfitTurnaround(marginData);
-    const revenueCollapse = detectRevenueCollapse(revData.quarters);
-    const warnings = checkWarnings({ quarters: revData.quarters, margins });
-    const blocks = checkBlocks({ quarters: revData.quarters, margins });
-    
-    result.stages.acceleration = acceleration;
-    result.stages.margin_improvement = marginImprovement;
-    result.stages.profit_turnaround = profitTurnaround;
-    result.stages.revenue_collapse = revenueCollapse;
-    result.stages.warnings = warnings;
-    result.stages.blocks = blocks;
-    result.stages.quarters = revData.quarters;
-    result.stages.margins = margins;
-    
-    const decision = makeFinalDecision({ blocks, acceleration, marginImprovement, revenueCollapse, warnings, quarters: revData.quarters });
-    result.verdict = decision.verdict;
-    result.reason = decision.reason;
-    result.decision_details = decision.details;
-    
-    if (options.isHolding) {
-      result.exit_signals = detectExitSignals(revData.quarters, margins);
-    }
-    return result;
-  } catch (e) {
-    result.verdict = 'ERROR';
-    result.reason = 'exception';
-    result.error = e.message;
-    return result;
-  }
-}
-
-function clearCache() {
-  tickerCIKCache = null;
-  factsCache.clear();
-}
-
-return { analyze, clearCache, fetchCompanyFacts, getRecentQuartersRevenue, detectAcceleration, detectExitSignals, CONFIG };
-
-})();
 
 </script>
 </body>

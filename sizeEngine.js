@@ -66,7 +66,8 @@ function _mergeCfg(base, over){
 //   { ticker, shares, notional, riskAmount, riskPctActual,
 //     entry, stop, stopDistPct,
 //     boundBy: 'risk'|'position'|'cash'|'absolute'|'none',
-//     skip: bool, reasons[], warnings[] }
+//     skip: bool, reasons[], warnings[],
+//     baseRiskPct, effRiskPct, riskBudget, multNote }   // 2026-08: 실효 리스크 산출 근거 (카드 표시용)
 // ═══════════════════════════════════════════════════════════════
 function sizeEngine(plan, account, cfgIn){
   var cfg = _mergeCfg(SIZE_DEFAULTS, cfgIn);
@@ -75,19 +76,38 @@ function sizeEngine(plan, account, cfgIn){
     shares: 0, notional: 0, riskAmount: 0, riskPctActual: 0,
     entry: null, stop: null, stopDistPct: null,
     boundBy: 'none', skip: false, reasons: [], warnings: [],
+    executableQty: 0, blocked: false,
+    // 2026-08: 카드 표시용 — 설정 리스크가 어떤 배수로 실효 리스크가 됐는지 (스킵 시에도 채움)
+    baseRiskPct: null, effRiskPct: null, riskBudget: null, multNote: '',
   };
 
   var entry = _n(plan && plan.entry);
   var stop  = _n(plan && plan.stop);
   var equity = _n(account && account.equity);
   var cash   = _n(account && account.cashAvailable);
-  if (cash === null) cash = equity;
 
   // ── 입력 검증 ──
   if (!entry || entry <= 0){ d.skip = true; d.reasons.push('진입가 없음 — 사이징 불가'); return d; }
   if (!stop || stop <= 0){ d.skip = true; d.reasons.push('손절가 없음 — 리스크 계산 불가 (사이징 거부)'); return d; }
   if (stop >= entry){ d.skip = true; d.reasons.push('손절가 ≥ 진입가 — 잘못된 계획 (사이징 거부)'); return d; }
   if (!equity || equity <= 0){ d.skip = true; d.reasons.push('계좌 평가액 없음 — 사이징 불가'); return d; }
+  // cashAvailable 누락 시 equity 폴백 금지 — 정보 없으면 실행 불가
+  if (cash === null){ d.skip = true; d.reasons.push('cashAvailable 없음 — 현금 정보 미제공, 사이징 거부'); return d; }
+  // 자문 계산 플래그 (assumed=true: cashAvailable=equity 가정, executableQty는 0)
+  if (account && account.assumed) d.warnings.push('cashAvailable=equity 가정(자문 계산) — executableQty 실행 분리');
+  // 허가된 액션 화이트리스트: ENTER/WATCH/BLOCK 이외는 진입 전 차단
+  var _knownActions = { ENTER: 1, WATCH: 1, BLOCK: 1 };
+  if (plan && plan.action !== undefined && !_knownActions[plan.action]){
+    d.skip = true;
+    d.warnings.push('알 수 없는 액션('+plan.action+') — ENTER/WATCH/BLOCK 이외, 실행 불가');
+    return d;
+  }
+  // BLOCK 신호 — 엔진이 차단한 신호, 실행 수량 0
+  if (plan && plan.action === 'BLOCK'){
+    d.skip = true; d.blocked = true; d.executableQty = 0;
+    d.reasons.push('action=BLOCK — 엔진 차단 신호, 실행 불가');
+    return d;
+  }
 
   d.entry = _r2(entry); d.stop = _r2(stop);
   var stopDist = entry - stop;                 // 주당 리스크 ($)
@@ -96,17 +116,52 @@ function sizeEngine(plan, account, cfgIn){
   // ── 리스크% 조정 ──
   var typeMult = cfg.typeRiskMult[plan && plan.type || 'none'];
   if (typeMult === undefined) typeMult = cfg.typeRiskMult.none;
-  var vixMult  = cfg.vixRiskMult[(plan && plan.vixRegime) || 'CALM'] || 1.0;
+  // riskPctPerTrade 유효성 검사
+  if (_n(cfg.riskPctPerTrade) === null || cfg.riskPctPerTrade <= 0){
+    d.skip = true; d.warnings.push('riskPctPerTrade 무효(' + cfg.riskPctPerTrade + ') — 실행 불가'); return d;
+  }
+  // maxPositionPct 유효성 검사
+  if (_n(cfg.maxPositionPct) === null || cfg.maxPositionPct <= 0){
+    d.skip = true; d.warnings.push('maxPositionPct 무효(' + cfg.maxPositionPct + ') — 실행 불가'); return d;
+  }
+  var _vixKey = (plan && plan.vixRegime) || 'CALM';
+  var vixMult = cfg.vixRiskMult[_vixKey];
+  if (vixMult === undefined){
+    d.skip = true; d.warnings.push('알 수 없는 VIX 상태(' + _vixKey + ') — 정상 리스크 배수 적용 불가, 실행 거부'); return d;
+  }
   var watchMult = (plan && plan.action === 'WATCH') ? cfg.watchMult : 1.0;
   var clinicalMult = (plan && plan.clinical_catalyst) ? cfg.clinicalMult : 1.0;
   var effRiskPct = cfg.riskPctPerTrade * typeMult * vixMult * watchMult * clinicalMult;
   var riskBudget = equity * effRiskPct / 100;   // 이 거래에 걸 수 있는 최대 손실 ($)
+  d.baseRiskPct = cfg.riskPctPerTrade;
+  d.effRiskPct  = _r2(effRiskPct);
+  d.riskBudget  = _r2(riskBudget);
+  var _mults = [];
+  if (typeMult !== 1)     _mults.push((plan.type ? '타입' + plan.type : '타입없음') + '×' + typeMult);
+  if (vixMult !== 1)      _mults.push('VIX×' + vixMult);
+  if (watchMult !== 1)    _mults.push('WATCH×' + watchMult);
+  if (clinicalMult !== 1) _mults.push('임상갭×' + clinicalMult);
+  d.multNote = _mults.join(' · ');
 
   // ── 4중 캡: 각 기준의 주수 계산 후 최소값 ──
   var sharesRisk = riskBudget / stopDist;                        // 1. 리스크 캡
   var sharesPos  = (equity * cfg.maxPositionPct / 100) / entry;  // 2. 비중 캡
   var sharesCash = cash / entry;                                 // 3. 현금 캡
-  var sharesAbs  = (cfgIn && _n(cfgIn.maxShares)) || Infinity;   // 4. 절대 캡
+  // 4. 절대 캡 — maxShares=0: 0주 한도(실행불가), 누락: Infinity, 양수: 그대로
+  var _maxSharesIn = cfgIn && cfgIn.maxShares !== undefined ? cfgIn.maxShares : undefined;
+  var sharesAbs;
+  if (_maxSharesIn === undefined){
+    sharesAbs = Infinity;
+  } else if (_maxSharesIn === 0){
+    d.skip = true; d.reasons.push('maxShares=0 — 0주 한도, 실행 불가'); return d;
+  } else {
+    var _absNum = _n(_maxSharesIn);
+    // NaN/음수/Infinity → 무효 입력, 실행 차단 (undefined와 다름 — 명시적 무효 입력)
+    if (_absNum === null || _absNum <= 0){
+      d.skip = true; d.warnings.push('maxShares 무효 값(' + _maxSharesIn + ') — 실행 불가'); return d;
+    }
+    sharesAbs = _absNum;
+  }
 
   var caps = [
     { n: sharesRisk, by: 'risk' },
@@ -119,7 +174,7 @@ function sizeEngine(plan, account, cfgIn){
 
   var shares = chosen.n;
   if (!cfg.allowFractional) shares = Math.floor(shares);
-  else shares = _r2(shares);
+  else shares = Math.floor(shares * 100) / 100;  // 내림 2자리 — 반올림으로 절대 캡 초과 방지
 
   // ── 최소 주수 미달 → 스킵 ──
   if (shares < cfg.minShares || shares <= 0){
@@ -133,6 +188,14 @@ function sizeEngine(plan, account, cfgIn){
 
   d.shares = shares;
   d.boundBy = chosen.by;
+  // ENTER + 실계좌 현금일 때만 실행 수량 부여 — WATCH/assumed/기타 전부 0
+  if (plan && plan.action === 'ENTER' && !(account && account.assumed)){
+    d.executableQty = shares;
+  } else {
+    d.executableQty = 0;
+    if (plan && plan.action === 'WATCH') d.warnings.push('WATCH — 자문용 계산, executableQty=0');
+    if (account && account.assumed)      d.warnings.push('assumed 계좌 — 실행 수량 0, 자문 표시용');
+  }
   d.notional = _r2(shares * entry);
   d.riskAmount = _r2(shares * stopDist);
   d.riskPctActual = _r2(d.riskAmount / equity * 100);

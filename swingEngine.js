@@ -22,6 +22,15 @@
 // 내보내는 함수
 //   swingEngine(ydata, swingData)  → r 객체
 //   calcSwingEntrySignal(r)        → { signal, icon, label, reason, trigger, css }
+//
+// 2026-08-18 정합성 패치 (카드 4장 실측 대조 결과)
+//   - stop_basis / t1_basis / t2_basis 노출 (2×ATR·MA20-3%·-10%캡 / 저항·2.5×ATR / 저항·5×ATR·T1+15%)
+//   - stop_type 소수 1자리 (예: 손절(-5.4% · 2×ATR))
+//   - -10% 캡에 잘린 손절 → 경고 (고변동 종목, ATR 대비 얇은 손절)
+//   - 핵심조건 미충족이면 score를 ENTER 점수대(70) 미만으로 캡 ("100 WATCH" 방지) · score_raw 보존
+//   - calcSwingEntrySignal 트리거가 r.entry/r.stop을 인용 (하드코딩 MA20×0.97 제거 → 손절 2개 표시 문제 해소)
+//   - 타입 미확정 ENTER는 라벨·사유에 명시, 진입가 위의 '지지'는 표기 생략
+//   - 시장 구조 게이트 복원: SPY MA200 아래면 ENTER→WATCH (index hardFilter 규칙을 엔진으로 단일화)
 // ═══════════════════════════════════════════════════════════════
 
 'use strict';
@@ -188,12 +197,19 @@ function swingEngine(ydata, swingData) {
     //   진입가 -10% 밑으로는 안 내려가게 캡 (대형주 ATR 과대 방지)
     var stopFloor = parseFloat((sEntry * 0.90).toFixed(2));
     var sStop = atrStop;
-    if (ma20Stop !== null && ma20Stop < atrStop) sStop = ma20Stop;  // MA20이 더 넓으면 채택
-    if (sStop < stopFloor) sStop = stopFloor;                       // -10% 캡
+    var stopBasis = '2×ATR';                                         // 카드 표시용 산정 근거 (2026-08)
+    if (ma20Stop !== null && ma20Stop < atrStop) { sStop = ma20Stop; stopBasis = 'MA20 -3%'; }  // MA20이 더 넓으면 채택
+    var stopCapped = false;
+    if (sStop < stopFloor) { sStop = stopFloor; stopBasis = '-10% 캡'; stopCapped = true; }      // -10% 캡
     sStop = parseFloat(sStop.toFixed(2));
-    if (sStop >= sEntry) sStop = parseFloat((sEntry - 1.5 * _atr).toFixed(2)); // 안전장치
+    if (sStop >= sEntry) { sStop = parseFloat((sEntry - 1.5 * _atr).toFixed(2)); stopBasis = '1.5×ATR'; } // 안전장치
     var sRisk = sEntry - sStop;
-    var stopPctActual = sRisk > 0 ? ((sStop - sEntry) / sEntry * 100).toFixed(0) : '-5';
+    var stopPctActual = sRisk > 0 ? ((sStop - sEntry) / sEntry * 100).toFixed(1) : '-5.0';
+    // 캡에 잘린 경우: 변동성(2×ATR) 대비 얇은 손절 = 휩쏘 노출. 손절을 넓히지 말고 사이즈로 흡수하라는 신호.
+    if (stopCapped) {
+      var _atrStopPct = ((atrStop - sEntry) / sEntry * 100).toFixed(1);
+      r.warnings.push('[SWING] 2×ATR 손절 ' + _atrStopPct + '% > -10% 캡 — 고변동 종목, 손절폭이 ATR 대비 얇음 (휩쏘 주의 · 사이즈 축소로 흡수)');
+    }
 
     // ── T1/T2: 저항 사다리 우선, ATR 하한 적용 (백테스트 resY 최적) ──
     var _levels = swingData.resistanceLevels || [];
@@ -228,7 +244,8 @@ function swingEngine(ydata, swingData) {
       sT1 = _t1AtrMin;
       sT2 = _t2AtrMin;
     }
-    if (sT2 < sT1 * 1.10) sT2 = parseFloat((sT1 * 1.15).toFixed(2));
+    var t2Bumped = false;
+    if (sT2 < sT1 * 1.10) { sT2 = parseFloat((sT1 * 1.15).toFixed(2)); t2Bumped = true; }  // 5×ATR이 T1과 붙으면 T1+15% 산술값
 
     var sRR  = sRisk > 0 ? parseFloat(((sT1 - sEntry) / sRisk).toFixed(1)) : null;
     var sRR2 = sRisk > 0 ? parseFloat(((sT2 - sEntry) / sRisk).toFixed(1)) : null;
@@ -241,7 +258,11 @@ function swingEngine(ydata, swingData) {
     r.target1_pct = sT1Pct; r.target2_pct = sT2Pct;
     r.t1_src = t1Src; r.t2_src = t2Src;
     r.t1_strong = t1Strong; r.t2_strong = t2Strong;
-    r.stop_type = '손절(' + stopPctActual + '%)';
+    // 산정 근거 라벨 (카드 표시용 — 사용자가 손절/목표가 어디서 나왔는지 바로 알 수 있게)
+    r.stop_basis = stopBasis;
+    r.t1_basis   = t1Src === 'resistance' ? '저항' : '2.5×ATR';
+    r.t2_basis   = t2Src === 'resistance' ? '저항' : (t2Bumped ? 'T1+15%' : '5×ATR');
+    r.stop_type = '손절(' + stopPctActual + '% · ' + stopBasis + ')';
     r.vpoc = swingData.vpoc || null;
   }
 
@@ -305,6 +326,13 @@ function swingEngine(ydata, swingData) {
   if (swingData.weeklyUptrend)                score = Math.min(100, score + 5);
   else if (swingData.ma100 && price)          score = Math.max(0, score - 8);
 
+  // ── 핵심조건 미충족 캡 (2026-08) ──
+  //   부가(+15)·SPY(+5)·주봉(+5) 보너스가 쌓이면 핵심조건 하나가 빠진 셋업도 100점에 도달
+  //   → "100 WATCH"라는 자기모순 카드가 됨. 핵심 미충족이면 ENTER 점수대(70+)에 못 들어가게 캡.
+  //   원 점수는 score_raw로 보존 (TRACK/임계값 분석용).
+  r.score_raw = score;
+  if (!coresMet && score >= SWING_ENTER_SCORE) score = SWING_ENTER_SCORE - 1;
+
   r.score = score;
 
   // ── 컨텍스트 경고 ──
@@ -329,7 +357,7 @@ function swingEngine(ydata, swingData) {
       r.blockers.push('[SWING] T1 +' + r.target1_pct + '% · T2 +' + (r.target2_pct != null ? r.target2_pct : '-') + '% — 상방 전 구간 협소');
       r.action = 'BLOCK'; return r;
     }
-    r.warnings.push('[SWING] T1 +' + r.target1_pct + '% 근접 익절 (T2 +' + r.target2_pct + '% 추세 보유)');
+    r.warnings.push('[SWING] T1 +' + r.target1_pct + '% — 설정 최소 ' + swingMinT1Pct + '% 미만 (T2 +' + r.target2_pct + '% 상방으로 진입 유지 · -4점)');
     r.score = Math.max(0, r.score - 4);  // 감점 완화 (기존 -10 → -4)
   }
 
@@ -382,10 +410,30 @@ function swingEngine(ydata, swingData) {
     }
   }
 
+  // ── ★ 시장 구조 게이트 (2026-08 복원) — SPY MA200 아래면 ENTER → WATCH ──
+  //   index.html hardFilter()에 같은 규칙이 있었으나 신규 진입엔 "엔진이 이미 처리"라며 건너뛰었고,
+  //   엔진은 -10점만 줄 뿐 액션은 안 바꿔 실제로는 아무 필터도 걸리지 않았음.
+  //   (Type A 핵심 5/5 = 100점이라 -10해도 90 ENTER.) 약세 구조에선 스윙 신규 진입을 관망으로.
+  if (r.action === 'ENTER') {
+    var _validRegimes = ['CALM', 'CAUTION', 'STRESS', 'FEAR'];
+    var _hasCtx = typeof G !== 'undefined' && G && _validRegimes.indexOf(G.vixRegime) >= 0 && typeof G.spyAboveMA200 === 'boolean';
+    if (!_hasCtx) {
+      r.action = 'WATCH';
+      r._marketGate = 'CONTEXT_INCOMPLETE';
+      r.warnings.unshift('[시장필터] 시장 컨텍스트 미확인 — ENTER→WATCH');
+    } else if (G.spyAboveMA200 === false) {
+      r.action = 'WATCH';
+      r._marketGate = 'SPY_BELOW_MA200';
+      r.warnings.unshift('[시장필터] SPY MA200 아래 — 약세 구조, 스윙 신규 진입 ENTER→WATCH (되돌림·시장 회복 확인 후)');
+    }
+  }
+
   // ══════════════════════════════════════
-  // 6. 포지션 사이즈 권고
+  // 6. 포지션 사이즈 권고 (참고 필드)
   //   ENTER: 타입별 기본 사이즈 (A=50%, B=25%, C=30%)
-  //   WATCH: 절반
+  //   WATCH: 'none'
+  //   ※ 실제 권장 주수·리스크 배수(타입/VIX/WATCH×0.5/임상)는 sizeEngine.js가 단일 소스이며 카드는 그것만 표시.
+  //     이 필드는 카드에 렌더되지 않는 참고값 (2026-08 정합 점검 시 확인).
   // ══════════════════════════════════════
   var baseSizes = { 'A': 50, 'B': 25, 'C': 30 };
   var baseSize  = (swingType && baseSizes[swingType]) || 35;
@@ -470,6 +518,15 @@ function calcSwingEntrySignal(r) {
   var sup1  = r.nearest_support;
   var swingType = r.swing_type || null;
 
+  // ── 트리거 문자열은 엔진이 실제 계산한 진입/손절을 그대로 인용 (단일 진실원) ──
+  //   (기존: MA20×0.97을 하드코딩 → 진입각 손절과 다른 값이 한 카드에 2개 표시되던 문제 제거)
+  var _fmt = function(v){ return (v !== null && v !== undefined && isFinite(v)) ? '$' + Number(v).toFixed(2) : '--'; };
+  var t1Str    = 'T1 ' + _fmt(r.target1);
+  var entryStr = r.entry ? '진입 ' + _fmt(r.entry) : '';
+  var stopStr  = r.stop ? ('손절 ' + _fmt(r.stop) + (r.stop_basis ? ' (' + r.stop_basis + ')' : ''))
+                        : (ma20 ? '손절 MA20 -3% ' + _fmt(ma20 * 0.97) : '손절 --');
+  var planStr  = (entryStr ? entryStr + ' · ' : '') + stopStr;
+
   // ── ENTER — 타입별 진입 신호 ──
   if (r.action === 'ENTER') {
     // Type A: MA20 눌림목
@@ -477,7 +534,7 @@ function calcSwingEntrySignal(r) {
       return {
         signal: 'GO', icon: '🟢', label: '눌림목 진입',
         reason: 'Type A — MA20 $' + ma20.toFixed(2) + ' 눌림목 + 핵심조건 충족 (' + score + '점)',
-        trigger: '손절 MA20 -3% $' + (ma20 * 0.97).toFixed(2) + ' / T1 $' + (r.target1 ? r.target1.toFixed(2) : '--'),
+        trigger: planStr + ' / ' + t1Str,
         css: 'go'
       };
     }
@@ -487,7 +544,7 @@ function calcSwingEntrySignal(r) {
         signal: 'GO', icon: '🟢', label: '돌파 진입',
         reason: 'Type B — 20일 신고가 근접 + 베이스 + 거래량 (' + score + '점)',
         trigger: (res1 ? '저항 $' + res1.toFixed(2) + ' 종가 돌파 확인 시 진입' : '신고가 돌파 확인 후 진입') +
-                 ' / T1 $' + (r.target1 ? r.target1.toFixed(2) : '--'),
+                 ' · ' + stopStr + ' / ' + t1Str,
         css: 'go'
       };
     }
@@ -496,16 +553,17 @@ function calcSwingEntrySignal(r) {
       return {
         signal: 'GO', icon: '🟢', label: '반전 진입',
         reason: 'Type C — MA200 회복 + MACD 플러스 전환 + 하락 거래량 고갈 (' + score + '점)',
-        trigger: (sup1 ? '지지 $' + sup1.toFixed(2) + ' 유지 확인 / ' : '') +
-                 'T1 $' + (r.target1 ? r.target1.toFixed(2) : '--'),
+        trigger: (sup1 ? '지지 $' + sup1.toFixed(2) + ' 유지 확인 · ' : '') + stopStr + ' / ' + t1Str,
         css: 'go'
       };
     }
-    // 타입 미확정 ENTER
+    // 타입 미확정 ENTER — 인식된 셋업(A/B/C) 없이 일반 조건 수로만 통과한 진입.
+    //   카드에 그 사실을 명시. 진입가 위에 있는 '지지'는 이 진입각의 지지가 아니므로 표기 생략.
+    var supStr = (sup1 && r.entry && sup1 < r.entry) ? ' · 지지 ' + _fmt(sup1) : '';
     return {
-      signal: 'GO', icon: '🟢', label: '진입',
-      reason: '스윙 조건 충족 — ' + condMet + '/8 · ' + score + '점',
-      trigger: (sup1 ? '지지 $' + sup1.toFixed(2) + ' / ' : '') + 'T1 $' + (r.target1 ? r.target1.toFixed(2) : '--'),
+      signal: 'GO', icon: '🟢', label: '진입 · 타입 미확정',
+      reason: '스윙 일반 조건 ' + condMet + '/8 충족 · ' + score + '점 (눌림목/돌파/반전 셋업 미인식 — 조건 수 기준 진입)',
+      trigger: planStr + supStr + ' / ' + t1Str,
       css: 'go'
     };
   }
@@ -518,7 +576,7 @@ function calcSwingEntrySignal(r) {
       signal: 'WAIT', icon: '🟡', label: 'MA20 눌림목 대기',
       reason: 'MA20 $' + ma20.toFixed(2) + ' 근처 (' + condMet + '/8 · ' + score + '점) — 핵심조건 대기',
       trigger: r._coresMet ? '핵심조건 충족 — 일봉 종가 확인 후 진입 가능' :
-               '미충족 조건 해소 후 진입 / 손절 MA20 -3% $' + (ma20 * 0.97).toFixed(2),
+               '미충족 조건 해소 후 진입 / ' + planStr,
       css: 'wait'
     };
   }
@@ -528,7 +586,7 @@ function calcSwingEntrySignal(r) {
     return {
       signal: 'WAIT', icon: '🟡', label: 'MA60 눌림목 대기',
       reason: 'MA60 $' + ma60.toFixed(2) + ' 근처 (' + condMet + '/8 · ' + score + '점)',
-      trigger: '반등 + 조건 개선 확인 후 진입 / 손절 $' + (ma60 * 0.97).toFixed(2),
+      trigger: '반등 + 조건 개선 확인 후 진입 / ' + (r.stop ? planStr : '손절 ' + _fmt(ma60 * 0.97)),
       css: 'wait'
     };
   }
@@ -551,7 +609,7 @@ function calcSwingEntrySignal(r) {
       return {
         signal: 'WAIT', icon: '🟡', label: '지지선 확인 중',
         reason: '지지선 $' + sup1.toFixed(2) + ' 근처 (' + condMet + '/8 · ' + score + '점) — 조건 개선 대기',
-        trigger: '조건 ' + SWING_MIN_COND + '/8 + 점수 ' + SWING_ENTER_SCORE + '점 달성 시 진입 / 손절 $' + (sup1 * 0.97).toFixed(2),
+        trigger: '조건 ' + SWING_ENTER_COND + '/8 + 핵심조건 충족 + 점수 ' + SWING_ENTER_SCORE + '점 달성 시 진입 / ' + (r.stop ? planStr : '손절 ' + _fmt(sup1 * 0.97)),
         css: 'wait'
       };
     }
@@ -590,6 +648,6 @@ if (typeof window !== 'undefined') {
   window.swingEngine          = swingEngine;
   window.calcSwingEntrySignal = calcSwingEntrySignal;
   window.swingFitness         = swingFitness;
-  window.SWING_ENGINE_VERSION = '2026-06-14-fitness';  // 배포 확인용 — 콘솔에서 window.SWING_ENGINE_VERSION
+  window.SWING_ENGINE_VERSION = '2026-08-18-card-truth';  // 배포 확인용 — 콘솔에서 window.SWING_ENGINE_VERSION
   console.log('[RECON] swingEngine loaded:', window.SWING_ENGINE_VERSION);
 }
