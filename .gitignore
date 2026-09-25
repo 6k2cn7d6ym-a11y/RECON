@@ -1,0 +1,28 @@
+# 개발팀 실험 공간 (sandbox 예외)
+sandbox/
+
+# 아카이브·수신함 (로컬 전용)
+archive/
+_inbox/
+_outbox/
+
+# 연구·검수 파일 (로컬 전용 · 배포 대상 아님)
+review_*.cjs
+review_*.json
+baseline_*.json
+proposal_*.json
+proposed_diff_results.json
+simulate_proposal.cjs
+exitEngine_d3.js
+fixtures/
+test_regression_*.js
+
+# 배포 임시·시크릿
+.deploy-tmp/
+.env
+*.env
+
+# 시스템
+.DS_Store
+.wrangler/
+node_modules/
