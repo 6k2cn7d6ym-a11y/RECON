@@ -44,7 +44,7 @@ Jim(대표님) 개인용 자문 도구 — 자동 체결 없음. 앱 일지는 "
 | `exitEngine.js` | 보유 청산 결정 (swing/momo 1차 결정자) | 263줄 |
 | `sizeEngine.js` | 포지션 사이징 (계좌 리스크 기반 권장 수량) | 164줄 |
 
-- **`swing-backtest.js`, `sweep.js`, `cond-sweep.js` 는 현재 로컬에 없음.** 과거 도구로 현재 날짜 폴더에 존재하지 않는다.
+- **`swing-backtest.js`, `sweep.js`, `cond-sweep.js` 는 현재 로컬에 없음.** 과거 도구로 현재 루트에 존재하지 않는다.
 - **`coreEngine` / `babylonEngine`은 `index.html` 안에 인라인**으로 있다 (별도 파일 아님). coreEngine: 6300줄, babylonEngine: 11,147줄, detectExitSignals: 11,705줄.
 - index.html이 4개 엔진을 `<script src>`로 로드 (791~794줄, 순서: momo → swing → exit → size).
 
@@ -198,7 +198,7 @@ RECON은 외부 비평(GPT·타 LLM·백테스트 리뷰)을 자주 받는다:
 - **포지션 동기화 tombstone 모델** 정착 (`journalUnwatch`가 stillLive 가드로 처리)
 - **CORE 리서치 산출물**: `core_research_phase1.md`, `core_research_phase2_v2.md` — 메가 자이언트 "베이비 시절" 8+38개 케이스 감지 시그널 정리
 - **일지 mode 방어 완료 (2026-07-15)**: `saveTradeLog` 모드 필수 검증 추가. `pushJournal`·`syncJournalWatch`·`journalUnwatch`·`mergeJournalLocal`·`renderOpenPositions` 에서 `t.mode || 'momo'` 폴백 제거 + `console.warn`. mode 없는 거래가 momo 버킷으로 오염되는 사일런트 버그 차단. `stop > entry` 시 confirm 팝업으로 이익보호선(트레일링 업) 여부 확인.
-- **자동 배포 세팅 (2026-07-15)**: `deploy.sh` (루트에서 `./deploy.sh`) — 최신 날짜 폴더 → GitHub Pages 자동 push. SSH 키(`~/.ssh/github_minon`) 사용.
+- **자동 배포 세팅 (2026-07-15)**: `deploy.sh` (루트에서 `./deploy.sh`) — 최신 날짜 폴더 → GitHub Pages 자동 push. SSH 키(`~/.ssh/github_minon`) 사용. **(2026-09-25 폐기 — §7 배포 흐름 참조)**
 
 ### ⏳ 진행 중 / 부분
 - **rs_spy 표시+추적만, 점수 미반영** — 사후 분석 위해 데이터 쌓는 중
