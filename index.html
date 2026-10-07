@@ -561,6 +561,15 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
   <div class="sg-title">알림 (텔레그램)</div>
   <div class="sg-row"><div><div class="sg-label">텔레그램 연결 테스트</div><div class="sg-sub">크론·알림 채널 확인용</div></div><button onclick="holdTestTg()" style="background:var(--bg2);border:1px solid var(--b);border-radius:8px;padding:7px 14px;font-family:var(--mono);font-size:11px;color:var(--t);cursor:pointer">📲 테스트</button></div>
 
+  <div class="sg-title">접근 토큰</div>
+  <div class="sg-row" style="flex-direction:column;align-items:flex-start">
+    <div><div class="sg-label">대표 토큰</div><div class="sg-sub">설정 후 값은 다시 표시되지 않습니다</div></div>
+    <div class="ntfy-row">
+      <input class="ntfy-input" type="password" id="reconTokenInput" placeholder="토큰 입력" autocomplete="off" onchange="saveReconToken(this.value)">
+    </div>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-top:6px" id="reconTokenStatus"></div>
+  </div>
+
   <div class="sg-title">KIS API (프리마켓 스크리너)</div>
   <div class="sg-row" style="flex-direction:column;align-items:flex-start;gap:6px">
     <div><div class="sg-label">App Key</div><div class="sg-sub">한국투자증권 개발자센터 발급</div></div>
@@ -1152,6 +1161,10 @@ function parseLeverageETF(longName, shortName){
   G_momoTodayDate = today;
   localStorage.setItem('momoTodayDate', today);
 })();
+(function(){
+  var st = document.getElementById('reconTokenStatus');
+  if(st) st.textContent = localStorage.getItem('reconToken') ? '✓ 설정됨' : '미설정';
+})();
 
 // ═══════════════════════════════════════
 // 모드/탭 전환
@@ -1291,7 +1304,7 @@ async function syncJournalWatch(mode){
   var positions = Object.values(byT);
   if(!positions.length) return;
   try{
-    await fetch(WORKER_URL + '/recon/positions', {
+    await workerFetch(WORKER_URL + '/recon/positions', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ mode:mode, positions:positions })
     });
@@ -1308,7 +1321,7 @@ function journalUnwatch(ticker, mode){
   if(stillLive) return;
   var now = Date.now();
   try{
-    fetch(WORKER_URL + '/recon/positions', {
+    workerFetch(WORKER_URL + '/recon/positions', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ mode:mode, positions:[{ ticker:ticker, deleted:true, deletedAt:now, updatedAt:now }] })
     });
@@ -1341,7 +1354,7 @@ async function pushJournal(mode){
   });
   if(!trades.length) return;
   try{
-    await fetch(WORKER_URL + '/recon/journal', {
+    await workerFetch(WORKER_URL + '/recon/journal', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ mode:mode, trades:trades })
     });
@@ -1351,7 +1364,7 @@ async function pushJournal(mode){
 async function pullJournal(mode){
   mode = mode || (typeof G!=='undefined' && G.currentMode) || 'momo';
   try{
-    var res = await fetch(WORKER_URL + '/recon/journal?mode=' + encodeURIComponent(mode));
+    var res = await workerFetch(WORKER_URL + '/recon/journal?mode=' + encodeURIComponent(mode));
     if(!res.ok) return false;
     var data = await res.json();
     var serverTrades = (data && data.trades) || [];
@@ -1389,7 +1402,7 @@ function mergeJournalLocal(serverList, mode){
 async function getHoldOrphans(mode){
   // 워커 GET → 일지 open/partial과 안 겹치고 tombstone 아닌 항목만
   try{
-    var res = await fetch(WORKER_URL + '/recon/positions?mode=' + encodeURIComponent(mode));
+    var res = await workerFetch(WORKER_URL + '/recon/positions?mode=' + encodeURIComponent(mode));
     if(!res.ok) return [];
     var data = await res.json();
     var positions = (data && data.positions) || [];
@@ -1488,7 +1501,7 @@ async function openOrphanInspector(){
       var mode2 = t.getAttribute('data-mode');
       if(!confirm(ticker2 + ' (' + mode2.toUpperCase() + ') 감시를 해제할까요?')) return;
       var now = Date.now();
-      fetch(WORKER_URL + '/recon/positions', {
+      workerFetch(WORKER_URL + '/recon/positions', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ mode:mode2, positions:[{ ticker:ticker2, deleted:true, deletedAt:now, updatedAt:now }] })
       }).then(function(){
@@ -1505,7 +1518,7 @@ async function openOrphanInspector(){
       Promise.all(all.map(function(g){
         if(!g.list.length) return Promise.resolve();
         var tombstones = g.list.map(function(p){ return { ticker:p.ticker, deleted:true, deletedAt:now2, updatedAt:now2 }; });
-        return fetch(WORKER_URL + '/recon/positions', {
+        return workerFetch(WORKER_URL + '/recon/positions', {
           method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ mode:g.mode, positions:tombstones })
         });
@@ -1680,10 +1693,21 @@ function updateClock(){
 // ═══════════════════════════════════════
 var WORKER_URL = 'https://recon.miinonnnn.workers.dev';
 
+// ── 워커 호출 공통 래퍼: 토큰 있으면 X-Recon-Token 헤더 부착 (ReconKR 기준 구현과 동일) ──
+function workerFetch(url, opts){
+  opts = opts || {};
+  var token = localStorage.getItem('reconToken');
+  if(token){
+    opts.headers = opts.headers || {};
+    opts.headers['X-Recon-Token'] = token;
+  }
+  return fetch(url, opts);
+}
+
 async function fetchWithProxy(url, _retry){
   // 캐시 버스팅 — Yahoo Finance URL 안에 포함해야 Worker/CF 캐시 우회 가능
   var bustUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
-  var fetchP = fetch(WORKER_URL + '?url=' + encodeURIComponent(bustUrl), {cache:'no-store'})
+  var fetchP = workerFetch(WORKER_URL + '?url=' + encodeURIComponent(bustUrl), {cache:'no-store'})
     .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
     .then(function(t){
       try{ return JSON.parse(t); }
@@ -1740,7 +1764,7 @@ function updateKisStatus(){
 async function kisGet(path, params, headers){
   var qs = params ? ('?' + new URLSearchParams(params).toString()) : '';
   var url = WORKER_URL + '/kis' + path + qs;
-  var resp = await fetch(url, {
+  var resp = await workerFetch(url, {
     method: 'GET',
     headers: Object.assign({'Content-Type':'application/json'}, headers||{}),
   });
@@ -1750,7 +1774,7 @@ async function kisGet(path, params, headers){
 
 async function kisPost(path, body, headers){
   var url = WORKER_URL + '/kis' + path;
-  var resp = await fetch(url, {
+  var resp = await workerFetch(url, {
     method: 'POST',
     headers: Object.assign({'Content-Type':'application/json'}, headers||{}),
     body: JSON.stringify(body),
@@ -2766,7 +2790,7 @@ async function loadKisGappers(){
       if(_sess !== 'closed'){
         if(statusEl) statusEl.textContent = 'Webull '+sessionLabel(_sess);
         try{
-          var _wbResp = await fetch(WORKER_URL + '/us-movers?session='+_sess+'&pageSize=50');
+          var _wbResp = await workerFetch(WORKER_URL + '/us-movers?session='+_sess+'&pageSize=50');
           var _wbData = await _wbResp.json();
           var _chgKey = sessionChgField(_sess);
           var _fbQuotes = (_wbData.quotes || []).filter(function(q){ return (q[_chgKey]||0) > 3; });
@@ -2948,7 +2972,7 @@ async function runMomoScreener(){
       try{
         var _sideSess = getUsSession();
         var _sideEndpoint = _sideSess === 'closed' ? 'regular' : _sideSess;
-        var _wbSideResp = await fetch(WORKER_URL + '/us-movers?session='+_sideEndpoint+'&pageSize=50');
+        var _wbSideResp = await workerFetch(WORKER_URL + '/us-movers?session='+_sideEndpoint+'&pageSize=50');
         var _wbSideData = await _wbSideResp.json();
         (_wbSideData.quotes || []).forEach(function(q){
           if(q.symbol && q.marketCap && q.marketCap > 0){
@@ -2964,7 +2988,7 @@ async function runMomoScreener(){
       var _scanEndpoint = _scanSess === 'closed' ? 'regular' : _scanSess;  // 마감 시엔 최신 정규장
       statusEl.textContent = '1/3 Webull '+sessionLabel(_scanSess)+' 데이터 수집 중...';
       try{
-        var _wbResp = await fetch(WORKER_URL + '/us-movers?session='+_scanEndpoint+'&pageSize=50');
+        var _wbResp = await workerFetch(WORKER_URL + '/us-movers?session='+_scanEndpoint+'&pageSize=50');
         var _wbData = await _wbResp.json();
         var _scanChgKey = sessionChgField(_scanEndpoint);
         (_wbData.quotes || []).forEach(function(q){
@@ -3407,7 +3431,7 @@ async function loadMarketData(){
 async function loadFearGreed(){
   try{
     // CNN Fear & Greed via proxy
-    var fgFetch = fetch(WORKER_URL + '?url=' + encodeURIComponent('https://production.dataviz.cnn.io/index/fearandgreed/graphdata'))
+    var fgFetch = workerFetch(WORKER_URL + '?url=' + encodeURIComponent('https://production.dataviz.cnn.io/index/fearandgreed/graphdata'))
       .then(function(r){ return r.text(); });
     var fgTimeout = new Promise(function(_,reject){ setTimeout(function(){ reject(new Error('timeout')); },8000); });
     var text = await Promise.race([fgFetch, fgTimeout]);
@@ -3474,7 +3498,7 @@ async function loadMovers(){
     }
 
     try{
-      var wbResp = await fetch(WORKER_URL + '/us-movers?session='+effectiveSession+'&pageSize=50');
+      var wbResp = await workerFetch(WORKER_URL + '/us-movers?session='+effectiveSession+'&pageSize=50');
       var wbData = await wbResp.json();
       var allQ = wbData.quotes || [];
 
@@ -3571,7 +3595,7 @@ async function _ensureWbMarketCapCache(){
     var sessions = ['pre','regular','after'];
     for(var i=0;i<sessions.length;i++){
       try{
-        var r = await fetch(WORKER_URL + '/us-movers?session='+sessions[i]+'&pageSize=50');
+        var r = await workerFetch(WORKER_URL + '/us-movers?session='+sessions[i]+'&pageSize=50');
         var d = await r.json();
         (d.quotes || []).forEach(function(q){
           if(q.symbol && q.marketCap && q.marketCap > 0){
@@ -3725,7 +3749,7 @@ async function fetchYahooData(ticker){
       //   ① 스프레드: 모든 세션에서 Webull 실시간 bid/ask 우선 (Finviz는 폴백)
       //   ② 가격 덮어쓰기: 프리마켓만 (Yahoo 1분봉 stale 대응 — 기존 동작 유지)
       try {
-        var _wbQuoteResp = await fetch(WORKER_URL + '/us-quote?symbol=' + encodeURIComponent(ticker));
+        var _wbQuoteResp = await workerFetch(WORKER_URL + '/us-quote?symbol=' + encodeURIComponent(ticker));
         if(_wbQuoteResp.ok){
           var _wbQuote = await _wbQuoteResp.json();
           if(IS_PRE){
@@ -4278,7 +4302,7 @@ async function fetchYahooData(ticker){
     // 5. Finviz Float
     if(!result.float_m){
       try{
-        var fvFetch = fetch(WORKER_URL+'?url='+encodeURIComponent('https://finviz.com/quote.ashx?t='+ticker)).then(function(r){return r.text();});
+        var fvFetch = workerFetch(WORKER_URL+'?url='+encodeURIComponent('https://finviz.com/quote.ashx?t='+ticker)).then(function(r){return r.text();});
         var fvTimeout = new Promise(function(_,reject){setTimeout(function(){reject(new Error('timeout'));},8000);});
         var fvHtml = await Promise.race([fvFetch, fvTimeout]);
         var floatMatch = fvHtml.match(/Float<\/td><td[^>]*><b>([^<]+)<\/b>/);
@@ -7119,7 +7143,7 @@ async function syncReconTrack(mode){
   var seq = _syncSeqMap[mode];
   try{
     var mine = G_reconTrack.filter(function(t){ return t.mode===mode; });
-    var resp = await fetch(WORKER_URL+'/recon/track', {
+    var resp = await workerFetch(WORKER_URL+'/recon/track', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ mode: mode, track: mine })
     });
@@ -7766,7 +7790,12 @@ async function runSingleScan(mode, ticker, analyzeEl, resultEl){
       ? WORKER_URL + '/recon/claude'
       : 'https://api.anthropic.com/v1/messages';
     var _headers = _useProxy
-      ? { 'Content-Type': 'application/json' }
+      ? (function(){
+          var h = { 'Content-Type': 'application/json' };
+          var tok = localStorage.getItem('reconToken');
+          if(tok) h['X-Recon-Token'] = tok;
+          return h;
+        })()
       : { 'Content-Type': 'application/json', 'x-api-key': apiKey,
           'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
 
@@ -10335,14 +10364,14 @@ function clearAlerts(){ G.alerts=[]; G.unread=0; localStorage.removeItem('apexAl
 // 텔레그램 + 소리
 // ═══════════════════════════════════════
 async function sendTelegram(ticker,type,msg){
-  try{ await fetch(WORKER_URL+'/recon/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker,type,msg})}); }catch(e){}
+  try{ await workerFetch(WORKER_URL+'/recon/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker,type,msg})}); }catch(e){}
 }
 
 
 async function holdTestTg() {
   showToast('텔레그램 전송 중...');
   try {
-    var resp = await fetch(WORKER_URL + '/recon/test-telegram');
+    var resp = await workerFetch(WORKER_URL + '/recon/test-telegram');
     var data = await resp.json();
     if (data.ok) {
       showToast('✅ 텔레그램 전송 성공');
@@ -10372,6 +10401,12 @@ function playBeep(success){
 // 설정 + 유틸
 // ═══════════════════════════════════════
 function save(k,v){ localStorage.setItem(k,v); }
+function saveReconToken(v){
+  v = (v||'').trim();
+  if(v) localStorage.setItem('reconToken', v); else localStorage.removeItem('reconToken');
+  var st = document.getElementById('reconTokenStatus');
+  if(st) st.textContent = v ? '✓ 설정됨' : '미설정';
+}
 
 function cycle(id,vals){
   var el=document.getElementById(id);
