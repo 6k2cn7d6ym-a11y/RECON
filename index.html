@@ -11280,19 +11280,16 @@ function renderModeReadiness(){
 // ── 시장 국면 스테이지 렌더링 ──
 function renderMarketStage(){
   var el=document.getElementById('marketStageCard');
-  if(!el||!G.marketStageData) return;
-  var d=G.marketStageData;
+  if(!el||!G.marketStageData||!G.marketStageData.facts) return;
+  var f=G.marketStageData.facts;
   var vixStr=G.vixLevel?' · VIX '+G.vixLevel+' ('+G.vixRegime+')':'';
-  el.style.borderLeftColor=d.color;
-  el.innerHTML=
-    '<div class="stage-row1">'+
-      '<span class="stage-name" style="color:'+d.color+'">'+d.emoji+' '+
-        ({'BEAR':'Bear Market','TRANSITION':'전환 구간','EARLY_BULL':'Early Bull','MID_BULL':'Mid Bull','LATE_BULL':'Late Bull'}[d.stage]||d.stage)+
-      '</span>'+
-      '<span class="stage-badge" style="color:'+d.color+';border-color:'+d.color.replace(')',', .3)').replace('var(','rgba(')+'">'+d.stage+'</span>'+
-    '</div>'+
-    '<div class="stage-desc">'+d.desc+vixStr+'</div>'+
-    '<div class="stage-note">'+d.note+'</div>';
+  var pct=function(v){ return (v>=0?'+':'−')+Math.abs(v).toFixed(1)+'%'; };
+  var line='SPY '+f.price.toFixed(2)+
+    ' · MA200 '+pct(f.gap)+(f.gap20!==null?' (20일 전 '+pct(f.gap20)+')':'')+
+    ' · 52주 고점 '+pct(f.fromHigh)+
+    ' · 마지막 MA200 '+(f.above?'돌파':'이탈')+' '+(f.crossDate||'2년 내 없음');
+  el.style.borderLeftColor='var(--t3)';
+  el.innerHTML='<div class="stage-desc">'+line+vixStr+'</div>';
 }
 
 // ── 섹터 리더십 (20일 수익률 랭킹) ──
@@ -11421,15 +11418,45 @@ function loadAllMarket(){
   loadMacro();
 }
 
+// SPY 사실값 카드용: 이격·20일 전 이격·52주 고점 대비·마지막 MA200 돌파/이탈일 (표시 전용, 판정 미연결)
+function calcMarketFacts(closes, closeTs){
+  var n=closes.length;
+  if(n<200) return null;
+  var mas=[], run=0, i;
+  for(i=0;i<n;i++){
+    run+=closes[i];
+    if(i>=200) run-=closes[i-200];
+    mas[i]= i>=199 ? run/200 : null;
+  }
+  var price=closes[n-1], ma=mas[n-1];
+  var above=price>ma;
+  var gap20=(n>=221 && mas[n-21]) ? (closes[n-21]-mas[n-21])/mas[n-21]*100 : null;
+  var hi=Math.max.apply(null, closes.slice(-252));
+  var crossIdx=-1;
+  for(var j=n-1;j>=200;j--){
+    var aboveJ=closes[j]>mas[j], abovePrev=closes[j-1]>mas[j-1];
+    if(above ? (aboveJ && !abovePrev) : (!aboveJ && abovePrev)){ crossIdx=j; break; }
+  }
+  var crossDate=null;
+  if(crossIdx>=0 && closeTs[crossIdx]){
+    crossDate=new Date(closeTs[crossIdx]*1000).toLocaleDateString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric'});
+  }
+  return {price:price, ma200:ma, gap:(price-ma)/ma*100, gap20:gap20,
+          fromHigh:(price/hi-1)*100, above:above, crossDate:crossDate};
+}
+
 // SPY MA200 + 당일 방향 + 시장 국면 통합 판단
 async function checkMarketRegime(){
-  // ── 1. MA200 (일봉 1년치) — 실패해도 계속 ──
+  // ── 1. MA200 (일봉 2년치 · 돌파일 판정에 MA200 200봉 선행 필요) — 실패해도 계속 ──
   try{
     var dc = await fetchWithProxy(
-      'https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=1y'
+      'https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=2y'
     );
-    var closes = dc?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
-    closes = closes.filter(function(v){return v&&v>0;});
+    var dcRes = dc?.chart?.result?.[0];
+    var rawC = dcRes?.indicators?.quote?.[0]?.close || [];
+    var rawT = dcRes?.timestamp || [];
+    var closes = [], closeTs = [];
+    rawC.forEach(function(v,i){ if(v&&v>0){ closes.push(v); closeTs.push(rawT[i]); } });
     if(closes.length >= 200){
       var ma200 = closes.slice(-200).reduce(function(a,b){return a+b;},0)/200;
       var spyPrice = closes[closes.length-1];
@@ -11469,7 +11496,8 @@ async function checkMarketRegime(){
         }
       }
       G.marketStage = stage;
-      G.marketStageData = {stage:stage,color:stageColor,emoji:stageEmoji,desc:stageDesc,note:stageNote};
+      G.marketStageData = {stage:stage,color:stageColor,emoji:stageEmoji,desc:stageDesc,note:stageNote,
+                           facts:calcMarketFacts(closes, closeTs)};
       renderMarketStage();
     }
   }catch(e){ /* MA200 실패는 조용히 무시 */ }
