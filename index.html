@@ -432,6 +432,12 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     </div>
   </div>
 
+  <!-- 미국 추천 피드 (투자팀 업로드 · 규격 미확정) -->
+  <div class="mkt-section" style="margin-top:0">
+    <div class="mkt-label">미국 추천 피드</div>
+    <div id="usDashMain"></div>
+  </div>
+
   <div style="height:10px"></div>
 </div>
 
@@ -1215,6 +1221,8 @@ function switchMode(mode){
     switchSubTab('search');
   }
 
+  if(typeof usDashSync === 'function') usDashSync(mode === 'recon');
+
   // SWING/CORE 키 상태 표시
   updateKeyStatus();
 
@@ -1703,6 +1711,85 @@ function workerFetch(url, opts){
   }
   return fetch(url, opts);
 }
+
+// ── 미국 추천 피드 카드 (Worker /recon/dash). 판정·점수·색상 없음 — 표시만. 전역은 usDashSync 하나 ──
+(function(){
+var US_POLL_MS = 60000, US_STALE_MS = 30 * 60 * 1000, US_BOX = 'usDashMain';
+var COLS = [['ticker','티커'],['name','종목'],['mode','모드'],['horizon','기간'],['entryStatus','진입'],['risk','리스크'],['base','기준가'],['stop','손절'],['t1','T1'],['t2','T2'],['why','근거']];
+var timer = null, seq = 0, last = null;
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function cell(v){
+  if (v === undefined || v === null) return '';
+  if (typeof v === 'object') { try { return JSON.stringify(v); } catch (e) { return ''; } }
+  return String(v);
+}
+function note(cls, title, sub){
+  return '<div style="font-family:var(--mono);font-size:10px;color:var(--' + cls + ');padding:6px 0">' + esc(title) + (sub ? '<div style="color:var(--t3);margin-top:2px">' + esc(sub) + '</div>' : '') + '</div>';
+}
+function put(html){ var b = document.getElementById(US_BOX); if (b) b.innerHTML = html; }
+function hm(iso){
+  var t = typeof iso === 'string' ? Date.parse(iso) : NaN, d;
+  if (isNaN(t)) return '';
+  d = new Date(t + 9 * 3600 * 1000);
+  return ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2) + ' KST';
+}
+function render(D){
+  var f = D && D.feed, h = '', s, i, j, r, row, n, stale = false, t;
+  if (!f || typeof f !== 'object') { put(note('r', '피드 자료 형식 오류')); return; }
+  h += note('t2', '규격 미확정 · 판정 없음', '투자팀 원본을 그대로 보여 줍니다 · 추천 판단 근거로 쓰지 마세요');
+  t = typeof D.generatedAt === 'string' ? Date.parse(D.generatedAt) : NaN;
+  if (isNaN(t) || Date.now() - t > US_STALE_MS) h += note('r', '업로드 지연', '마지막 업로드 ' + (isNaN(t) ? '시각 불명' : hm(D.generatedAt)) + ' · 아래 자료는 오래됐을 수 있음');
+  s = f.status;
+  if (s === 'none') h += note('t2', '오늘(' + cell(f.date) + ') 추천 파일 없음', '어제 파일로 대신 보여 주지 않습니다' + (f.lastAvailableDate ? ' · 마지막 파일 날짜 ' + cell(f.lastAvailableDate) : ''));
+  else if (s === 'broken' || s === 'error') h += note('r', s === 'broken' ? '오늘 파일을 읽을 수 없음' : '파일 구조 오류', (Array.isArray(f.errs) ? f.errs.join(' / ') : ''));
+  else if (s === 'ok') {
+    n = Array.isArray(f.recs) ? f.recs.length : 0;
+    h += note('t2', '추천 ' + n + '건', '자료 날짜 ' + cell(f.date) + ' · 발행 ' + hm(f.issuedAt));
+    if (n > 0) {
+      h += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-family:var(--mono);font-size:10px;color:var(--t);min-width:100%"><tr>';
+      for (j = 0; j < COLS.length; j++) h += '<th style="text-align:left;color:var(--t2);padding:3px 6px;border-bottom:1px solid var(--b);white-space:nowrap">' + esc(COLS[j][1]) + '</th>';
+      h += '</tr>';
+      for (i = 0; i < n; i++) {
+        r = f.recs[i]; row = '';
+        for (j = 0; j < COLS.length; j++) row += '<td style="padding:3px 6px;border-bottom:1px solid var(--b);' + (COLS[j][0] === 'why' ? 'min-width:160px' : 'white-space:nowrap') + '">' + esc(r && typeof r === 'object' ? cell(r[COLS[j][0]]) : '') + '</td>';
+        h += '<tr>' + row + '</tr>';
+      }
+      h += '</table></div><details style="margin-top:6px"><summary style="font-family:var(--mono);font-size:10px;color:var(--t2);cursor:pointer">원본 보기</summary><pre style="font-family:var(--mono);font-size:9px;color:var(--t2);white-space:pre-wrap;word-break:break-all;margin:6px 0 0">' + esc(JSON.stringify(f.recs, null, 1)) + '</pre></details>';
+    }
+  } else h += note('r', '피드 상태 불명', cell(s));
+  if (D.hold && typeof D.hold === 'object' && Array.isArray(D.hold.items)) {
+    h += '<details style="margin-top:8px"><summary style="font-family:var(--mono);font-size:10px;color:var(--t2);cursor:pointer">보유 대응 원본 (' + D.hold.items.length + '건 · 상태 ' + esc(cell(D.hold.status)) + ')</summary><pre style="font-family:var(--mono);font-size:9px;color:var(--t2);white-space:pre-wrap;word-break:break-all;margin:6px 0 0">' + esc(JSON.stringify(D.hold.items, null, 1)) + '</pre></details>';
+  }
+  put(h);
+}
+function load(){
+  var my = ++seq;
+  workerFetch(WORKER_URL + '/recon/dash', {cache: 'no-store'}).then(function(res){
+    if (my !== seq) return null;
+    if (res.status === 401) { put(note('gold', '토큰 설정 필요', '설정 탭에서 토큰(owner)을 입력하세요 · 토큰이 없거나 권한이 달라 서버가 거절했습니다')); return null; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function(j){
+    if (j === null || my !== seq) return;
+    if (!j || j.ok !== true || !j.data) { if (last) { render(last); return; } put(note('t2', '아직 업로드된 자료가 없음', '업로더가 첫 자료를 올리면 표시됩니다')); return; }
+    last = j.data; render(last);
+  }).catch(function(){
+    if (my !== seq) return;
+    put(note('r', '불러오기 실패', '네트워크 또는 서버 오류'));
+  });
+}
+function tick(){
+  if (G.currentMode !== 'recon') { window.usDashSync(false); return; }
+  if (!document.hidden) load();
+}
+window.usDashSync = function(on){
+  if (!on) { if (timer) { clearInterval(timer); timer = null; } seq++; return; }
+  if (timer) return;
+  load();
+  timer = setInterval(tick, US_POLL_MS);
+};
+window.usDashSync(G.currentMode === 'recon');
+})();
 
 async function fetchWithProxy(url, _retry){
   // 캐시 버스팅 — Yahoo Finance URL 안에 포함해야 Worker/CF 캐시 우회 가능
