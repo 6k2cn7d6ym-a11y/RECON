@@ -1736,7 +1736,7 @@ function hm(iso){
 function render(D){
   var f = D && D.feed, h = '', s, i, j, r, row, n, stale = false, t;
   if (!f || typeof f !== 'object') { put(note('r', '피드 자료 형식 오류')); return; }
-  h += note('t2', '규격 미확정 · 판정 없음', '투자팀 원본을 그대로 보여 줍니다 · 추천 판단 근거로 쓰지 마세요');
+  h += note('t2', '규격 미확정 · 판정 없음', '투자팀 원본을 그대로 보여 줍니다');
   t = typeof D.generatedAt === 'string' ? Date.parse(D.generatedAt) : NaN;
   if (isNaN(t) || Date.now() - t > US_STALE_MS) h += note('r', '업로드 지연', '마지막 업로드 ' + (isNaN(t) ? '시각 불명' : hm(D.generatedAt)) + ' · 아래 자료는 오래됐을 수 있음');
   s = f.status;
