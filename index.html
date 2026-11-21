@@ -609,6 +609,11 @@ html,body{height:100%;background:var(--bg);color:var(--t);font-family:var(--sans
     <div id="usageBar" style="font-family:var(--mono);font-size:12px;color:var(--bl)">-</div>
     <button onclick="resetUsage()" style="font-size:11px;color:var(--t3);background:none;border:none;cursor:pointer;font-family:var(--mono);padding:0">↺ 초기화</button>
   </div>
+  <div class="sg-row" style="flex-direction:column;align-items:flex-start;gap:6px">
+    <div class="sg-label">저장 공간</div>
+    <div id="storageUsage" style="font-family:var(--mono);font-size:11px;color:var(--t2);white-space:pre-wrap;word-break:break-all">-</div>
+    <button onclick="renderStorageUsage()" style="font-size:11px;color:var(--t3);background:none;border:none;cursor:pointer;font-family:var(--mono);padding:0">↻ 다시 계산</button>
+  </div>
   <div class="sg-row" style="cursor:pointer" onclick="clearAllData()"><div class="sg-label" style="color:var(--r)">모든 데이터 삭제</div></div>
 </div>
 </div>
@@ -1623,6 +1628,7 @@ function switchSubTab(sub){
     if(G.currentMode === 'momo') renderMomoTodayCards();
   }
   if(sub === 'settings'){
+    renderStorageUsage();
     var _vEl = document.getElementById('appVersionDetail');
     var _lEl = document.getElementById('appVersionLabel');
     if(_vEl){
@@ -2157,8 +2163,9 @@ async function runCoreScanner(){
   if(statusEl){ statusEl.style.display = ''; statusEl.textContent = '시작...'; }
   if(summaryEl) summaryEl.style.display = 'none';
   
+  _reconTrackSaveFailed = false;
   var setStatus = function(msg){
-    if(statusEl) statusEl.textContent = msg;
+    if(statusEl) statusEl.textContent = msg + (msg && _reconTrackSaveFailed ? ' · ' + RECON_TRACK_SAVE_FAIL_MSG : '');
   };
   
   try {
@@ -2361,7 +2368,8 @@ async function runCoreScanner(){
           '🆕 신규: '+newStocks.length+'개 · 🔍 관찰 중: '+keptStocks.length+'개'+
           (improvedStocks.length > 0 ? ' · 📈 복구: '+improvedStocks.length+'개' : '')+
           (degradedStocks.length > 0 ? ' · ⚠ 악화: '+degradedStocks.length+'개' : '')+
-        '</div>';
+        '</div>'+
+        (_reconTrackSaveFailed ? '<div style="color:var(--a);margin-top:4px">'+RECON_TRACK_SAVE_FAIL_MSG+'</div>' : '');
     }
     
     setStatus('');
@@ -2420,7 +2428,8 @@ async function runCoreScanner(){
     
   } catch(e){
     console.error('[CoreScan] Failed:', e);
-    setStatus('❌ 스캔 실패: ' + e.message);
+    if(e && e.name === 'QuotaExceededError') setStatus('❌ 스캔 실패: 저장 공간 부족 — 설정 > 저장 공간에서 사용량 확인');
+    else setStatus('❌ 스캔 실패: ' + e.message);
   } finally {
     _coreScanState.running = false;
     if(btn){ btn.disabled = false; btn.textContent = '스캔'; }
@@ -7155,6 +7164,21 @@ function _hydrateResult(result, ydata){
 var G_reconTrack = JSON.parse(localStorage.getItem('reconTrack')||'[]');
 var _reconTrackInitState = {};
 var _syncSeqMap = { momo: 0, swing: 0, core: 0 };  // IIFE 앞에 선언 (함수 호이스팅만으로 부족)
+var _reconTrackSaveFailed = false;
+var RECON_TRACK_SAVE_FAIL_MSG = '⚠ 저장 공간 부족 — 추적 기록이 이 기기에 저장되지 않음(서버 동기화는 진행)';
+// reconTrack 로컬 저장. 용량 초과 등으로 실패해도 호출한 쪽(스캔·동기화)을 끊지 않고, 실패는 플래그·경고로 드러낸다.
+function saveReconTrackLocal(){
+  try{
+    localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
+    return true;
+  }catch(e){
+    var first = !_reconTrackSaveFailed;
+    _reconTrackSaveFailed = true;
+    console.warn('[reconTrack] 로컬 저장 실패 (' + (e && e.name) + '):', e);
+    if(first && typeof showToast === 'function') showToast('⚠ 저장 공간 부족 — 추적 기록이 이 기기에 저장되지 않음');
+    return false;
+  }
+}
 (async function _initTrackSync(){
   var modes = ['momo','swing','core'];
   var results = await Promise.allSettled(modes.map(function(m){ return syncReconTrack(m); }));
@@ -7220,7 +7244,7 @@ function captureReconSignal(result, mode){
     eval: null, status: 'pending'
   });
   if(G_reconTrack.length > 500) G_reconTrack = G_reconTrack.slice(0, 500);
-  localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
+  saveReconTrackLocal();
   syncReconTrack(mode);  // 백그라운드 동기화 (await 안 함)
 }
 
@@ -7239,7 +7263,11 @@ async function syncReconTrack(mode){
     if(data && data.ok && Array.isArray(data.track)){
       var others = G_reconTrack.filter(function(t){ return t.mode!==mode; });
       G_reconTrack = others.concat(data.track);
-      localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
+      // 로컬 사본만 최신순 500건으로 제한 (captureReconSignal 과 같은 기준 · 서버 데이터는 건드리지 않음)
+      if(G_reconTrack.length > 500){
+        G_reconTrack = G_reconTrack.slice().sort(function(a, b){ return (b.scannedAt || 0) - (a.scannedAt || 0); }).slice(0, 500);
+      }
+      saveReconTrackLocal();
       if(_reconTrackInitState) _reconTrackInitState[mode] = { ok: true, ts: Date.now() };
     } else {
       // HTTP 성공이지만 ok:false 또는 형식 오류 — 성공 상태로 남기지 않음
@@ -7382,7 +7410,7 @@ async function verifyReconTrack(){
     verified++;
   }
   if(verified){
-    localStorage.setItem('reconTrack', JSON.stringify(G_reconTrack));
+    saveReconTrackLocal();
     syncReconTrack('momo'); syncReconTrack('swing'); syncReconTrack('core');
   }
   return verified;
@@ -10744,6 +10772,34 @@ function renderUsage(){
   var u=G.apiUsage, t=G.apiTotal;
   el.innerHTML='<div>오늘: '+u.calls+'회 · '+(u.input+u.output).toLocaleString()+' 토큰 · $'+u.cost+'</div>'+
     '<div style="color:var(--t2);margin-top:2px">누적: '+t.calls+'회 · '+(t.input+t.output).toLocaleString()+' 토큰 · $'+t.cost+'</div>';
+}
+
+// 저장 공간 사용량 계산 (표시 전용). 크기 = 키+값 문자 수 기준. storage 는 localStorage 형태(length/key/getItem).
+function calcStorageUsage(storage){
+  var items = [], total = 0, mc = { n: 0, size: 0 };
+  for(var i = 0; i < storage.length; i++){
+    var k = storage.key(i);
+    var size = k.length + (storage.getItem(k) || '').length;
+    total += size;
+    if(k.indexOf('mcap_') === 0){ mc.n++; mc.size += size; }
+    else items.push({ k: k, size: size });
+  }
+  items.sort(function(a, b){ return b.size - a.size; });
+  return { total: total, count: storage.length, top: items.slice(0, 10), mcap: mc };
+}
+function renderStorageUsage(){
+  var el = document.getElementById('storageUsage');
+  if(!el) return;
+  try{
+    var kb = function(n){ return (n / 1024).toFixed(1) + 'KB'; };
+    var u = calcStorageUsage(localStorage);
+    var lines = ['합계 ' + kb(u.total) + ' (문자 수 기준 · 키 ' + u.count + '개 · 한도는 브라우저별, 보통 약 5MB)'];
+    u.top.forEach(function(it){ lines.push(it.k + '  ' + kb(it.size)); });
+    if(u.mcap.n) lines.push('mcap_* (' + u.mcap.n + '개 합계)  ' + kb(u.mcap.size));
+    el.textContent = lines.join('\n');
+  }catch(e){
+    el.textContent = '계산 실패: ' + (e && e.message);
+  }
 }
 
 function resetUsage(){
