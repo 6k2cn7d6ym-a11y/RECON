@@ -7165,6 +7165,7 @@ var G_reconTrack = JSON.parse(localStorage.getItem('reconTrack')||'[]');
 var _reconTrackInitState = {};
 var _syncSeqMap = { momo: 0, swing: 0, core: 0 };  // IIFE 앞에 선언 (함수 호이스팅만으로 부족)
 var _reconTrackSaveFailed = false;
+var _reconTrackRejectNotified = { momo: false, swing: false, core: false };  // 서버 거부 경고: 모드별로 연속 실패 시 한 번만
 var RECON_TRACK_SAVE_FAIL_MSG = '⚠ 저장 공간 부족 — 추적 기록이 이 기기에 저장되지 않음(서버 동기화는 진행)';
 // 저장용 사본만 줄인다(메모리 G_reconTrack 은 건드리지 않음): 미완료는 전부 남기고 완료 기록을 최신순으로 채워 500건에 맞춘다.
 function trimReconTrackForStorage(arr){
@@ -7272,10 +7273,15 @@ async function syncReconTrack(mode){
       G_reconTrack = others.concat(data.track);
       saveReconTrackLocal();
       if(_reconTrackInitState) _reconTrackInitState[mode] = { ok: true, ts: Date.now() };
+      _reconTrackRejectNotified[mode] = false;
     } else {
       // HTTP 성공이지만 ok:false 또는 형식 오류 — 성공 상태로 남기지 않음
       var errMsg = (data && data.error) ? data.error : ('HTTP ' + (resp && resp.status));
       console.warn('[syncReconTrack] 서버 거부:', mode, errMsg);
+      if(!_reconTrackRejectNotified[mode]){
+        _reconTrackRejectNotified[mode] = true;
+        if(typeof showToast === 'function') showToast('⚠ 추적 기록 서버 저장 거부 — ' + errMsg);
+      }
       if(_reconTrackInitState) _reconTrackInitState[mode] = { ok: false, ts: Date.now(), err: errMsg };
     }
   }catch(e){
